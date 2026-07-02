@@ -196,11 +196,18 @@ class ClassResponse(BaseModel):
     is_active: bool
     group: Optional[str] = None
     member_count: Optional[int] = None
+    invite_code: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
 class ClassMemberAdd(BaseModel):
     user_id: int
+
+class ClassJoinByCode(BaseModel):
+    code: str
+
+class InviteCodeResponse(BaseModel):
+    invite_code: str
 
 class VariantCreate(BaseModel):
     variant_number: int

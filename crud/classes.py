@@ -2,10 +2,14 @@ from typing import Optional, List
 from sqlalchemy.orm import Session
 from models import Class, User, AssignmentVariant, Assignment, Submission, Grade, class_members
 from sqlalchemy import func
+from services.invite_codes import generate_unique_code
 
 def create_class(db: Session, name: str, description: Optional[str], created_by: int,
                  group: Optional[str] = None, org_type: str = "university") -> Class:
-    obj = Class(name=name, description=description, created_by=created_by, group=group, org_type=org_type)
+    obj = Class(
+        name=name, description=description, created_by=created_by, group=group, org_type=org_type,
+        invite_code=generate_unique_code(db),
+    )
     db.add(obj)
     db.commit()
     db.refresh(obj)
@@ -13,6 +17,18 @@ def create_class(db: Session, name: str, description: Optional[str], created_by:
 
 def get_class(db: Session, class_id: int) -> Optional[Class]:
     return db.query(Class).filter(Class.id == class_id).first()
+
+def get_class_by_invite_code(db: Session, code: str) -> Optional[Class]:
+    return db.query(Class).filter(Class.invite_code == code).first()
+
+def regenerate_invite_code(db: Session, class_id: int) -> Optional[Class]:
+    obj = get_class(db, class_id)
+    if not obj:
+        return None
+    obj.invite_code = generate_unique_code(db)
+    db.commit()
+    db.refresh(obj)
+    return obj
 
 def get_all_classes(db: Session, teacher_id: Optional[int] = None,
                     org_type: Optional[str] = None) -> List[Class]:

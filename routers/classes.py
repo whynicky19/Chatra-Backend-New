@@ -1,3 +1,5 @@
+import time
+from collections import defaultdict
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -9,6 +11,35 @@ from db import get_db
 from deps import get_current_user, get_current_teacher
 
 router = APIRouter(prefix="/classes", tags=["Classes"])
+
+
+# In-memory limiter, same pattern as routers/ai.py::_check_rate_limit.
+# TODO: move to Redis once this needs to survive restarts / work across workers.
+_join_rate_store: dict = defaultdict(list)
+JOIN_RATE_LIMIT = 10
+JOIN_RATE_WINDOW = 60
+
+
+def _check_join_rate_limit(key):
+    now = time.time()
+    timestamps = _join_rate_store[key]
+    _join_rate_store[key] = [t for t in timestamps if now - t < JOIN_RATE_WINDOW]
+    if len(_join_rate_store[key]) >= JOIN_RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="too_many_attempts")
+    _join_rate_store[key].append(now)
+
+
+def _can_view_invite_code(obj: Class, current_user) -> bool:
+    return current_user.role == "admin" or obj.created_by == current_user.id
+
+
+def _to_class_response(obj: Class, current_user, member_count: Optional[int] = None) -> schemas.ClassResponse:
+    resp = schemas.ClassResponse.model_validate(obj)
+    if member_count is not None:
+        resp.member_count = member_count
+    if not _can_view_invite_code(obj, current_user):
+        resp.invite_code = None
+    return resp
 
 
 
@@ -23,6 +54,7 @@ def list_all_classes(
     for c in classes:
         resp = schemas.ClassResponse.model_validate(c)
         resp.member_count = len(c.members)
+        resp.invite_code = None
         result.append(resp)
     return result
 
@@ -41,11 +73,7 @@ def list_classes(
     else:
         teacher_id = current_user.id if my_only else None
         classes = crud.get_all_classes(db, teacher_id=teacher_id, org_type=current_user.org_type)
-    result = []
-    for c in classes:
-        resp = schemas.ClassResponse.model_validate(c)
-        resp.member_count = len(c.members)
-        result.append(resp)
+    result = [_to_class_response(c, current_user, member_count=len(c.members)) for c in classes]
     return result
 
 
@@ -58,9 +86,7 @@ def create_class(
     obj = crud.create_class(db, name=body.name, description=body.description,
                             created_by=current_user.id, group=body.group,
                             org_type=current_user.org_type)
-    resp = schemas.ClassResponse.model_validate(obj)
-    resp.member_count = 0
-    return resp
+    return _to_class_response(obj, current_user, member_count=0)
 
 
 @router.get("/{class_id}", response_model=schemas.ClassResponse)
@@ -72,9 +98,7 @@ def get_class(
     obj = crud.get_class(db, class_id)
     if not obj or obj.org_type != current_user.org_type:
         raise HTTPException(status_code=404, detail="Класс не найден")
-    resp = schemas.ClassResponse.model_validate(obj)
-    resp.member_count = len(obj.members)
-    return resp
+    return _to_class_response(obj, current_user, member_count=len(obj.members))
 
 
 @router.put("/{class_id}", response_model=schemas.ClassResponse)
@@ -88,9 +112,7 @@ def update_class(
     if not obj or obj.org_type != current_user.org_type:
         raise HTTPException(status_code=404, detail="Класс не найден")
     obj = crud.update_class(db, class_id, body.model_dump(exclude_none=True))
-    resp = schemas.ClassResponse.model_validate(obj)
-    resp.member_count = len(obj.members)
-    return resp
+    return _to_class_response(obj, current_user, member_count=len(obj.members))
 
 
 @router.delete("/{class_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -155,6 +177,46 @@ def join_class(
     if not ok:
         raise HTTPException(status_code=400, detail="Не удалось вступить")
     return {"message": "Вы вступили в класс"}
+
+
+@router.post("/join-by-code", response_model=schemas.ClassResponse, status_code=status.HTTP_200_OK)
+def join_class_by_code(
+    body: schemas.ClassJoinByCode,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    _check_join_rate_limit(current_user.id)
+
+    code = body.code.strip().upper()
+    obj = crud.get_class_by_invite_code(db, code)
+    # Cross-org codes are treated as not found so a guessed/leaked code from
+    # another organization can't be used to probe for its existence.
+    if not obj or obj.org_type != current_user.org_type:
+        raise HTTPException(status_code=404, detail="class_not_found")
+
+    if obj.group and current_user.group != obj.group:
+        raise HTTPException(status_code=403, detail="Этот класс только для группы " + obj.group)
+
+    ok = crud.add_member(db, obj.id, current_user.id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Не удалось вступить")
+    return _to_class_response(obj, current_user, member_count=len(obj.members))
+
+
+@router.post("/{class_id}/regenerate-code", response_model=schemas.InviteCodeResponse)
+def regenerate_code(
+    class_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    obj = crud.get_class(db, class_id)
+    if not obj or obj.org_type != current_user.org_type:
+        raise HTTPException(status_code=404, detail="Класс не найден")
+    if not _can_view_invite_code(obj, current_user):
+        raise HTTPException(status_code=403, detail="Только владелец класса или администратор может обновить код приглашения")
+
+    obj = crud.regenerate_invite_code(db, class_id)
+    return schemas.InviteCodeResponse(invite_code=obj.invite_code)
 
 
 @router.delete("/{class_id}/leave", status_code=status.HTTP_200_OK)

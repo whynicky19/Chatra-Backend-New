@@ -39,6 +39,8 @@ class Class(Base):
 
     org_type: Mapped[str] = mapped_column(String, nullable=False, default="university")
 
+    invite_code: Mapped[str] = mapped_column(String(6), unique=True, index=True, nullable=False)
+
     creator: Mapped["User"] = relationship(back_populates="classes_created", foreign_keys=[created_by])
     members: Mapped[list["User"]] = relationship(
         "User",
