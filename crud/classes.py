@@ -5,9 +5,12 @@ from sqlalchemy import func
 from services.invite_codes import generate_unique_code
 
 def create_class(db: Session, name: str, description: Optional[str], created_by: int,
-                 group: Optional[str] = None, org_type: str = "university") -> Class:
+                 org_type: str = "university",
+                 cover_image: Optional[str] = None, teacher: Optional[str] = None,
+                 period: Optional[str] = None) -> Class:
     obj = Class(
-        name=name, description=description, created_by=created_by, group=group, org_type=org_type,
+        name=name, description=description, created_by=created_by, org_type=org_type,
+        cover_image=cover_image, teacher=teacher, period=period,
         invite_code=generate_unique_code(db),
     )
     db.add(obj)

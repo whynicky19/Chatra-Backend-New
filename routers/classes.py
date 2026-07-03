@@ -84,9 +84,30 @@ def create_class(
     current_user=Depends(get_current_teacher),
 ):
     obj = crud.create_class(db, name=body.name, description=body.description,
-                            created_by=current_user.id, group=body.group,
-                            org_type=current_user.org_type)
+                            created_by=current_user.id,
+                            org_type=current_user.org_type,
+                            cover_image=body.cover_image, teacher=body.teacher,
+                            period=body.period)
     return _to_class_response(obj, current_user, member_count=0)
+
+
+@router.get("/lookup-by-code", response_model=schemas.ClassResponse)
+def lookup_class_by_code(
+    code: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Read-only check so the client can show 'class found / not found' while
+    the user is still typing a code, without joining and without exposing the
+    invite_code itself (masked by _to_class_response, same as everywhere else).
+    Rate-limited like the join endpoints since it's still a code-guessing
+    oracle (existence only, no invite_code leak)."""
+    _check_join_rate_limit(current_user.id)
+
+    obj = crud.get_class_by_invite_code(db, code.strip().upper())
+    if not obj or obj.org_type != current_user.org_type:
+        raise HTTPException(status_code=404, detail="class_not_found")
+    return _to_class_response(obj, current_user, member_count=len(obj.members))
 
 
 @router.get("/{class_id}", response_model=schemas.ClassResponse)
@@ -170,9 +191,6 @@ def join_class(
     if obj.org_type != current_user.org_type:
         raise HTTPException(status_code=403, detail="Нельзя вступить в класс другой организации")
 
-    if obj.group and current_user.group != obj.group:
-        raise HTTPException(status_code=403, detail="Этот класс только для группы " + obj.group)
-
     ok = crud.add_member(db, class_id, current_user.id)
     if not ok:
         raise HTTPException(status_code=400, detail="Не удалось вступить")
@@ -193,9 +211,6 @@ def join_class_by_code(
     # another organization can't be used to probe for its existence.
     if not obj or obj.org_type != current_user.org_type:
         raise HTTPException(status_code=404, detail="class_not_found")
-
-    if obj.group and current_user.group != obj.group:
-        raise HTTPException(status_code=403, detail="Этот класс только для группы " + obj.group)
 
     ok = crud.add_member(db, obj.id, current_user.id)
     if not ok:

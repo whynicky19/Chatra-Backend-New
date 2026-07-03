@@ -35,11 +35,14 @@ class Class(Base):
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    group: Mapped[str] = mapped_column(String(100), nullable=True)
 
     org_type: Mapped[str] = mapped_column(String, nullable=False, default="university")
 
     invite_code: Mapped[str] = mapped_column(String(6), unique=True, index=True, nullable=False)
+
+    cover_image: Mapped[str] = mapped_column(Text, nullable=True)
+    teacher: Mapped[str] = mapped_column(String(200), nullable=True)
+    period: Mapped[str] = mapped_column(String(100), nullable=True)
 
     creator: Mapped["User"] = relationship(back_populates="classes_created", foreign_keys=[created_by])
     members: Mapped[list["User"]] = relationship(
@@ -57,7 +60,6 @@ class User(Base):
     role: Mapped[str] = mapped_column(String, default="student", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     full_name: Mapped[str] = mapped_column(String(200), nullable=True)
-    group: Mapped[str] = mapped_column(String(100), nullable=True)
     org_type: Mapped[str] = mapped_column(String, nullable=False, default="university")
 
     posts: Mapped[list["Posts"]] = relationship(

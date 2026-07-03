@@ -19,13 +19,12 @@ def get_user_by_id(db: Session, user_id: int):
 
 
 def create_user(db: Session, email: str, hashed_password: str, role: str = "employee",
-                full_name: str = None, group: str = None, org_type: str = "university"):
+                full_name: str = None, org_type: str = "university"):
     user = models.User(
         email=email,
         hashed_password=hashed_password,
         role=role,
         full_name=full_name,
-        group=group,
         org_type=org_type,
     )
     db.add(user)

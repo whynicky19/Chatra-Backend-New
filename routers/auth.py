@@ -10,7 +10,6 @@ from crud import users as crud_users
 from security import hash_password, verify_password, create_access_token, create_refresh_token, decode_refresh_token
 from jose import JWTError
 from deps import get_current_user
-from utils.groups import search_groups
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -31,21 +30,12 @@ def _clear_login_rate(key: str):
     _login_attempts.pop(key, None)
 
 
-@router.get("/groups/search")
-def get_groups(q: str = ""):
-
-    return search_groups(q)
-
-
 @router.post("/register", response_model=schemas.UserResponse, status_code=status.HTTP_201_CREATED)
 def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
     org_type = user.org_type if user.org_type in ("university", "school") else "university"
     existing = crud_users.get_user_by_email(db, user.email, org_type)
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
-
-    if user.group and user.group not in search_groups(""):
-        raise HTTPException(status_code=400, detail="Такой группы не существует")
 
     hashed = hash_password(user.password)
     created = crud_users.create_user(
@@ -54,7 +44,6 @@ def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
         hashed,
         user.role,
         full_name=user.full_name,
-        group=user.group,
         org_type=org_type,
     )
     return created
@@ -110,12 +99,6 @@ def update_me(
 ):
     if body.full_name is not None:
         current_user.full_name = body.full_name.strip() or None
-
-    if body.group is not None:
-
-        if body.group not in search_groups(""):
-            raise HTTPException(status_code=400, detail="Такой группы не существует")
-        current_user.group = body.group
 
     db.commit()
     db.refresh(current_user)

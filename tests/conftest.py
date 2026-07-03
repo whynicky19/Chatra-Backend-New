@@ -35,11 +35,11 @@ def db_session():
 _counter = {"n": 0}
 
 
-def make_user(db, role="student", org_type="university", group=None):
+def make_user(db, role="student", org_type="university"):
     _counter["n"] += 1
     email = f"user{_counter['n']}@example.com"
     hashed = hash_password("password123")
-    return crud_users.create_user(db, email, hashed, role=role, group=group, org_type=org_type)
+    return crud_users.create_user(db, email, hashed, role=role, org_type=org_type)
 
 
 def auth_headers(user):

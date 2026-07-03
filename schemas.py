@@ -7,7 +7,6 @@ class UserCreate(BaseModel):
     password: str
     role: str
     full_name: Optional[str] = None
-    group: str | None = None
     org_type: str = "university"
 
     model_config = ConfigDict(from_attributes=True)
@@ -17,7 +16,6 @@ class UserResponse(BaseModel):
     email: EmailStr
     is_active: bool
     role: str
-    group: str | None = None
     full_name: Optional[str] = None
     org_type: str = "university"
 
@@ -25,7 +23,6 @@ class UserResponse(BaseModel):
 
 class UpdateMe(BaseModel):
     full_name: Optional[str] = None
-    group: str | None = None
 
 class Token(BaseModel):
     access_token: str
@@ -179,13 +176,17 @@ class ProcessedDocumentResponse(BaseModel):
 class ClassCreate(BaseModel):
     name: str
     description: Optional[str] = None
-    group: Optional[str] = None
+    cover_image: Optional[str] = None
+    teacher: Optional[str] = None
+    period: Optional[str] = None
 
 class ClassUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None
-    group: Optional[str] = None
+    cover_image: Optional[str] = None
+    teacher: Optional[str] = None
+    period: Optional[str] = None
 
 class ClassResponse(BaseModel):
     id: int
@@ -194,9 +195,11 @@ class ClassResponse(BaseModel):
     created_by: int
     created_at: datetime
     is_active: bool
-    group: Optional[str] = None
     member_count: Optional[int] = None
     invite_code: Optional[str] = None
+    cover_image: Optional[str] = None
+    teacher: Optional[str] = None
+    period: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
