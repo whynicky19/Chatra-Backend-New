@@ -49,6 +49,13 @@ def extract_slides(data: bytes, filename: str) -> list[SlideData]:
     return slides
 
 
+def render_slide_images(data: bytes, filename: str, count: int) -> list[str]:
+    """Публичная обёртка рендера картинок слайдов — используется пайплайном,
+    чтобы дорендерить презентацию на фазе генерации, если при создании лекции
+    рендер не удался (например, отсутствовал LibreOffice/poppler)."""
+    return _render_slide_images(data, filename, count)
+
+
 def _extract_pptx_text(data: bytes) -> list[str]:
     from pptx import Presentation
 
@@ -117,6 +124,10 @@ def _soffice_available() -> bool:
     return shutil.which("soffice") is not None or shutil.which("libreoffice") is not None
 
 
+def _pdftoppm_available() -> bool:
+    return shutil.which("pdftoppm") is not None or shutil.which("pdftoppm.exe") is not None
+
+
 def _resolve_executable(name: str) -> str:
 
     found = shutil.which(name) or shutil.which(name + ".exe")
@@ -125,15 +136,20 @@ def _resolve_executable(name: str) -> str:
 
 def _render_slide_images(data: bytes, filename: str, count: int) -> list[str]:
 
-    if not _soffice_available():
-        logger.warning("LibreOffice (soffice) не найден в PATH — рендер слайдов в картинки пропущен")
+    ext = Path(filename).suffix.lower()
+
+    # PDF рендерится одним pdftoppm; LibreOffice нужен только для конвертации
+    # pptx → pdf. Не требуем soffice там, где он не используется.
+    if not _pdftoppm_available():
+        logger.warning("pdftoppm (poppler) не найден в PATH — рендер слайдов в картинки пропущен")
+        return []
+    if ext != ".pdf" and not _soffice_available():
+        logger.warning("LibreOffice (soffice) не найден в PATH — рендер %s-слайдов пропущен", ext)
         return []
 
     soffice_bin = _resolve_executable("soffice")
     pdftoppm_bin = _resolve_executable("pdftoppm")
     logger.info("Рендер слайдов: soffice=%s, pdftoppm=%s, filename=%s", soffice_bin, pdftoppm_bin, filename)
-
-    ext = Path(filename).suffix.lower()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, f"source{ext}")

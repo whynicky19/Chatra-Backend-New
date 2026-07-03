@@ -1,15 +1,48 @@
 
 import logging
 
+import httpx
 from sqlalchemy.orm import Session
 
 from db import get_session_for_org
 from models import AvatarLecture, AvatarLectureSlide, TeacherAvatar
-from services import elevenlabs_client, did_client, lecture_generator
+from services import elevenlabs_client, did_client, lecture_generator, slide_extractor
+from services.url_safety import is_safe_fetch_url
 
 logger = logging.getLogger(__name__)
 
 INTRO_VIDEO_SLIDE_INDEX = 0
+
+
+async def _ensure_slide_images(db: Session, lecture: AvatarLecture, slides: list) -> None:
+    """Гарантирует, что у слайдов есть картинки презентации. Пока картинки не
+    готовы, лекция остаётся в статусе generating — иначе бы получалось, что
+    аудио уже читается, а на экране слайды всё ещё «готовятся».
+
+    Если рендер при создании лекции не удался (например, не было LibreOffice/
+    poppler), дорендериваем здесь из исходного файла."""
+    if all(s.slide_image_url for s in slides):
+        return
+    if not lecture.source_file_url or not is_safe_fetch_url(lecture.source_file_url):
+        logger.warning("Лекция %s: нет безопасного source_file_url для рендера слайдов", lecture.id)
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.get(lecture.source_file_url)
+        if not resp.is_success:
+            logger.warning("Лекция %s: не удалось скачать исходник для рендера слайдов", lecture.id)
+            return
+        filename = lecture.source_filename or lecture.source_file_url.split("/")[-1]
+        images = slide_extractor.render_slide_images(resp.content, filename, count=len(slides))
+    except Exception:
+        logger.exception("Лекция %s: ошибка рендера картинок слайдов", lecture.id)
+        return
+
+    for slide, img in zip(slides, images):
+        if img and not slide.slide_image_url:
+            slide.slide_image_url = img
+    db.commit()
 
 
 async def run_lecture_generation(lecture_id: int, org_type: str = "university") -> None:
@@ -37,6 +70,10 @@ async def run_lecture_generation(lecture_id: int, org_type: str = "university") 
             lecture.error_message = "Не найдено слайдов для генерации"
             db.commit()
             return
+
+        # Сначала готовим презентацию (картинки слайдов): пока она не готова,
+        # лекция должна оставаться в generating, а не «читаться» без слайдов.
+        await _ensure_slide_images(db, lecture, slides)
 
         slide_texts = [s.slide_source_text or "" for s in slides]
 
