@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from db import get_db
 from models import Reaction
 from deps import get_current_user
+from permissions import require_message_chat_member
 
 router = APIRouter(prefix="/reactions", tags=["Reactions"])
 
@@ -13,6 +14,7 @@ def add_reaction(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    require_message_chat_member(db, message_id, current_user.id)
     existing = (
         db.query(Reaction)
         .filter(Reaction.message_id == message_id, Reaction.user_id == current_user.id)
@@ -36,6 +38,7 @@ def remove_reaction(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    require_message_chat_member(db, message_id, current_user.id)
     deleted = (
         db.query(Reaction)
         .filter(Reaction.message_id == message_id, Reaction.user_id == current_user.id)
@@ -50,7 +53,9 @@ def remove_reaction(
 def get_reactions(
     message_id: int,
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
+    require_message_chat_member(db, message_id, current_user.id)
     reactions = db.query(Reaction).filter(Reaction.message_id == message_id).all()
     return [
         {"id": r.id, "message_id": r.message_id, "user_id": r.user_id, "emoji": r.emoji}

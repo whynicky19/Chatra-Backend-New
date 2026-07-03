@@ -1,5 +1,3 @@
-import time
-from collections import defaultdict
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -9,24 +7,16 @@ from crud import classes as crud
 from models import Class
 from db import get_db
 from deps import get_current_user, get_current_teacher
+from services.rate_limit import RateLimiter
 
 router = APIRouter(prefix="/classes", tags=["Classes"])
 
 
-# In-memory limiter, same pattern as routers/ai.py::_check_rate_limit.
-# TODO: move to Redis once this needs to survive restarts / work across workers.
-_join_rate_store: dict = defaultdict(list)
-JOIN_RATE_LIMIT = 10
-JOIN_RATE_WINDOW = 60
+_join_limiter = RateLimiter(max_calls=10, window_seconds=60)
 
 
 def _check_join_rate_limit(key):
-    now = time.time()
-    timestamps = _join_rate_store[key]
-    _join_rate_store[key] = [t for t in timestamps if now - t < JOIN_RATE_WINDOW]
-    if len(_join_rate_store[key]) >= JOIN_RATE_LIMIT:
-        raise HTTPException(status_code=429, detail="too_many_attempts")
-    _join_rate_store[key].append(now)
+    _join_limiter.check(key, detail="too_many_attempts")
 
 
 def _can_view_invite_code(obj: Class, current_user) -> bool:

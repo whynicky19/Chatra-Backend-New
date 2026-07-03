@@ -1,12 +1,11 @@
 import os
-import time
 import httpx
-from collections import defaultdict
 from typing import List, Optional, Union, Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from deps import get_current_user
 from db import get_db
+from services.rate_limit import RateLimiter
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/ai", tags=["AI"])
@@ -15,21 +14,13 @@ OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 OPENAI_MODEL = "gpt-4o-mini"   # supports vision
 
 
-_rate_store: dict = defaultdict(list)
-RATE_LIMIT = 20
-RATE_WINDOW = 60
+_ai_limiter = RateLimiter(max_calls=20, window_seconds=60)
 
 def _check_rate_limit(user_id: int):
-    now = time.time()
-    timestamps = _rate_store[user_id]
-
-    _rate_store[user_id] = [t for t in timestamps if now - t < RATE_WINDOW]
-    if len(_rate_store[user_id]) >= RATE_LIMIT:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Слишком много запросов к ИИ. Подождите немного и попробуйте снова.",
-        )
-    _rate_store[user_id].append(now)
+    _ai_limiter.check(
+        user_id,
+        detail="Слишком много запросов к ИИ. Подождите немного и попробуйте снова.",
+    )
 
 
 class ChatMessage(BaseModel):

@@ -11,6 +11,7 @@ from crud import classes as crud_classes
 from db import get_db
 from deps import get_current_user, get_current_teacher
 from models import Class as ClassModel
+from permissions import require_class_access
 from services.ai_grader import grade_submission as _ai_grade
 from routers.ai import _check_rate_limit
 
@@ -22,6 +23,12 @@ def _check_assignment_org(db: Session, assignment, current_user):
     cls = db.query(ClassModel).filter(ClassModel.id == assignment.class_id).first()
     if cls and cls.org_type != current_user.org_type:
         raise HTTPException(status_code=404, detail="Assignment not found")
+
+
+def _check_assignment_access(db: Session, assignment, current_user):
+    """Org-проверка + студент должен состоять в классе задания."""
+    _check_assignment_org(db, assignment, current_user)
+    require_class_access(db, assignment.class_id, current_user)
 
 
 def _check_submission_org(db: Session, submission, current_user):
@@ -72,6 +79,7 @@ def list_assignments(
         cls = db.query(ClassModel).filter(ClassModel.id == class_id).first()
         if cls and cls.org_type != current_user.org_type:
             raise HTTPException(status_code=404, detail="Assignment not found")
+        require_class_access(db, class_id, current_user)
     return crud.get_all_assignments(db, class_id=class_id, active_only=active_only)
 
 
@@ -138,7 +146,7 @@ def get_assignment(
     obj = crud.get_assignment(db, assignment_id)
     if not obj:
         raise HTTPException(status_code=404, detail="Assignment not found")
-    _check_assignment_org(db, obj, current_user)
+    _check_assignment_access(db, obj, current_user)
     return obj
 
 
@@ -186,7 +194,7 @@ def list_variants(
     obj = crud.get_assignment(db, assignment_id)
     if not obj:
         raise HTTPException(status_code=404, detail="Assignment not found")
-    _check_assignment_org(db, obj, current_user)
+    _check_assignment_access(db, obj, current_user)
     return crud_classes.get_variants(db, assignment_id)
 
 
@@ -245,7 +253,7 @@ def submit_assignment(
     assignment = crud.get_assignment(db, assignment_id)
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
-    _check_assignment_org(db, assignment, current_user)
+    _check_assignment_access(db, assignment, current_user)
     if not assignment.is_active:
         raise HTTPException(status_code=400, detail="Assignment is closed")
 
@@ -389,13 +397,14 @@ def save_grade(
     _check_submission_org(db, sub, current_user)
 
     crud.set_submission_status(db, submission_id, "graded")
+    # graded_by выставляется сервером: ручную оценку нельзя выдать за ИИ-проверку
     return crud.create_or_update_grade(
         db=db,
         submission_id=submission_id,
         score=body.score,
         feedback=body.feedback,
         criteria_scores=body.criteria_scores,
-        graded_by=body.graded_by,
+        graded_by="teacher",
     )
 
 
@@ -531,11 +540,18 @@ async def ai_grade_submission(
                 reference_urls.append(assignment.reference_solution_url)
 
 
-    # Собираем контекст лекций класса
+    # Собираем контекст лекций ТОЛЬКО нужного класса. class_id лежит внутри
+    # JSON-поля body, поэтому сужаем выборку в SQL по подстроке, а точное
+    # совпадение перепроверяем в Python; посты без class_id не включаем.
     lecture_context = ""
     try:
         from models import Posts
-        posts = db.query(Posts).filter(Posts.user_id != None).all()
+        posts = (
+            db.query(Posts)
+            .filter(Posts.user_id != None)
+            .filter(Posts.body.contains('"class_id"'))
+            .all()
+        )
         parts = []
         for p in posts:
             try:
@@ -543,9 +559,8 @@ async def ai_grade_submission(
                 ptype = b.get("type", "")
                 if ptype not in ("lecture", "material"):
                     continue
-                # Проверяем что пост относится к нужному классу
                 class_id_in_body = b.get("class_id")
-                if class_id_in_body and int(class_id_in_body) != assignment.class_id:
+                if not class_id_in_body or int(class_id_in_body) != assignment.class_id:
                     continue
                 content = (b.get("content") or b.get("description") or "")[:2000]
                 block = f"### {p.title}\n{content}"

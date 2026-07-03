@@ -51,6 +51,15 @@ _ensure_schemas()
 
 _cors_raw = os.getenv("CORS_ORIGINS", "*")
 _cors_origins = [o.strip() for o in _cors_raw.split(",")] if _cors_raw != "*" else ["*"]
+# Wildcard-origin вместе с credentials — это фактически отключенный CORS:
+# браузеру отражается любой Origin. С "*" работаем без credentials;
+# в проде задайте явный список в CORS_ORIGINS.
+_cors_credentials = _cors_origins != ["*"]
+if not _cors_credentials:
+    logging.warning(
+        "CORS_ORIGINS='*' — allow_credentials отключён. "
+        "В проде задайте явный список origin'ов в CORS_ORIGINS."
+    )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -69,7 +78,7 @@ app = FastAPI(title="Chatra API", version="3.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials=True,
+    allow_credentials=_cors_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -92,7 +101,25 @@ app.include_router(rag_router)
 
 _upload_dir = os.getenv("UPLOAD_DIR", "uploads")
 os.makedirs(_upload_dir, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=_upload_dir), name="uploads")
+
+# Типы, которые безопасно отдавать inline (просмотр в браузере/приложении);
+# всё остальное — только скачиванием, чтобы браузер не исполнял содержимое.
+_INLINE_EXTENSIONS = {
+    "png", "jpg", "jpeg", "gif", "webp", "bmp",
+    "mp3", "wav", "m4a", "webm", "ogg", "mp4",
+    "pdf",  # нужен для iframe-предпросмотра на фронте
+}
+
+class UploadsStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+        if ext not in _INLINE_EXTENSIONS:
+            response.headers["Content-Disposition"] = "attachment"
+        return response
+
+app.mount("/uploads", UploadsStaticFiles(directory=_upload_dir), name="uploads")
 
 
 @app.get("/health")

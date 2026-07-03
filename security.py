@@ -5,8 +5,18 @@ from passlib.context import CryptContext
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
-SECRET_KEY = os.getenv("SECRET_KEY", "change-me-to-a-very-long-random-secret-string")
-REFRESH_SECRET_KEY = os.getenv("REFRESH_SECRET_KEY", "change-me-refresh-secret-string")
+def _require_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value or value.startswith("change-me"):
+        raise RuntimeError(
+            f"Переменная окружения {name} не задана. "
+            f"Сгенерируйте случайный секрет (например `openssl rand -hex 32`) "
+            f"и добавьте {name}=<секрет> в .env — приложение не стартует с заглушкой."
+        )
+    return value
+
+SECRET_KEY = _require_env("SECRET_KEY")
+REFRESH_SECRET_KEY = _require_env("REFRESH_SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 15
 REFRESH_TOKEN_EXPIRE_DAYS = 30

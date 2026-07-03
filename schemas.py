@@ -1,13 +1,35 @@
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from typing import Optional, List, Any
 from datetime import datetime
 
+# Единственный источник правды по допустимым ролям — валидируется везде,
+# где роль приходит от клиента (регистрация запрещает её вовсе).
+ALLOWED_ROLES = ("student", "teacher", "admin")
+
+
+def validate_role(value: str) -> str:
+    if value not in ALLOWED_ROLES:
+        raise ValueError(f"role must be one of {ALLOWED_ROLES}")
+    return value
+
+
+class UserRegister(BaseModel):
+    """Схема самостоятельной регистрации: роль клиент задавать не может."""
+    email: EmailStr
+    password: str = Field(min_length=8)
+    full_name: Optional[str] = None
+    org_type: str = "university"
+
+    model_config = ConfigDict(from_attributes=True)
+
 class UserCreate(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=8)
     role: str
     full_name: Optional[str] = None
     org_type: str = "university"
+
+    _role_valid = field_validator("role")(validate_role)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -36,6 +58,11 @@ class UserAdminUpdate(BaseModel):
     email: Optional[EmailStr] = None
     is_active: Optional[bool] = None
     role: Optional[str] = None
+
+    @field_validator("role")
+    @classmethod
+    def _role_valid(cls, v):
+        return None if v is None else validate_role(v)
 
 class PostCreate(BaseModel):
     title: str
@@ -125,10 +152,11 @@ class SubmissionWithGrade(SubmissionResponse):
     model_config = ConfigDict(from_attributes=True)
 
 class GradeCreate(BaseModel):
+    # graded_by намеренно отсутствует: сервер выставляет его сам,
+    # значение из тела запроса игнорируется.
     score: int
     feedback: Optional[str] = None
     criteria_scores: Optional[List[Any]] = None
-    graded_by: str = "ai"
 
 class GradeResponse(BaseModel):
     id: int

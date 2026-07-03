@@ -16,11 +16,12 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
 
+# zip/rar убраны: архивы не нужны учебному флоу и не читаются парсерами
 ALLOWED_EXTENSIONS = {
     "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx",
     "txt", "md", "csv", "rtf",
     "png", "jpg", "jpeg", "gif", "webp",
-    "zip", "rar", "sm",
+    "sm",
     "mp3", "wav", "m4a", "webm", "ogg", "mp4",
 }
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
@@ -87,6 +88,11 @@ async def get_file_text(
     url: str,
     current_user=Depends(get_current_user),
 ):
+    # Эндпоинт нужен и студентам (мобильный клиент собирает AI-контекст класса),
+    # поэтому по роли не ограничиваем — но читать можно только своё хранилище.
+    from services.url_safety import is_safe_fetch_url
+    if not is_safe_fetch_url(url):
+        raise HTTPException(status_code=400, detail="Недопустимый URL файла")
     from services.ai_grader import _fetch_file_text
     text = await _fetch_file_text(url)
     return {"text": text}

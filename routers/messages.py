@@ -4,6 +4,7 @@ from sqlalchemy import text
 from db import get_db
 from schemas import MessageCreate
 from deps import get_current_user
+from permissions import require_chat_member, require_message_chat_member
 from datetime import datetime, timezone
 
 router = APIRouter(prefix="/messages", tags=["Messages"])
@@ -18,15 +19,6 @@ def _safe_date(val) -> str | None:
     return s.replace(' ', 'T') if s else None
 
 
-def _check_member(db: Session, chat_id: int, user_id: int) -> None:
-    row = db.execute(
-        text("SELECT 1 FROM chat_members WHERE chat_id = :cid AND user_id = :uid"),
-        {"cid": chat_id, "uid": user_id},
-    ).fetchone()
-    if not row:
-        raise HTTPException(status_code=403, detail="Not a member of this chat")
-
-
 @router.post("/chat/{chat_id}")
 def send_message(
     chat_id: int,
@@ -34,7 +26,7 @@ def send_message(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    _check_member(db, chat_id, current_user.id)
+    require_chat_member(db, chat_id, current_user.id)
     try:
         now = datetime.now(timezone.utc)
         now_str = now.strftime('%Y-%m-%d %H:%M:%S')
@@ -75,18 +67,8 @@ def get_messages(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    _check_member(db, chat_id, current_user.id)
+    require_chat_member(db, chat_id, current_user.id)
     try:
-        for col_sql in [
-            "ALTER TABLE messages ADD COLUMN file_url TEXT",
-            "ALTER TABLE messages ADD COLUMN is_read INTEGER DEFAULT 0",
-        ]:
-            try:
-                db.execute(text(col_sql))
-                db.commit()
-            except Exception:
-                db.rollback()
-
         result = db.execute(
             text(
                 "SELECT id, content, chat_id, user_id, created_at, "
@@ -142,6 +124,7 @@ def mark_read(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    require_message_chat_member(db, message_id, current_user.id)
     try:
         db.execute(
             text("UPDATE messages SET is_read = 1 WHERE id = :id"),

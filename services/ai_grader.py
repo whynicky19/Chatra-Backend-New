@@ -140,7 +140,8 @@ def _parse_docx(data: bytes) -> str:
 
 
 async def _fetch_file_text(url: str) -> str:
-    if not url or not url.startswith("http"):
+    from services.url_safety import is_safe_fetch_url
+    if not is_safe_fetch_url(url):
         return ""
     try:
         async with httpx.AsyncClient(timeout=25.0) as client:

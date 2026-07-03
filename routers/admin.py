@@ -62,6 +62,12 @@ def update_user_role(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_admin),
 ):
+    if new_role not in schemas.ALLOWED_ROLES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"role must be one of {schemas.ALLOWED_ROLES}",
+        )
+
     user = db.query(User).filter(User.id == user_id).first()
 
     if not user:
@@ -244,6 +250,10 @@ async def review_avatar(
         db.refresh(avatar)
         return avatar
 
+
+    from services.url_safety import is_safe_fetch_url
+    if not is_safe_fetch_url(avatar.voice_sample_url):
+        raise HTTPException(status_code=400, detail="Недопустимый URL образца голоса")
 
     voice_warning = None
     try:

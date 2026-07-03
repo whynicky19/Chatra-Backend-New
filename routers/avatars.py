@@ -96,6 +96,10 @@ async def create_lecture(
     if body.duration_minutes < 5 or body.duration_minutes > 180:
         raise HTTPException(status_code=422, detail="Длительность лекции должна быть от 5 до 180 минут")
 
+    from services.url_safety import is_safe_fetch_url
+    if not is_safe_fetch_url(body.source_file_url):
+        raise HTTPException(status_code=400, detail="Недопустимый URL файла материала")
+
     import httpx
     async with httpx.AsyncClient(timeout=60.0) as client:
         file_resp = await client.get(body.source_file_url)

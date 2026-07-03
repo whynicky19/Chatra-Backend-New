@@ -2,7 +2,7 @@ import pytest
 
 from crud import classes as crud_classes
 from services.invite_codes import ALPHABET, CODE_LENGTH, legacy_deterministic_code, random_code
-from routers.classes import _join_rate_store, JOIN_RATE_LIMIT
+from routers.classes import _join_limiter
 from tests.conftest import make_user, auth_headers
 
 
@@ -140,13 +140,13 @@ def test_join_by_code_rate_limited(client, db_session):
     teacher = make_user(db_session, role="teacher")
     student = make_user(db_session, role="student")
     cls = crud_classes.create_class(db_session, "Biology", None, created_by=teacher.id)
-    _join_rate_store.pop(student.id, None)
+    _join_limiter.reset(student.id)
 
-    for _ in range(JOIN_RATE_LIMIT):
+    for _ in range(_join_limiter.max_calls):
         r = client.post("/classes/join-by-code", json={"code": "NOPE00"}, headers=auth_headers(student))
         assert r.status_code == 404
 
     r = client.post("/classes/join-by-code", json={"code": cls.invite_code}, headers=auth_headers(student))
     assert r.status_code == 429
 
-    _join_rate_store.pop(student.id, None)
+    _join_limiter.reset(student.id)
