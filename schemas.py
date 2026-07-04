@@ -338,6 +338,8 @@ class AvatarLectureResponse(BaseModel):
     created_by: int
     title: str
     source_filename: Optional[str] = None
+    # Ссылка на исходную презентацию — админ смотрит её перед одобрением заявки.
+    source_file_url: Optional[str] = None
     duration_minutes: int
     style: str
     language: str = "ru"
