@@ -333,6 +333,8 @@ class AvatarLectureResponse(BaseModel):
     id: int
     avatar_id: int
     class_id: int
+    # Название класса — чтобы админка не показывала голый "Класс 27".
+    class_name: Optional[str] = None
     created_by: int
     title: str
     source_filename: Optional[str] = None

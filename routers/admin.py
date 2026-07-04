@@ -3,7 +3,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 import json
 from datetime import datetime
-from models import User, AiUsageLog, TeacherAvatar, AvatarLecture
+from models import User, AiUsageLog, TeacherAvatar, AvatarLecture, Class as ClassModel
 from crud import classes as crud_classes
 import schemas
 from schemas import UserCreate, UserResponse
@@ -313,7 +313,22 @@ def list_avatar_lectures(
     q = db.query(AvatarLecture).filter(AvatarLecture.org_type == current_user.org_type)
     if status_filter:
         q = q.filter(AvatarLecture.status == status_filter)
-    return q.order_by(AvatarLecture.created_at.desc()).all()
+    lectures = q.order_by(AvatarLecture.created_at.desc()).all()
+
+    # Резолвим названия классов одним запросом, чтобы админка показывала
+    # «Физика», а не «Класс 27».
+    class_ids = {l.class_id for l in lectures if l.class_id}
+    names = {}
+    if class_ids:
+        rows = db.query(ClassModel.id, ClassModel.name).filter(ClassModel.id.in_(class_ids)).all()
+        names = dict(rows)
+
+    result = []
+    for lec in lectures:
+        resp = schemas.AvatarLectureResponse.model_validate(lec)
+        resp.class_name = names.get(lec.class_id)
+        result.append(resp)
+    return result
 
 
 @router.post("/avatar-lectures/{lecture_id}/review", response_model=schemas.AvatarLectureResponse)
