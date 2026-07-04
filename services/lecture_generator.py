@@ -27,6 +27,19 @@ STYLE_PROMPTS = {
     ),
 }
 
+# Язык, на котором аватар читает лекцию и пишется конспект. Промпт остаётся
+# русским, но выходной текст модель обязана писать на выбранном языке —
+# независимо от языка исходных слайдов.
+LANGUAGE_NAMES = {"ru": "русском", "en": "английском (English)"}
+
+
+def _language_instruction(language: str) -> str:
+    name = LANGUAGE_NAMES.get(language, LANGUAGE_NAMES["en"])
+    return (
+        f"ЯЗЫК: весь текст пиши строго на {name} языке, даже если исходные "
+        "слайды на другом языке — термины и содержимое слайдов переводи."
+    )
+
 
 class LectureGenerationError(Exception):
     pass
@@ -77,6 +90,7 @@ async def generate_lecture_narration(
     duration_minutes: int,
     style: str,
     lecture_title: str,
+    language: str = "en",
 ) -> list[str]:
 
     style_instruction = STYLE_PROMPTS.get(style, STYLE_PROMPTS["university"])
@@ -100,12 +114,13 @@ async def generate_lecture_narration(
         "1. Пиши ТОЛЬКО то, что будет произнесено голосом — без заголовков, маркеров списков, markdown.\n"
         "2. Не повторяй текст слайда буквально — объясняй его своими словами, как живой рассказ.\n"
         "3. Соблюдай целевую длительность для каждого слайда (она указана в словах).\n"
-        "4. Между слайдами должна быть логическая связность (используй переходные фразы типа "
-        "«теперь перейдём к...», «как мы только что разобрали...»).\n"
+        "4. Между слайдами должна быть логическая связность (используй переходные фразы на языке лекции, "
+        "например «теперь перейдём к...» / «now let's move on to...»).\n"
         "5. Текст будет озвучен синтезатором речи: НИКАКОГО LaTeX и символьной записи формул. "
         "Формулы и выражения проговаривай словами — «икс в квадрате плюс один» вместо x^2+1, "
         "«интеграл от нуля до единицы» вместо \\int_0^1.\n"
-        "6. Ответь СТРОГО в формате JSON-массива строк, без пояснений: "
+        f"6. {_language_instruction(language)}\n"
+        "7. Ответь СТРОГО в формате JSON-массива строк, без пояснений: "
         '["текст рассказа слайда 1", "текст рассказа слайда 2", ...]\n'
         f"Массив должен содержать ровно {len(slide_texts)} элементов."
     )
@@ -122,7 +137,8 @@ async def generate_lecture_narration(
     return narrations
 
 
-async def generate_lecture_summary(narrations: list[str], lecture_title: str, style: str) -> str:
+async def generate_lecture_summary(narrations: list[str], lecture_title: str, style: str,
+                                   language: str = "en") -> str:
 
     style_instruction = STYLE_PROMPTS.get(style, STYLE_PROMPTS["university"])
     full_text = "\n\n".join(narrations)
@@ -131,6 +147,7 @@ async def generate_lecture_summary(narrations: list[str], lecture_title: str, st
         "Ты — преподаватель. По тексту прочитанной лекции составь краткий, но содержательный "
         "конспект для студентов: ключевые определения, формулы/факты, основные выводы. "
         + style_instruction + "\n\n"
+        + _language_instruction(language) + "\n"
         "Формат: Markdown, но ТОЛЬКО заголовки (#/##/###), списки «- » и **жирный** — "
         "таблицы и прочая разметка не поддерживаются приложением. "
         "НЕ используй LaTeX-нотацию (\\( \\), $...$, \\frac и т.п.) — она не рендерится. "

@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/avatars", tags=["Teacher Avatars"])
 
 ALLOWED_STYLES = {"school", "university", "professional"}
+# Языки, которые надёжно поддерживает голосовая модель ElevenLabs
+# (eleven_multilingual_v2). Казахского в её списке нет — добавлять сюда
+# язык без поддержки TTS нельзя, озвучка выйдет ломаной.
+ALLOWED_LANGUAGES = {"ru", "en"}
 
 
 @router.get("/me", response_model=Optional[schemas.TeacherAvatarResponse])
@@ -93,6 +97,8 @@ async def create_lecture(
 
     if body.style not in ALLOWED_STYLES:
         raise HTTPException(status_code=422, detail=f"style должен быть одним из {sorted(ALLOWED_STYLES)}")
+    if body.language not in ALLOWED_LANGUAGES:
+        raise HTTPException(status_code=422, detail=f"language должен быть одним из {sorted(ALLOWED_LANGUAGES)}")
     if body.duration_minutes < 5 or body.duration_minutes > 180:
         raise HTTPException(status_code=422, detail="Длительность лекции должна быть от 5 до 180 минут")
 
@@ -128,6 +134,7 @@ async def create_lecture(
         source_file_url=body.source_file_url,
         duration_minutes=body.duration_minutes,
         style=body.style,
+        language=body.language,
         auto_summary=body.auto_summary,
         status="pending_approval",
         estimated_chars=estimated_chars,

@@ -99,6 +99,7 @@ async def run_lecture_generation(lecture_id: int, org_type: str = "university") 
                 duration_minutes=lecture.duration_minutes,
                 style=lecture.style,
                 lecture_title=lecture.title,
+                language=lecture.language or "en",
             )
         except Exception as exc:
             logger.exception("Ошибка генерации текста лекции %s", lecture_id)
@@ -151,6 +152,7 @@ async def run_lecture_generation(lecture_id: int, org_type: str = "university") 
                     narrations=[s.narration_text or "" for s in slides],
                     lecture_title=lecture.title,
                     style=lecture.style,
+                    language=lecture.language or "en",
                 )
                 lecture.summary_text = summary
             except Exception:

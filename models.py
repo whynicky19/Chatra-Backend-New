@@ -324,6 +324,9 @@ class AvatarLecture(Base):
 
     duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=40)
     style: Mapped[str] = mapped_column(String(32), nullable=False, default="university")
+    # Язык озвучки и конспекта — обучение идёт строго на английском, поэтому
+    # дефолт "en"; язык исходных слайдов может быть любым, содержимое переводится.
+    language: Mapped[str] = mapped_column(String(8), nullable=False, default="en", server_default="en")
 
     auto_summary: Mapped[bool] = mapped_column(Boolean, default=True)
 

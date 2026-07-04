@@ -314,6 +314,7 @@ class AvatarLectureCreate(BaseModel):
     source_filename: Optional[str] = None
     duration_minutes: int = 40
     style: str = "university"
+    language: str = "en"
     auto_summary: bool = True
 
 
@@ -337,6 +338,7 @@ class AvatarLectureResponse(BaseModel):
     source_filename: Optional[str] = None
     duration_minutes: int
     style: str
+    language: str = "ru"
     auto_summary: bool
     status: str
     rejection_reason: Optional[str] = None
