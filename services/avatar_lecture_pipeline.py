@@ -14,35 +14,44 @@ logger = logging.getLogger(__name__)
 INTRO_VIDEO_SLIDE_INDEX = 0
 
 
-async def _ensure_slide_images(db: Session, lecture: AvatarLecture, slides: list) -> None:
-    """Гарантирует, что у слайдов есть картинки презентации. Пока картинки не
-    готовы, лекция остаётся в статусе generating — иначе бы получалось, что
-    аудио уже читается, а на экране слайды всё ещё «готовятся».
+async def _ensure_slide_images(db: Session, lecture: AvatarLecture, slides: list) -> str | None:
+    """Гарантирует, что у слайдов есть картинки презентации. Возвращает None
+    при успехе или текст ошибки для пользователя, если презентацию отрендерить
+    не удалось — в этом случае генерацию нужно останавливать, а не выпускать
+    «готовую» лекцию, в которой аватар читает текст на фоне вечного
+    «презентация готовится».
 
     Если рендер при создании лекции не удался (например, не было LibreOffice/
     poppler), дорендериваем здесь из исходного файла."""
     if all(s.slide_image_url for s in slides):
-        return
+        return None
     if not lecture.source_file_url or not is_safe_fetch_url(lecture.source_file_url):
         logger.warning("Лекция %s: нет безопасного source_file_url для рендера слайдов", lecture.id)
-        return
+        return "Исходный файл лекции недоступен — не из чего отрендерить презентацию"
 
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.get(lecture.source_file_url)
         if not resp.is_success:
             logger.warning("Лекция %s: не удалось скачать исходник для рендера слайдов", lecture.id)
-            return
+            return "Не удалось скачать исходный файл лекции для рендера презентации"
         filename = lecture.source_filename or lecture.source_file_url.split("/")[-1]
         images = slide_extractor.render_slide_images(resp.content, filename, count=len(slides))
     except Exception:
         logger.exception("Лекция %s: ошибка рендера картинок слайдов", lecture.id)
-        return
+        return "Ошибка рендера презентации"
 
     for slide, img in zip(slides, images):
         if img and not slide.slide_image_url:
             slide.slide_image_url = img
     db.commit()
+
+    if not all(s.slide_image_url for s in slides):
+        return (
+            "Не удалось отрендерить слайды презентации — проверьте, что на сервере "
+            "установлены LibreOffice (soffice) и poppler (pdftoppm)"
+        )
+    return None
 
 
 async def run_lecture_generation(lecture_id: int, org_type: str = "university") -> None:
@@ -71,9 +80,16 @@ async def run_lecture_generation(lecture_id: int, org_type: str = "university") 
             db.commit()
             return
 
-        # Сначала готовим презентацию (картинки слайдов): пока она не готова,
-        # лекция должна оставаться в generating, а не «читаться» без слайдов.
-        await _ensure_slide_images(db, lecture, slides)
+        # Сначала готовим презентацию (картинки слайдов). Если она не
+        # отрендерилась — останавливаемся с понятной ошибкой до генерации
+        # текста и озвучки: «готовая» лекция без слайдов выглядит как вечное
+        # «презентация готовится», а деньги на TTS уже потрачены.
+        slide_images_error = await _ensure_slide_images(db, lecture, slides)
+        if slide_images_error:
+            lecture.status = "failed"
+            lecture.error_message = slide_images_error
+            db.commit()
+            return
 
         slide_texts = [s.slide_source_text or "" for s in slides]
 

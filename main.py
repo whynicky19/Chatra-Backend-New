@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from starlette.staticfiles import StaticFiles
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from db import Base, engine, get_engine
 from models import Base
 from routers import auth, admin, users, posts, chats, messages, reactions, uploads, ai, avatars
@@ -82,6 +83,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Сжатие JSON-ответов: списки постов/классов с текстами лекций ужимаются в разы.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 app.include_router(auth.router)
 app.include_router(admin.router)

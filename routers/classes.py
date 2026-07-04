@@ -4,10 +4,12 @@ from sqlalchemy.orm import Session
 
 import schemas
 from crud import classes as crud
-from models import Class
+from models import Class, class_members
 from db import get_db
 from deps import get_current_user, get_current_teacher
+from services.image_storage import convert_cover_if_data_uri
 from services.rate_limit import RateLimiter
+from sqlalchemy import func
 
 router = APIRouter(prefix="/classes", tags=["Classes"])
 
@@ -32,6 +34,21 @@ def _to_class_response(obj: Class, current_user, member_count: Optional[int] = N
     return resp
 
 
+def _member_counts(db: Session, class_ids: List[int]) -> dict:
+    """Количество участников по классам одним агрегатным запросом — вместо
+    len(c.members), который лениво тащил полные строки всех участников
+    каждого класса (N+1)."""
+    if not class_ids:
+        return {}
+    rows = (
+        db.query(class_members.c.class_id, func.count(class_members.c.user_id))
+        .filter(class_members.c.class_id.in_(class_ids))
+        .group_by(class_members.c.class_id)
+        .all()
+    )
+    return dict(rows)
+
+
 
 
 @router.get("/all", response_model=List[schemas.ClassResponse])
@@ -40,10 +57,11 @@ def list_all_classes(
     current_user=Depends(get_current_user),
 ):
     classes = crud.get_all_classes(db, org_type=current_user.org_type)
+    counts = _member_counts(db, [c.id for c in classes])
     result = []
     for c in classes:
         resp = schemas.ClassResponse.model_validate(c)
-        resp.member_count = len(c.members)
+        resp.member_count = counts.get(c.id, 0)
         resp.invite_code = None
         result.append(resp)
     return result
@@ -63,7 +81,8 @@ def list_classes(
     else:
         teacher_id = current_user.id if my_only else None
         classes = crud.get_all_classes(db, teacher_id=teacher_id, org_type=current_user.org_type)
-    result = [_to_class_response(c, current_user, member_count=len(c.members)) for c in classes]
+    counts = _member_counts(db, [c.id for c in classes])
+    result = [_to_class_response(c, current_user, member_count=counts.get(c.id, 0)) for c in classes]
     return result
 
 
@@ -76,7 +95,8 @@ def create_class(
     obj = crud.create_class(db, name=body.name, description=body.description,
                             created_by=current_user.id,
                             org_type=current_user.org_type,
-                            cover_image=body.cover_image, teacher=body.teacher,
+                            cover_image=convert_cover_if_data_uri(body.cover_image),
+                            teacher=body.teacher,
                             period=body.period)
     return _to_class_response(obj, current_user, member_count=0)
 
@@ -122,7 +142,10 @@ def update_class(
     obj = crud.get_class(db, class_id)
     if not obj or obj.org_type != current_user.org_type:
         raise HTTPException(status_code=404, detail="Класс не найден")
-    obj = crud.update_class(db, class_id, body.model_dump(exclude_none=True))
+    data = body.model_dump(exclude_none=True)
+    if "cover_image" in data:
+        data["cover_image"] = convert_cover_if_data_uri(data["cover_image"])
+    obj = crud.update_class(db, class_id, data)
     return _to_class_response(obj, current_user, member_count=len(obj.members))
 
 

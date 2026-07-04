@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from sqlalchemy.orm import Session
-from models import Assignment, Submission, Grade
+from models import Assignment, Submission, Grade, User
 
 def create_assignment(
     db: Session,
@@ -34,10 +34,16 @@ def create_assignment(
 def get_assignment(db: Session, assignment_id: int) -> Optional[Assignment]:
     return db.query(Assignment).filter(Assignment.id == assignment_id).first()
 
-def get_all_assignments(db: Session, class_id: Optional[int] = None, active_only: bool = False) -> List[Assignment]:
+def get_all_assignments(db: Session, class_id: Optional[int] = None, active_only: bool = False,
+                        org_type: Optional[str] = None) -> List[Assignment]:
     q = db.query(Assignment)
     if class_id is not None:
         q = q.filter(Assignment.class_id == class_id)
+    if org_type is not None:
+        # Организация задания определяется по его создателю: у части заданий
+        # class_id исторически ссылается на легаси-посты, поэтому фильтровать
+        # через таблицу classes нельзя.
+        q = q.join(User, User.id == Assignment.created_by).filter(User.org_type == org_type)
     if active_only:
         q = q.filter(Assignment.is_active == True)
     return q.order_by(Assignment.created_at.desc()).all()

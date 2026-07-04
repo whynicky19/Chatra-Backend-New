@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, status, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -26,21 +26,40 @@ def _check_post_org(db: Session, post: Posts, current_user) -> None:
         raise HTTPException(status_code=404, detail="Post not found")
 
 
+def _convert_body_cover(body: str) -> str:
+    """Легаси-посты «типа класс» несут base64-обложку прямо в JSON-теле
+    (100-150 КБ на пост), и она уезжает в каждый ответ /posts/. Здесь
+    data-URI один раз сохраняется файлом в uploads/, а в теле остаётся URL."""
+    if not body or '"cover_image":"data:' not in body.replace(" ", ""):
+        return body
+    try:
+        import json
+        from services.image_storage import convert_cover_if_data_uri
+        parsed = json.loads(body)
+        if isinstance(parsed, dict) and isinstance(parsed.get("cover_image"), str):
+            parsed["cover_image"] = convert_cover_if_data_uri(parsed["cover_image"])
+            return json.dumps(parsed, ensure_ascii=False)
+    except Exception:
+        pass
+    return body
+
+
 @router.post("/create", response_model=schemas.PostResponse, status_code=status.HTTP_201_CREATED)
 def create_post(
     post: schemas.PostCreate,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    return crud_posts.create_new_post(db=db, title=post.title, body=post.body, user_id=current_user.id)
+    return crud_posts.create_new_post(db=db, title=post.title, body=_convert_body_cover(post.body), user_id=current_user.id)
 
 
 @router.get("/", response_model=List[schemas.PostResponse])
 def get_posts_for_user(
+    class_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    return crud_posts.get_all_posts(db=db, org_type=current_user.org_type)
+    return crud_posts.get_all_posts(db=db, org_type=current_user.org_type, class_id=class_id)
 
 
 @router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -105,4 +124,4 @@ def update_post(
     _check_post_org(db, existing, current_user)
     if existing.user_id != current_user.id and current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Not authorized")
-    return crud_posts.update_post(db=db, post_id=post_id, title=post.title, body=post.body)
+    return crud_posts.update_post(db=db, post_id=post_id, title=post.title, body=_convert_body_cover(post.body))

@@ -1,5 +1,6 @@
 import os
 import io
+from collections import OrderedDict
 from uuid import uuid4
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from fastapi.responses import JSONResponse
@@ -83,6 +84,13 @@ def _validate_file_content(content: bytes, ext: str) -> bool:
     return True
 
 
+# Кэш извлечённого текста: файлы в uploads/ неизменяемые (UUID-имена),
+# поэтому распарсенный PDF/pptx можно переиспользовать между запросами —
+# без кэша каждый вход в класс заново скачивал и парсил все файлы.
+_file_text_cache: "OrderedDict[str, str]" = OrderedDict()
+_FILE_TEXT_CACHE_MAX = 256
+
+
 @router.get("/utils/file-text")
 async def get_file_text(
     url: str,
@@ -93,8 +101,16 @@ async def get_file_text(
     from services.url_safety import is_safe_fetch_url
     if not is_safe_fetch_url(url):
         raise HTTPException(status_code=400, detail="Недопустимый URL файла")
+    cached = _file_text_cache.get(url)
+    if cached is not None:
+        _file_text_cache.move_to_end(url)
+        return {"text": cached}
     from services.ai_grader import _fetch_file_text
     text = await _fetch_file_text(url)
+    if text:
+        _file_text_cache[url] = text
+        if len(_file_text_cache) > _FILE_TEXT_CACHE_MAX:
+            _file_text_cache.popitem(last=False)
     return {"text": text}
 
 

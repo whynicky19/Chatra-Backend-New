@@ -80,7 +80,8 @@ def list_assignments(
         if cls and cls.org_type != current_user.org_type:
             raise HTTPException(status_code=404, detail="Assignment not found")
         require_class_access(db, class_id, current_user)
-    return crud.get_all_assignments(db, class_id=class_id, active_only=active_only)
+    return crud.get_all_assignments(db, class_id=class_id, active_only=active_only,
+                                    org_type=current_user.org_type)
 
 
 # NOTE: Must be before /assignments/{assignment_id}
