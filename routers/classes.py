@@ -251,6 +251,24 @@ def _require_active_cohort_for_join(db: Session, class_id: int) -> None:
         raise HTTPException(status_code=409, detail="no_active_cohort")
 
 
+def _guard_self_rejoin(db: Session, class_id: int, current_user) -> None:
+    """Самостоятельный вход по коду закрыт для того, кто уже состоял в любом
+    потоке класса, но не в активном (т.е. его учебный год ушёл в архив после
+    rollover). Иначе архив обходится повторным вводом кода. Вернуть доступ
+    (зачислить в новый поток) может только преподаватель/админ через
+    POST /classes/{id}/members. Преподаватели/админы сюда не попадают —
+    у них своя org-проверка в эндпоинтах."""
+    if current_user.role != "student":
+        return
+    active = crud_cohorts.get_active_cohort(db, class_id)
+    # Уже в активном потоке — повторный вход идемпотентен, ничего не блокируем.
+    if active is not None and crud_cohorts.is_cohort_member(db, active.id, current_user.id):
+        return
+    # Состоит только в архивных потоках — вход заблокирован.
+    if crud_cohorts.is_member_of_any_cohort(db, class_id, current_user.id):
+        raise HTTPException(status_code=403, detail="archived_rejoin_blocked")
+
+
 @router.post("/{class_id}/members", status_code=status.HTTP_201_CREATED)
 def add_member(
     class_id: int,
@@ -281,6 +299,7 @@ def join_class(
     if obj.org_type != current_user.org_type:
         raise HTTPException(status_code=403, detail="Нельзя вступить в класс другой организации")
 
+    _guard_self_rejoin(db, class_id, current_user)
     _require_active_cohort_for_join(db, class_id)
     ok = crud.add_member(db, class_id, current_user.id)
     if not ok:
@@ -303,6 +322,7 @@ def join_class_by_code(
     if not obj or obj.org_type != current_user.org_type:
         raise HTTPException(status_code=404, detail="class_not_found")
 
+    _guard_self_rejoin(db, obj.id, current_user)
     _require_active_cohort_for_join(db, obj.id)
     ok = crud.add_member(db, obj.id, current_user.id)
     if not ok:

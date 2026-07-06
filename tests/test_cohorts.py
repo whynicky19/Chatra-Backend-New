@@ -157,6 +157,75 @@ def test_new_student_joins_new_cohort_and_does_not_see_others(client, db_session
     assert [s["id"] for s in subs] == [old_sub["id"]]
 
 
+def test_archived_student_cannot_self_rejoin(client, db_session):
+    """После rollover ученик остаётся только в архивном потоке. Повторный ввод
+    кода не должен возвращать ему доступ — только преподаватель/админ может
+    зачислить его в новый поток."""
+    teacher = make_user(db_session, role="teacher")
+    student = make_user(db_session, role="student")
+    cls, _ = _setup_class(client, db_session, teacher)
+    client.post("/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
+
+    _rollover(client, teacher, cls["id"])
+
+    resp = client.post(
+        "/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student)
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "archived_rejoin_blocked"
+
+    # Класс по-прежнему архивный, в активный поток ученик не попал.
+    active = _active_cohort(db_session, cls["id"])
+    assert db_session.execute(
+        cohort_students.select().where(
+            cohort_students.c.cohort_id == active.id,
+            cohort_students.c.student_id == student.id,
+        )
+    ).fetchone() is None
+
+
+def test_active_member_rejoin_is_idempotent(client, db_session):
+    """Ученик уже в активном потоке: повторный ввод кода — не ошибка."""
+    teacher = make_user(db_session, role="teacher")
+    student = make_user(db_session, role="student")
+    cls, _ = _setup_class(client, db_session, teacher)
+    client.post("/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
+
+    resp = client.post(
+        "/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student)
+    )
+    assert resp.status_code == 200
+
+
+def test_teacher_can_readd_archived_student(client, db_session):
+    """Вернуть архивного ученика в новый поток может преподаватель через
+    POST /classes/{id}/members — обход политики только для teacher/admin."""
+    teacher = make_user(db_session, role="teacher")
+    student = make_user(db_session, role="student")
+    cls, _ = _setup_class(client, db_session, teacher)
+    client.post("/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
+
+    _rollover(client, teacher, cls["id"])
+
+    resp = client.post(
+        f"/classes/{cls['id']}/members",
+        json={"user_id": student.id},
+        headers=auth_headers(teacher),
+    )
+    assert resp.status_code == 201
+
+    active = _active_cohort(db_session, cls["id"])
+    assert db_session.execute(
+        cohort_students.select().where(
+            cohort_students.c.cohort_id == active.id,
+            cohort_students.c.student_id == student.id,
+        )
+    ).fetchone() is not None
+    # Теперь ученик снова в активном потоке — класс не архивный.
+    one = client.get(f"/classes/{cls['id']}", headers=auth_headers(student)).json()
+    assert one["is_archived_for_user"] is False
+
+
 def test_rollover_shifts_deadlines_by_start_date_diff(client, db_session):
     teacher = make_user(db_session, role="teacher")
     cls, assignment = _setup_class(client, db_session, teacher, deadline="2025-10-01T23:59:00")
