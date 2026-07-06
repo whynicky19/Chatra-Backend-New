@@ -2,7 +2,7 @@ from typing import Optional, List
 from sqlalchemy.orm import Session
 from models import (
     Class, User, AssignmentVariant, Assignment, Submission, Grade, Deadline,
-    class_members, cohort_students,
+    Cohort, class_members, cohort_students,
 )
 from sqlalchemy import func
 from services.invite_codes import generate_unique_code
@@ -65,6 +65,19 @@ def delete_class(db: Session, class_id: int) -> bool:
     obj = get_class(db, class_id)
     if not obj:
         return False
+    # Удаление класса каскадит на потоки → дедлайны, но submissions.deadline_id
+    # ссылается на дедлайны без ON DELETE (FK submissions_deadline_id_fkey).
+    # Обнуляем ссылки заранее, иначе ForeignKeyViolation. Сами сдачи — история
+    # ученика, их не трогаем (для них останется fallback assignment.deadline).
+    deadline_ids = (
+        db.query(Deadline.id)
+        .join(Cohort, Cohort.id == Deadline.cohort_id)
+        .filter(Cohort.class_id == class_id)
+        .subquery()
+    )
+    db.query(Submission).filter(Submission.deadline_id.in_(deadline_ids)).update(
+        {Submission.deadline_id: None}, synchronize_session=False
+    )
     db.delete(obj)
     db.commit()
     return True
