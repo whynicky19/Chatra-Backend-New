@@ -1,5 +1,6 @@
 import json as _json
 from datetime import datetime
+from utils.time import utcnow
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -8,10 +9,11 @@ from sqlalchemy.orm import Session
 import schemas
 from crud import assignments as crud
 from crud import classes as crud_classes
+from crud import cohorts as crud_cohorts
 from db import get_db
 from deps import get_current_user, get_current_teacher
 from models import Class as ClassModel
-from permissions import require_class_access
+from permissions import require_class_access, require_active_cohort_access
 from services.ai_grader import grade_submission as _ai_grade
 from routers.ai import _check_rate_limit
 
@@ -26,9 +28,22 @@ def _check_assignment_org(db: Session, assignment, current_user):
 
 
 def _check_assignment_access(db: Session, assignment, current_user):
-    """Org-проверка + студент должен состоять в классе задания."""
+    """Org-проверка + студент должен состоять в классе задания. Задание с
+    неопубликованным дедлайном (черновик после rollover) для студента потока
+    скрыто целиком — отдаём 404, как будто его нет."""
     _check_assignment_org(db, assignment, current_user)
     require_class_access(db, assignment.class_id, current_user)
+    if crud_cohorts.is_hidden_for_user(db, assignment, current_user):
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+
+def _with_cohort_deadline(assignment, due_date) -> schemas.AssignmentResponseFull:
+    """Ответ задания с датой дедлайна из потока пользователя (единая логика
+    в crud_cohorts.resolve_deadline/deadlines_map). ORM-объект не мутируем —
+    случайный commit записал бы чужую дату в deprecated-поле."""
+    resp = schemas.AssignmentResponseFull.model_validate(assignment)
+    resp.deadline = due_date
+    return resp
 
 
 def _check_submission_org(db: Session, submission, current_user):
@@ -65,6 +80,13 @@ def create_assignment(
         created_by=current_user.id,
         reference_solution_url=body.reference_solution_url,
     )
+    # Дедлайн дублируется в активный поток класса — источник правды теперь
+    # таблица deadlines, поле задания остаётся для обратной совместимости.
+    if body.deadline:
+        cohort = crud_cohorts.get_active_cohort(db, body.class_id)
+        if cohort:
+            crud_cohorts.upsert_deadline(db, cohort.id, obj.id, body.deadline, is_published=True)
+            db.commit()
     return obj
 
 
@@ -80,8 +102,15 @@ def list_assignments(
         if cls and cls.org_type != current_user.org_type:
             raise HTTPException(status_code=404, detail="Assignment not found")
         require_class_access(db, class_id, current_user)
-    return crud.get_all_assignments(db, class_id=class_id, active_only=active_only,
-                                    org_type=current_user.org_type)
+    items = crud.get_all_assignments(db, class_id=class_id, active_only=active_only,
+                                     org_type=current_user.org_type)
+    # Задания-черновики (неопубликованный дедлайн потока) не показываем ученикам.
+    dmap, hidden = crud_cohorts.deadlines_map(db, items, current_user)
+    return [
+        _with_cohort_deadline(a, dmap.get(a.id, a.deadline))
+        for a in items
+        if a.id not in hidden
+    ]
 
 
 # NOTE: Must be before /assignments/{assignment_id}
@@ -148,7 +177,8 @@ def get_assignment(
     if not obj:
         raise HTTPException(status_code=404, detail="Assignment not found")
     _check_assignment_access(db, obj, current_user)
-    return obj
+    _, due_date = crud_cohorts.resolve_deadline(db, obj, current_user)
+    return _with_cohort_deadline(obj, due_date)
 
 
 @router.put("/assignments/{assignment_id}", response_model=schemas.AssignmentResponseFull)
@@ -164,6 +194,13 @@ def update_assignment(
     _check_assignment_org(db, obj, current_user)
     data = body.model_dump(exclude_none=True)
     obj = crud.update_assignment(db, assignment_id, data)
+    # Правка дедлайна задания = правка дедлайна АКТИВНОГО потока (архивные
+    # годы не трогаем). Точечная правка по потокам — PATCH дедлайнов потока.
+    if "deadline" in data:
+        cohort = crud_cohorts.get_active_cohort(db, obj.class_id)
+        if cohort:
+            crud_cohorts.upsert_deadline(db, cohort.id, obj.id, data["deadline"], is_published=True)
+            db.commit()
     return obj
 
 
@@ -255,6 +292,9 @@ def submit_assignment(
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
     _check_assignment_access(db, assignment, current_user)
+    # Сдавать можно только в активном потоке; архивный ученик получает 403
+    # с понятным сообщением (класс для него read-only).
+    require_active_cohort_access(db, assignment.class_id, current_user)
     if not assignment.is_active:
         raise HTTPException(status_code=400, detail="Assignment is closed")
 
@@ -279,7 +319,10 @@ def submit_assignment(
                 detail=f"Вариант {body.variant_number} не найден. Доступные: {valid_numbers}",
             )
 
-    is_late = bool(assignment.deadline and datetime.utcnow() > assignment.deadline)
+    # Просрочка — по дедлайну потока ученика (fallback на deprecated-поле
+    # задания внутри resolve_deadline); сдача якорится к deadline_id.
+    deadline_row, due_date = crud_cohorts.resolve_deadline(db, assignment, current_user)
+    is_late = bool(due_date and utcnow() > due_date)
 
     all_file_urls: list = []
     if body.file_url:
@@ -292,6 +335,7 @@ def submit_assignment(
     sub_obj = Submission(
         assignment_id=assignment_id,
         student_id=current_user.id,
+        deadline_id=deadline_row.id if deadline_row else None,
         text_content=body.text_content,
         file_url=all_file_urls[0] if all_file_urls else None,
         file_urls=json.dumps(all_file_urls) if all_file_urls else None,
@@ -310,14 +354,23 @@ def submit_assignment(
 )
 def get_submissions(
     assignment_id: int,
+    cohort_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_teacher),
 ):
+    """Сдачи активного потока; cohort_id — просмотр прошлых лет.
+    Класс без потоков (легаси class_id) — все сдачи, как раньше."""
     assignment = crud.get_assignment(db, assignment_id)
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
     _check_assignment_org(db, assignment, current_user)
-    subs = crud.get_submissions_for_assignment(db, assignment_id)
+    if cohort_id is not None:
+        cohort = crud_cohorts.get_cohort(db, cohort_id)
+        if not cohort or cohort.class_id != assignment.class_id:
+            raise HTTPException(status_code=404, detail="Поток не найден")
+    else:
+        cohort = crud_cohorts.get_active_cohort(db, assignment.class_id)
+    subs = crud.get_submissions_for_assignment(db, assignment_id, cohort=cohort)
 
     # Enrich with student ФИО
     from models import User

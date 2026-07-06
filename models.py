@@ -1,9 +1,11 @@
 from sqlalchemy import (
-    String, Integer, Boolean, ForeignKey, Column, Text, DateTime, Table
+    String, Integer, Boolean, ForeignKey, Column, Text, DateTime, Date, Table,
+    UniqueConstraint, Index, text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from datetime import datetime
+from datetime import datetime, date
 from db import Base
+from utils.time import utcnow
 
 post_enrollments = Table(
     "post_enrollments",
@@ -17,6 +19,17 @@ class_members = Table(
     Base.metadata,
     Column("class_id", Integer, ForeignKey("classes.id", ondelete="CASCADE")),
     Column("user_id",  Integer, ForeignKey("users.id",  ondelete="CASCADE")),
+)
+
+# Членство в конкретном потоке (учебном годе) класса. class_members остаётся
+# и продолжает наполняться при вступлении (двойная запись) — её читают
+# permissions.py и легаси-скрипты; уберём отдельной задачей после переезда.
+cohort_students = Table(
+    "cohort_students",
+    Base.metadata,
+    Column("cohort_id", Integer, ForeignKey("cohorts.id", ondelete="CASCADE"), primary_key=True),
+    Column("student_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("joined_at", DateTime, default=utcnow),
 )
 
 chat_members = Table(
@@ -33,7 +46,7 @@ class Class(Base):
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=True)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     org_type: Mapped[str] = mapped_column(String, nullable=False, default="university")
@@ -44,12 +57,84 @@ class Class(Base):
     teacher: Mapped[str] = mapped_column(String(200), nullable=True)
     period: Mapped[str] = mapped_column(String(100), nullable=True)
 
+    # 'manual' — потоки создаются/архивируются только вручную;
+    # 'yearly' — класс участвует в ежегодном rollover (POST /rollover).
+    rotation_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="manual", server_default="manual"
+    )
+
     creator: Mapped["User"] = relationship(back_populates="classes_created", foreign_keys=[created_by])
     members: Mapped[list["User"]] = relationship(
         "User",
         secondary=class_members,
         back_populates="classes",
     )
+    cohorts: Mapped[list["Cohort"]] = relationship(
+        back_populates="klass",
+        cascade="all, delete-orphan",
+        order_by="Cohort.start_date.desc()",
+    )
+
+
+class Cohort(Base):
+    """Поток — конкретный учебный год класса. Класс = вечный шаблон
+    (лекции, материалы, задания), поток = набор учеников и дедлайны года."""
+    __tablename__ = "cohorts"
+    __table_args__ = (
+        # У одного класса не более одного активного потока (partial unique
+        # index — работает и в Postgres, и в SQLite).
+        Index(
+            "ux_cohorts_one_active_per_class",
+            "class_id",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    class_id: Mapped[int] = mapped_column(
+        ForeignKey("classes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    academic_year: Mapped[str] = mapped_column(String(16), nullable=False)  # «2026/2027»
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")  # active | archived
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    klass: Mapped["Class"] = relationship(back_populates="cohorts")
+    students: Mapped[list["User"]] = relationship(
+        "User",
+        secondary=cohort_students,
+        back_populates="cohorts",
+    )
+    deadlines: Mapped[list["Deadline"]] = relationship(
+        back_populates="cohort",
+        cascade="all, delete-orphan",
+    )
+
+
+class Deadline(Base):
+    """Дедлайн задания в рамках конкретного потока. Заменяет жёсткое поле
+    assignments.deadline: контент общий, а даты у каждого учебного года свои."""
+    __tablename__ = "deadlines"
+    __table_args__ = (
+        UniqueConstraint("cohort_id", "assignment_id", name="ux_deadlines_cohort_assignment"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    cohort_id: Mapped[int] = mapped_column(
+        ForeignKey("cohorts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    assignment_id: Mapped[int] = mapped_column(
+        ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    due_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # После rollover дедлайны создаются черновиками (False) — преподаватель
+    # проверяет сдвинутые даты и публикует; ученикам видны только опубликованные.
+    is_published: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    cohort: Mapped["Cohort"] = relationship(back_populates="deadlines")
+    assignment: Mapped["Assignment"] = relationship()
 
 class User(Base):
     __tablename__ = "users"
@@ -90,6 +175,11 @@ class User(Base):
         secondary=class_members,
         back_populates="members",
     )
+    cohorts: Mapped[list["Cohort"]] = relationship(
+        "Cohort",
+        secondary=cohort_students,
+        back_populates="students",
+    )
 
 class Posts(Base):
     __tablename__ = "posts"
@@ -97,7 +187,7 @@ class Posts(Base):
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
     body: Mapped[str] = mapped_column(String, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     user: Mapped["User"] = relationship(back_populates="posts")
 
@@ -117,7 +207,7 @@ class Message(Base):
 
     id = Column(Integer, primary_key=True)
     content = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     chat_id = Column(Integer, ForeignKey("chats.id"))
     user_id = Column(Integer, ForeignKey("users.id"))
     is_read = Column(Boolean, default=False)
@@ -140,8 +230,11 @@ class Assignment(Base):
     description: Mapped[str] = mapped_column(Text, nullable=True)
     criteria: Mapped[str] = mapped_column(Text, nullable=False)
     max_score: Mapped[int] = mapped_column(Integer, default=100)
+    # DEPRECATED: дедлайны переехали в таблицу deadlines (по потокам).
+    # Поле оставлено для обратной совместимости и как fallback для заданий
+    # с легаси class_id, у которых нет потока. Не удалять до полного переезда.
     deadline: Mapped[datetime] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     reference_solution_url: Mapped[str] = mapped_column(String, nullable=True)
 
@@ -168,7 +261,7 @@ class AssignmentVariant(Base):
     variant_number: Mapped[int] = mapped_column(Integer, nullable=False)
     title: Mapped[str] = mapped_column(String(256), nullable=True)
     reference_solution_url: Mapped[str] = mapped_column(String, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     assignment: Mapped["Assignment"] = relationship(back_populates="variants")
 
@@ -178,13 +271,18 @@ class Submission(Base):
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     assignment_id: Mapped[int] = mapped_column(ForeignKey("assignments.id"), nullable=False)
     student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    # Дедлайн потока, в рамках которого сдана работа. NULL — легаси-сдачи
+    # заданий без потока (битый class_id), для них действует assignment.deadline.
+    deadline_id: Mapped[int] = mapped_column(
+        ForeignKey("deadlines.id"), nullable=True, index=True
+    )
 
     file_url: Mapped[str] = mapped_column(String, nullable=True)
     file_urls: Mapped[str] = mapped_column(Text, nullable=True)
     text_content: Mapped[str] = mapped_column(Text, nullable=True)
     variant_number: Mapped[int] = mapped_column(Integer, nullable=True)
 
-    submitted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     status: Mapped[str] = mapped_column(String, default="submitted")
 
     assignment: Mapped["Assignment"] = relationship(back_populates="submissions")
@@ -208,7 +306,7 @@ class Grade(Base):
     score: Mapped[int] = mapped_column(Integer, nullable=False)
     feedback: Mapped[str] = mapped_column(Text, nullable=True)
     criteria_scores: Mapped[str] = mapped_column(Text, nullable=True)
-    graded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    graded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     graded_by: Mapped[str] = mapped_column(String, default="ai")
 
     submission: Mapped["Submission"] = relationship(back_populates="grade")
@@ -222,7 +320,7 @@ class RagDocument(Base):
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
     org_type: Mapped[str] = mapped_column(String, nullable=False, default="university")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     chunks: Mapped[list["RagChunk"]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
@@ -253,7 +351,7 @@ class AiUsageLog(Base):
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 class ProcessedDocument(Base):
     __tablename__ = "processed_documents"
@@ -266,7 +364,7 @@ class ProcessedDocument(Base):
     format: Mapped[str] = mapped_column(String(32), nullable=False)
     content_json: Mapped[str] = mapped_column(Text, nullable=False)
     token_count: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 
@@ -294,8 +392,8 @@ class TeacherAvatar(Base):
     reviewed_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=True)
     reviewed_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     teacher: Mapped["User"] = relationship(foreign_keys=[teacher_id])
 
@@ -343,8 +441,8 @@ class AvatarLecture(Base):
     estimated_chars: Mapped[int] = mapped_column(Integer, default=0)
     estimated_cost_usd: Mapped[float] = mapped_column(Integer, default=0)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     avatar: Mapped["TeacherAvatar"] = relationship(back_populates="lectures")
     slides: Mapped[list["AvatarLectureSlide"]] = relationship(

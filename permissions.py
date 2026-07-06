@@ -7,7 +7,8 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from models import Chat, class_members
+from models import Chat, Class, class_members
+from crud import cohorts as crud_cohorts
 
 
 def require_chat_member(db: Session, chat_id: int, user_id: int) -> None:
@@ -46,8 +47,40 @@ def is_class_member(db: Session, class_id: int, user_id: int) -> bool:
 
 
 def require_class_access(db: Session, class_id: int, current_user) -> None:
-    """Студент должен состоять в классе; teacher/admin проходят по org-проверке роутера."""
+    """Доступ на ЧТЕНИЕ: студент должен состоять в любом потоке класса
+    (архивный поток = read-only, но виден). Фолбэк на легаси class_members —
+    для классов/баз, где потоки ещё не созданы. Teacher/admin проходят
+    по org-проверке роутера."""
     if current_user.role in ("teacher", "admin"):
+        return
+    if crud_cohorts.is_member_of_any_cohort(db, class_id, current_user.id):
         return
     if not is_class_member(db, class_id, current_user.id):
         raise HTTPException(status_code=403, detail="Вы не состоите в этом классе")
+
+
+def require_active_cohort_access(db: Session, class_id: int, current_user) -> None:
+    """Доступ на ЗАПИСЬ (сдача работ): нужно членство в АКТИВНОМ потоке.
+    Ученик архивного потока получает 403 с понятным сообщением.
+    Преподаватель-владелец класса и админ имеют доступ всегда.
+    Легаси class_id без записи в classes — старое поведение (без потоков)."""
+    cls = db.query(Class).filter(Class.id == class_id).first()
+    if cls is None:
+        return  # легаси-задание, потоков нет — работает assignments.deadline
+    if current_user.role == "admin" or cls.created_by == current_user.id:
+        return
+    cohort = crud_cohorts.get_user_cohort_for_class(db, class_id, current_user.id)
+    if cohort is not None and cohort.status == "active":
+        return
+    if cohort is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Класс доступен только для чтения: ваш учебный год в архиве",
+        )
+    # Не в потоках, но в легаси class_members и активного потока у класса нет
+    # вовсе — база без бэкфилла, ведём себя по-старому.
+    if crud_cohorts.get_active_cohort(db, class_id) is None and is_class_member(
+        db, class_id, current_user.id
+    ):
+        return
+    raise HTTPException(status_code=403, detail="Вы не состоите в этом классе")

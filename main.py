@@ -15,6 +15,7 @@ from models import Base
 from routers import auth, admin, users, posts, chats, messages, reactions, uploads, ai, avatars
 from routers.assignments import router as assignments_router
 from routers.classes import router as classes_router, rating_router
+from routers.cohorts import router as cohorts_router
 from routers.rag import router as rag_router
 from websocket import router as ws_router
 from sqlalchemy import text
@@ -99,6 +100,7 @@ app.include_router(ai.router)
 app.include_router(avatars.router)
 app.include_router(assignments_router)
 app.include_router(classes_router)
+app.include_router(cohorts_router)
 app.include_router(rating_router)
 app.include_router(rag_router)
 

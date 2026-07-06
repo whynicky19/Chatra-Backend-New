@@ -3,6 +3,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 import json
 from datetime import datetime
+from utils.time import utcnow
 from models import User, AiUsageLog, TeacherAvatar, AvatarLecture, Class as ClassModel
 from crud import classes as crud_classes
 import schemas
@@ -241,7 +242,7 @@ async def review_avatar(
         raise HTTPException(status_code=409, detail="Заявка уже рассмотрена")
 
     avatar.reviewed_by = current_user.id
-    avatar.reviewed_at = datetime.utcnow()
+    avatar.reviewed_at = utcnow()
 
     if not body.approve:
         avatar.status = "rejected"
@@ -346,7 +347,7 @@ def review_avatar_lecture(
         raise HTTPException(status_code=409, detail="Лекция уже рассмотрена")
 
     lecture.reviewed_by = current_user.id
-    lecture.reviewed_at = datetime.utcnow()
+    lecture.reviewed_at = utcnow()
 
     if not body.approve:
         lecture.status = "rejected"

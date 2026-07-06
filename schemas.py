@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from typing import Optional, List, Any
-from datetime import datetime
+from datetime import date, datetime
 
 # Единственный источник правды по допустимым ролям — валидируется везде,
 # где роль приходит от клиента (регистрация запрещает её вовсе).
@@ -228,6 +228,10 @@ class ClassResponse(BaseModel):
     cover_image: Optional[str] = None
     teacher: Optional[str] = None
     period: Optional[str] = None
+    rotation_mode: str = "manual"
+    # True — пользователь состоит только в архивных потоках класса:
+    # класс для него read-only (сдача работ вернёт 403).
+    is_archived_for_user: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -279,6 +283,69 @@ class StudentRatingResponse(BaseModel):
     ratings: List[StudentRatingEntry]
 
 
+
+
+class CohortResponse(BaseModel):
+    id: int
+    class_id: int
+    academic_year: str
+    start_date: date
+    status: str
+    created_at: datetime
+    student_count: Optional[int] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DeadlineResponse(BaseModel):
+    id: int
+    cohort_id: int
+    assignment_id: int
+    # Название задания — чтобы экран проверки дедлайнов не показывал голые id.
+    assignment_title: Optional[str] = None
+    due_date: datetime
+    is_published: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DeadlineUpdate(BaseModel):
+    due_date: Optional[datetime] = None
+    is_published: Optional[bool] = None
+
+
+class RotationModeUpdate(BaseModel):
+    rotation_mode: str
+
+    @field_validator("rotation_mode")
+    @classmethod
+    def _mode_valid(cls, v):
+        if v not in ("manual", "yearly"):
+            raise ValueError("rotation_mode must be 'manual' or 'yearly'")
+        return v
+
+
+class RolloverPreviewItem(BaseModel):
+    class_id: int
+    class_name: str
+    cohort_id: int
+    academic_year: str
+    student_count: int
+    assignment_count: int
+
+
+class RolloverRequest(BaseModel):
+    class_ids: List[int]
+    new_academic_year: str = Field(pattern=r"^\d{4}/\d{4}$")
+    new_start_date: date
+
+
+class RolloverResultItem(BaseModel):
+    # status: rolled | already_rolled | no_active_cohort | conflict
+    class_id: int
+    status: str
+    new_cohort_id: Optional[int] = None
+    deadlines_created: int = 0
 
 
 class TeacherAvatarCreate(BaseModel):

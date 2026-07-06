@@ -1,9 +1,11 @@
 import json
 from datetime import datetime
+from utils.time import utcnow
 from typing import Optional, List
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
-from models import Assignment, Submission, Grade, User
+from models import Assignment, Submission, Grade, User, Cohort, Deadline, cohort_students
 
 def create_assignment(
     db: Session,
@@ -95,13 +97,26 @@ def create_submission(
 def get_submission(db: Session, submission_id: int) -> Optional[Submission]:
     return db.query(Submission).filter(Submission.id == submission_id).first()
 
-def get_submissions_for_assignment(db: Session, assignment_id: int) -> List[Submission]:
-    return (
-        db.query(Submission)
-        .filter(Submission.assignment_id == assignment_id)
-        .order_by(Submission.submitted_at.desc())
-        .all()
-    )
+def get_submissions_for_assignment(db: Session, assignment_id: int,
+                                   cohort: Optional[Cohort] = None) -> List[Submission]:
+    """Сдачи задания; с cohort — только его учебного года: сдачи учеников
+    потока плюс сдачи, заякоренные на дедлайн потока (ученик мог быть
+    исключён из потока позже)."""
+    q = db.query(Submission).filter(Submission.assignment_id == assignment_id)
+    if cohort is not None:
+        q = q.filter(
+            or_(
+                Submission.student_id.in_(
+                    db.query(cohort_students.c.student_id).filter(
+                        cohort_students.c.cohort_id == cohort.id
+                    )
+                ),
+                Submission.deadline_id.in_(
+                    db.query(Deadline.id).filter(Deadline.cohort_id == cohort.id)
+                ),
+            )
+        )
+    return q.order_by(Submission.submitted_at.desc()).all()
 
 def get_submissions_for_student(db: Session, student_id: int) -> List[Submission]:
     return (
@@ -162,7 +177,7 @@ def create_or_update_grade(
         existing.feedback = feedback
         existing.criteria_scores = criteria_json
         existing.graded_by = graded_by
-        existing.graded_at = datetime.utcnow()
+        existing.graded_at = utcnow()
         db.commit()
         db.refresh(existing)
         return existing

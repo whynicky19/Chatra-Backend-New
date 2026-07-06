@@ -1,8 +1,12 @@
 from typing import Optional, List
 from sqlalchemy.orm import Session
-from models import Class, User, AssignmentVariant, Assignment, Submission, Grade, class_members
+from models import (
+    Class, User, AssignmentVariant, Assignment, Submission, Grade, Deadline,
+    class_members, cohort_students,
+)
 from sqlalchemy import func
 from services.invite_codes import generate_unique_code
+from crud import cohorts as crud_cohorts
 
 def create_class(db: Session, name: str, description: Optional[str], created_by: int,
                  org_type: str = "university",
@@ -14,6 +18,10 @@ def create_class(db: Session, name: str, description: Optional[str], created_by:
         invite_code=generate_unique_code(db),
     )
     db.add(obj)
+    db.flush()
+    # Сразу создаём активный поток текущего учебного года — без него в класс
+    # нельзя вступить по коду.
+    crud_cohorts.create_initial_cohort(db, obj.id)
     db.commit()
     db.refresh(obj)
     return obj
@@ -62,32 +70,57 @@ def delete_class(db: Session, class_id: int) -> bool:
     return True
 
 def add_member(db: Session, class_id: int, user_id: int) -> bool:
+    """Вступление = членство в АКТИВНОМ потоке. class_members продолжает
+    наполняться (двойная запись): её читают permissions.py и легаси-скрипты;
+    уберём отдельной задачей после переезда."""
     obj = get_class(db, class_id)
     if not obj:
         return False
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         return False
+    cohort = crud_cohorts.get_active_cohort(db, class_id)
+    if cohort:
+        crud_cohorts.add_student_to_cohort(db, cohort.id, user_id)
     if user not in obj.members:
         obj.members.append(user)
-        db.commit()
+    db.commit()
     return True
 
 def remove_member(db: Session, class_id: int, user_id: int) -> bool:
+    """Убирает из активного потока и из легаси class_members. Архивные
+    членства не трогаем — это история прошлых учебных лет."""
     obj = get_class(db, class_id)
     if not obj:
         return False
+    cohort = crud_cohorts.get_active_cohort(db, class_id)
+    if cohort:
+        crud_cohorts.remove_student_from_cohort(db, cohort.id, user_id)
     user = db.query(User).filter(User.id == user_id).first()
     if user and user in obj.members:
         obj.members.remove(user)
-        db.commit()
+    db.commit()
     return True
 
-def get_members(db: Session, class_id: int) -> List[User]:
+def get_members(db: Session, class_id: int, cohort_id: Optional[int] = None) -> List[User]:
+    """Ученики потока: по умолчанию активного, cohort_id — конкретного
+    (просмотр архива преподавателем). Класс без потоков — легаси class_members."""
     obj = get_class(db, class_id)
     if not obj:
         return []
-    return obj.members
+    cohort = (
+        crud_cohorts.get_cohort(db, cohort_id)
+        if cohort_id is not None
+        else crud_cohorts.get_active_cohort(db, class_id)
+    )
+    if cohort is None:
+        return obj.members
+    return (
+        db.query(User)
+        .join(cohort_students, cohort_students.c.student_id == User.id)
+        .filter(cohort_students.c.cohort_id == cohort.id)
+        .all()
+    )
 
 def add_variant(
     db: Session,
@@ -138,7 +171,8 @@ def get_variant_by_number(db: Session, assignment_id: int, variant_number: int) 
     ).first()
 
 def get_student_rating(db: Session, class_id: Optional[int] = None,
-                       org_type: Optional[str] = None) -> list:
+                       org_type: Optional[str] = None,
+                       cohort_id: Optional[int] = None) -> list:
     q = (
         db.query(
             User.id.label("student_id"),
@@ -161,6 +195,28 @@ def get_student_rating(db: Session, class_id: Optional[int] = None,
                 db.query(Assignment.id).filter(Assignment.class_id == class_id)
             )
         )
+        # Рейтинг класса считается в рамках потока: по умолчанию активного,
+        # cohort_id — конкретного (архивы для преподавателя). Класс без
+        # потоков — легаси-поведение (весь класс).
+        cohort = (
+            crud_cohorts.get_cohort(db, cohort_id)
+            if cohort_id is not None
+            else crud_cohorts.get_active_cohort(db, class_id)
+        )
+        if cohort is not None:
+            q = q.filter(
+                User.id.in_(
+                    db.query(cohort_students.c.student_id).filter(
+                        cohort_students.c.cohort_id == cohort.id
+                    )
+                ),
+                # Сдачи чужих потоков (например, прошлый год того же ученика)
+                # не попадают в рейтинг; NULL — сдачи заданий без дедлайна.
+                (Submission.deadline_id.is_(None))
+                | Submission.deadline_id.in_(
+                    db.query(Deadline.id).filter(Deadline.cohort_id == cohort.id)
+                ),
+            )
 
     rows = q.group_by(User.id, User.email).order_by(func.sum(Grade.score).desc()).all()
 
