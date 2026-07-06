@@ -353,6 +353,46 @@ class AiUsageLog(Base):
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
+class AiMessage(Base):
+    """Сообщение переписки с ИИ, сохранённое на сервере — чтобы история
+    синхронизировалась между приложением и сайтом на всех устройствах.
+    Тред = все сообщения одного (user_id, class_id) по порядку id.
+    class_id = NULL — глобальный ИИ-экран; иначе — ИИ-вкладка класса."""
+    __tablename__ = "ai_messages"
+    __table_args__ = (
+        Index("ix_ai_messages_thread", "user_id", "class_id", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    class_id: Mapped[int] = mapped_column(Integer, nullable=True)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)  # user | assistant
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class NotificationState(Base):
+    """Состояние прочтения/скрытия одного уведомления пользователя. Список
+    уведомлений выводится из заданий/оценок (серверные данные), а read/dismissed
+    хранятся здесь, чтобы совпадали в приложении и на сайте. notif_key —
+    канонический ключ '{kind}:{ref_id}' (kind: assignment|deadline|grade)."""
+    __tablename__ = "notification_states"
+    __table_args__ = (
+        UniqueConstraint("user_id", "notif_key", name="ux_notification_states_user_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    notif_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    dismissed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class ProcessedDocument(Base):
     __tablename__ = "processed_documents"
 

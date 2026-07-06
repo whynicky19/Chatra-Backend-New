@@ -1,3 +1,4 @@
+import json
 import os
 import httpx
 from typing import List, Optional, Union, Any
@@ -7,6 +8,8 @@ from deps import get_current_user
 from db import get_db
 from services.rate_limit import RateLimiter
 from sqlalchemy.orm import Session
+
+from models import AiMessage
 
 router = APIRouter(prefix="/ai", tags=["AI"])
 
@@ -46,6 +49,43 @@ def _serialize_message(m: ChatMessage) -> dict:
         return {"role": m.role, "content": m.content}
 
     return {"role": m.role, "content": m.content}
+
+
+def _content_to_text(content: Union[str, List[Any]]) -> str:
+    """Плоский текст для хранения истории. Vision-контент (список) сводим к
+    текстовым сегментам — картинки в сохранённую историю не тащим."""
+    if isinstance(content, str):
+        return content
+    parts = []
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "text":
+            parts.append(str(item.get("text", "")))
+    return "\n".join(parts)
+
+
+def _persist_ai_exchange(
+    db: Session, user_id: int, class_id: Optional[int],
+    messages: List[ChatMessage], assistant_content: str,
+) -> None:
+    """Сохраняем дельту переписки: последнее сообщение пользователя + ответ
+    ассистента. Клиент всегда шлёт всю историю, поэтому пишем только новые две
+    строки — дублей нет. Ошибки хранения не должны ломать ответ ИИ."""
+    try:
+        last_user = next(
+            (m for m in reversed(messages) if m.role == "user"), None
+        )
+        if last_user is not None:
+            db.add(AiMessage(
+                user_id=user_id, class_id=class_id, role="user",
+                content=_content_to_text(last_user.content),
+            ))
+        db.add(AiMessage(
+            user_id=user_id, class_id=class_id, role="assistant",
+            content=assistant_content,
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -131,4 +171,88 @@ async def ai_chat(
     except Exception:
         pass
 
+    # Персистим переписку на сервер — история синхронизируется между устройствами.
+    _persist_ai_exchange(db, current_user.id, body.class_id, body.messages, content)
+
     return ChatResponse(content=content)
+
+
+class AiMessageResponse(BaseModel):
+    role: str
+    content: str
+    created_at: Optional[str] = None
+
+
+class AiHistoryImportItem(BaseModel):
+    role: str
+    content: str
+
+
+class AiHistoryImport(BaseModel):
+    class_id: Optional[int] = None
+    messages: List[AiHistoryImportItem]
+
+
+def _history_query(db: Session, user_id: int, class_id: Optional[int]):
+    q = db.query(AiMessage).filter(AiMessage.user_id == user_id)
+    # class_id NULL (глобальный экран) и конкретный класс — разные треды.
+    if class_id is None:
+        q = q.filter(AiMessage.class_id.is_(None))
+    else:
+        q = q.filter(AiMessage.class_id == class_id)
+    return q
+
+
+@router.get("/history", response_model=List[AiMessageResponse])
+def get_ai_history(
+    class_id: Optional[int] = None,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rows = _history_query(db, current_user.id, class_id).order_by(AiMessage.id).all()
+    return [
+        AiMessageResponse(
+            role=r.role, content=r.content,
+            created_at=r.created_at.isoformat() if r.created_at else None,
+        )
+        for r in rows
+    ]
+
+
+@router.delete("/history")
+def clear_ai_history(
+    class_id: Optional[int] = None,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _history_query(db, current_user.id, class_id).delete(synchronize_session=False)
+    db.commit()
+    return {"cleared": True}
+
+
+@router.post("/history/import", response_model=List[AiMessageResponse])
+def import_ai_history(
+    body: AiHistoryImport,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Разовая миграция локальной истории на сервер: льём ТОЛЬКО если серверный
+    тред пуст, иначе возвращаем существующий (идемпотентно, без дублей)."""
+    existing = _history_query(db, current_user.id, body.class_id).order_by(AiMessage.id).all()
+    if not existing:
+        for m in body.messages:
+            if m.role not in ("user", "assistant"):
+                continue
+            db.add(AiMessage(
+                user_id=current_user.id, class_id=body.class_id,
+                role=m.role, content=m.content,
+            ))
+        db.commit()
+        existing = _history_query(db, current_user.id, body.class_id).order_by(AiMessage.id).all()
+    return [
+        AiMessageResponse(
+            role=r.role, content=r.content,
+            created_at=r.created_at.isoformat() if r.created_at else None,
+        )
+        for r in existing
+    ]

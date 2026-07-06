@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from db import Base, engine, get_engine
 from models import Base
-from routers import auth, admin, users, posts, chats, messages, reactions, uploads, ai, avatars
+from routers import auth, admin, users, posts, chats, messages, reactions, uploads, ai, avatars, notifications
 from routers.assignments import router as assignments_router
 from routers.classes import router as classes_router, rating_router
 from routers.cohorts import router as cohorts_router
@@ -97,6 +97,7 @@ app.include_router(ws_router)
 app.include_router(reactions.router)
 app.include_router(uploads.router)
 app.include_router(ai.router)
+app.include_router(notifications.router)
 app.include_router(avatars.router)
 app.include_router(assignments_router)
 app.include_router(classes_router)
