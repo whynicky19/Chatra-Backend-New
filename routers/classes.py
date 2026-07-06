@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 import schemas
 from crud import classes as crud
 from crud import cohorts as crud_cohorts
-from models import Class, Cohort, class_members, cohort_students
+from models import Class, Cohort, User, class_members, cohort_students
 from db import get_db
 from deps import get_current_user, get_current_teacher
 from services.image_storage import convert_cover_if_data_uri
@@ -242,6 +242,35 @@ def get_members(
     if cohort_id is not None:
         _require_cohort_of_class(db, obj, cohort_id, current_user)
     return crud.get_members(db, class_id, cohort_id=cohort_id)
+
+
+@router.get("/{class_id}/rejoinable-students", response_model=List[schemas.UserResponse])
+def rejoinable_students(
+    class_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_teacher),
+):
+    """Студенты, которые состояли в архивных потоках класса (прошлые годы), но
+    сейчас НЕ в активном потоке — кандидаты на возврат в класс. Доступно
+    администратору или владельцу класса. Возврат делает POST /{id}/members."""
+    obj = crud.get_class(db, class_id)
+    if not obj or obj.org_type != current_user.org_type:
+        raise HTTPException(status_code=404, detail="Класс не найден")
+    if not (current_user.role == "admin" or obj.created_by == current_user.id):
+        raise HTTPException(status_code=403, detail="Только администратор или владелец класса")
+
+    active = crud_cohorts.get_active_cohort(db, class_id)
+    active_ids = set(crud_cohorts.get_cohort_student_ids(db, active.id)) if active else set()
+
+    rows = (
+        db.query(User)
+        .join(cohort_students, cohort_students.c.student_id == User.id)
+        .join(Cohort, Cohort.id == cohort_students.c.cohort_id)
+        .filter(Cohort.class_id == class_id, Cohort.status == "archived")
+        .distinct()
+        .all()
+    )
+    return [u for u in rows if u.id not in active_ids]
 
 
 def _require_active_cohort_for_join(db: Session, class_id: int) -> None:

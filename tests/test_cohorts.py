@@ -226,6 +226,36 @@ def test_teacher_can_readd_archived_student(client, db_session):
     assert one["is_archived_for_user"] is False
 
 
+def test_admin_rejoinable_students_and_readd(client, db_session):
+    """Админ видит студентов из архивных потоков (кандидатов на возврат) и может
+    вернуть их в активный поток; после возврата студент исчезает из кандидатов."""
+    admin = make_user(db_session, role="admin")
+    teacher = make_user(db_session, role="teacher")
+    student = make_user(db_session, role="student")
+    cls, _ = _setup_class(client, db_session, teacher)
+    client.post("/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
+
+    _rollover(client, teacher, cls["id"])
+
+    resp = client.get(f"/classes/{cls['id']}/rejoinable-students", headers=auth_headers(admin))
+    assert resp.status_code == 200
+    assert student.id in [u["id"] for u in resp.json()]
+
+    resp = client.post(
+        f"/classes/{cls['id']}/members",
+        json={"user_id": student.id},
+        headers=auth_headers(admin),
+    )
+    assert resp.status_code == 201
+
+    # Уже в активном потоке — больше не кандидат.
+    resp = client.get(f"/classes/{cls['id']}/rejoinable-students", headers=auth_headers(admin))
+    assert student.id not in [u["id"] for u in resp.json()]
+    # И класс для студента больше не архивный.
+    one = client.get(f"/classes/{cls['id']}", headers=auth_headers(student)).json()
+    assert one["is_archived_for_user"] is False
+
+
 def test_rollover_shifts_deadlines_by_start_date_diff(client, db_session):
     teacher = make_user(db_session, role="teacher")
     cls, assignment = _setup_class(client, db_session, teacher, deadline="2025-10-01T23:59:00")
