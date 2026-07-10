@@ -40,8 +40,13 @@ class UserResponse(BaseModel):
     role: str
     full_name: Optional[str] = Field(default=None, max_length=200)
     org_type: str = "university"
+    ai_unlimited: bool = False
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class AiUnlimitedUpdate(BaseModel):
+    unlimited: bool
 
 class UpdateMe(BaseModel):
     full_name: Optional[str] = Field(default=None, max_length=200)

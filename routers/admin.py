@@ -117,6 +117,25 @@ def unblock_user(
 
     return {"message": "User unblocked"}
 
+@router.put("/users/{user_id}/ai_unlimited")
+def set_ai_unlimited(
+    user_id: int,
+    body: schemas.AiUnlimitedUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_admin),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.org_type != current_user.org_type:
+        raise HTTPException(status_code=403, detail="Нет доступа")
+
+    user.ai_unlimited = body.unlimited
+    db.commit()
+
+    return {"message": "AI limit updated", "ai_unlimited": user.ai_unlimited}
+
 @router.delete("/users/{user_id}")
 def delete_user(
     user_id: int,
