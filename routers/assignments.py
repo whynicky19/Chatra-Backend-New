@@ -4,6 +4,7 @@ from utils.time import utcnow
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 import schemas
@@ -353,7 +354,13 @@ def submit_assignment(
         status="late" if is_late else "submitted",
     )
     db.add(sub_obj)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # BE-1: гонка — параллельная сдача успела вставиться между проверкой
+        # student_already_submitted() и этим commit. БД-инвариант отбил дубль.
+        db.rollback()
+        raise HTTPException(status_code=409, detail="You already submitted this assignment")
     db.refresh(sub_obj)
     return sub_obj
 
@@ -382,12 +389,16 @@ def get_submissions(
         cohort = crud_cohorts.get_active_cohort(db, assignment.class_id)
     subs = crud.get_submissions_for_assignment(db, assignment_id, cohort=cohort)
 
-    # Enrich with student ФИО
+    # BE-7: одним запросом тянем всех студентов сдач вместо User-запроса на
+    # каждую сдачу (N+1).
     from models import User
+    student_ids = {sub.student_id for sub in subs}
+    users = (
+        db.query(User).filter(User.id.in_(student_ids)).all() if student_ids else []
+    )
+    names = {u.id: (u.full_name or u.email) for u in users}
     for sub in subs:
-        user = db.query(User).filter(User.id == sub.student_id).first()
-        if user:
-            sub.student_name = user.full_name or user.email
+        sub.student_name = names.get(sub.student_id)
     return subs
 
 
@@ -443,6 +454,10 @@ def delete_submission(
 
     from models import Grade
     db.query(Grade).filter(Grade.submission_id == submission_id).delete()
+    # BE-10: убираем и файлы сдачи с диска до удаления записи (после delete
+    # объект уже не отдаст file_urls). Очистка best-effort, ошибки не роняют запрос.
+    from services.file_cleanup import delete_submission_files
+    delete_submission_files(obj)
     db.delete(obj)
     db.commit()
 
@@ -463,12 +478,18 @@ def save_grade(
         raise HTTPException(status_code=404, detail="Submission not found")
     require_submission_class_owner(db, sub, current_user)  # SEC-2
 
+    # BE-5: клампим балл в [0, max_score] — ИИ-путь это делал, ручной нет,
+    # поэтому преподаватель мог выставить балл выше максимума и сломать проценты.
+    assignment = crud.get_assignment(db, sub.assignment_id)
+    max_score = assignment.max_score if assignment and assignment.max_score else 100
+    clamped_score = max(0, min(body.score, max_score))
+
     crud.set_submission_status(db, submission_id, "graded")
     # graded_by выставляется сервером: ручную оценку нельзя выдать за ИИ-проверку
     return crud.create_or_update_grade(
         db=db,
         submission_id=submission_id,
-        score=body.score,
+        score=clamped_score,
         feedback=body.feedback,
         criteria_scores=body.criteria_scores,
         graded_by="teacher",
@@ -511,6 +532,13 @@ def update_status(
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
     require_submission_class_owner(db, sub, current_user)  # SEC-2
+    # BE-10: нельзя откатить уже проверенную сдачу произвольным статусом —
+    # оценка есть, а «grading/submitted» рассинхронил бы её с UI и переоценкой.
+    if sub.status == "graded" and new_status != "graded":
+        raise HTTPException(
+            status_code=409,
+            detail="Сдача уже проверена; удалите оценку, чтобы изменить статус.",
+        )
     obj = crud.set_submission_status(db, submission_id, new_status)
     return {"id": obj.id, "status": obj.status}
 
@@ -534,6 +562,15 @@ async def ai_grade_submission(
     require_submission_class_owner(db, sub, current_user)  # SEC-2
 
     _check_rate_limit(current_user.id)
+
+    # BE-9: дневной бюджет токенов ИИ на организацию — отбиваем «дорогую»
+    # лавину до обращения к модели.
+    from services.ai_budget import can_spend
+    if not can_spend(db, current_user.org_type):
+        raise HTTPException(
+            status_code=429,
+            detail="Дневной лимит ИИ-проверок для организации исчерпан. Попробуйте завтра.",
+        )
 
     assignment = crud.get_assignment(db, sub.assignment_id)
     criteria = _json.loads(assignment.criteria) if assignment.criteria else []

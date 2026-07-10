@@ -17,7 +17,7 @@ class UserRegister(BaseModel):
     """Схема самостоятельной регистрации: роль клиент задавать не может."""
     email: EmailStr
     password: str = Field(min_length=8)
-    full_name: Optional[str] = None
+    full_name: Optional[str] = Field(default=None, max_length=200)
     org_type: str = "university"
 
     model_config = ConfigDict(from_attributes=True)
@@ -26,7 +26,7 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)
     role: str
-    full_name: Optional[str] = None
+    full_name: Optional[str] = Field(default=None, max_length=200)
     org_type: str = "university"
 
     _role_valid = field_validator("role")(validate_role)
@@ -38,13 +38,13 @@ class UserResponse(BaseModel):
     email: EmailStr
     is_active: bool
     role: str
-    full_name: Optional[str] = None
+    full_name: Optional[str] = Field(default=None, max_length=200)
     org_type: str = "university"
 
     model_config = ConfigDict(from_attributes=True)
 
 class UpdateMe(BaseModel):
-    full_name: Optional[str] = None
+    full_name: Optional[str] = Field(default=None, max_length=200)
 
 class Token(BaseModel):
     access_token: str
@@ -64,9 +64,19 @@ class UserAdminUpdate(BaseModel):
     def _role_valid(cls, v):
         return None if v is None else validate_role(v)
 
+# BE-6: единые верхние границы длины пользовательских строк. Без них студент/
+# преподаватель мог прислать мегабайты текста — раздувает БД, а для сдач весь
+# text_content ещё и улетает в GPT (файлы обрезаются 25k, текст не обрезался).
+MAX_TITLE_LEN = 500
+MAX_NAME_LEN = 256
+MAX_DESCRIPTION_LEN = 5000
+MAX_POST_BODY_LEN = 100_000
+MAX_SUBMISSION_TEXT_LEN = 100_000
+
+
 class PostCreate(BaseModel):
-    title: str
-    body: str
+    title: str = Field(max_length=MAX_TITLE_LEN)
+    body: str = Field(max_length=MAX_POST_BODY_LEN)
 
 class PostResponse(BaseModel):
     id: int
@@ -78,7 +88,7 @@ class PostResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class ChatCreate(BaseModel):
-    name: str
+    name: str = Field(max_length=MAX_NAME_LEN)
 
 class ChatResponse(BaseModel):
     id: int
@@ -87,27 +97,31 @@ class ChatResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class MessageCreate(BaseModel):
-    content: str
+    content: str = Field(max_length=MAX_POST_BODY_LEN)
 
 class CriterionIn(BaseModel):
-    name: str
-    weight: int
-    description: Optional[str] = None
+    name: str = Field(max_length=MAX_NAME_LEN)
+    # BE-5: вес критерия не может быть отрицательным (сумма весов формирует
+    # максимум и проценты рейтинга).
+    weight: int = Field(ge=0, le=1000)
+    description: Optional[str] = Field(default=None, max_length=MAX_DESCRIPTION_LEN)
 
 class AssignmentCreate(BaseModel):
     class_id: int
-    title: str
-    description: Optional[str] = None
+    title: str = Field(max_length=MAX_TITLE_LEN)
+    description: Optional[str] = Field(default=None, max_length=MAX_DESCRIPTION_LEN)
     criteria: List[CriterionIn]
-    max_score: int = 100
+    # BE-5: max_score строго положителен — 0/отрицательный ломает деление в
+    # проценты рейтинга (my_rating) и обесмысливает клампинг оценки.
+    max_score: int = Field(default=100, ge=1, le=1000)
     deadline: Optional[datetime] = None
     reference_solution_url: Optional[str] = None
 
 class AssignmentUpdate(BaseModel):
-    title: Optional[str] = None
-    description: Optional[str] = None
+    title: Optional[str] = Field(default=None, max_length=MAX_TITLE_LEN)
+    description: Optional[str] = Field(default=None, max_length=MAX_DESCRIPTION_LEN)
     criteria: Optional[List[CriterionIn]] = None
-    max_score: Optional[int] = None
+    max_score: Optional[int] = Field(default=None, ge=1, le=1000)
     deadline: Optional[datetime] = None
     is_active: Optional[bool] = None
     reference_solution_url: Optional[str] = None
@@ -128,7 +142,7 @@ class AssignmentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class SubmissionCreate(BaseModel):
-    text_content: Optional[str] = None
+    text_content: Optional[str] = Field(default=None, max_length=MAX_SUBMISSION_TEXT_LEN)
     file_url: Optional[str] = None
     file_urls: Optional[List[str]] = None
 
@@ -154,8 +168,10 @@ class SubmissionWithGrade(SubmissionResponse):
 class GradeCreate(BaseModel):
     # graded_by намеренно отсутствует: сервер выставляет его сам,
     # значение из тела запроса игнорируется.
-    score: int
-    feedback: Optional[str] = None
+    # BE-5: неотрицательный балл; верхнюю границу (max_score задания) сервер
+    # клампит в save_grade, здесь она неизвестна.
+    score: int = Field(ge=0)
+    feedback: Optional[str] = Field(default=None, max_length=MAX_DESCRIPTION_LEN)
     criteria_scores: Optional[List[Any]] = None
 
 class GradeResponse(BaseModel):
@@ -202,19 +218,19 @@ class ProcessedDocumentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class ClassCreate(BaseModel):
-    name: str
-    description: Optional[str] = None
+    name: str = Field(max_length=MAX_NAME_LEN)
+    description: Optional[str] = Field(default=None, max_length=MAX_DESCRIPTION_LEN)
     cover_image: Optional[str] = None
-    teacher: Optional[str] = None
-    period: Optional[str] = None
+    teacher: Optional[str] = Field(default=None, max_length=200)
+    period: Optional[str] = Field(default=None, max_length=100)
 
 class ClassUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
+    name: Optional[str] = Field(default=None, max_length=MAX_NAME_LEN)
+    description: Optional[str] = Field(default=None, max_length=MAX_DESCRIPTION_LEN)
     is_active: Optional[bool] = None
     cover_image: Optional[str] = None
-    teacher: Optional[str] = None
-    period: Optional[str] = None
+    teacher: Optional[str] = Field(default=None, max_length=200)
+    period: Optional[str] = Field(default=None, max_length=100)
 
 class ClassResponse(BaseModel):
     id: int
@@ -265,7 +281,7 @@ class AssignmentResponseFull(AssignmentResponse):
     model_config = ConfigDict(from_attributes=True)
 
 class SubmissionCreateV2(BaseModel):
-    text_content: Optional[str] = None
+    text_content: Optional[str] = Field(default=None, max_length=MAX_SUBMISSION_TEXT_LEN)
     file_url: Optional[str] = None
     file_urls: Optional[List[str]] = None
     variant_number: Optional[int] = None
@@ -376,9 +392,9 @@ class AvatarReviewAction(BaseModel):
 
 class AvatarLectureCreate(BaseModel):
     class_id: int
-    title: str
+    title: str = Field(max_length=MAX_TITLE_LEN)
     source_file_url: str
-    source_filename: Optional[str] = None
+    source_filename: Optional[str] = Field(default=None, max_length=512)
     duration_minutes: int = 40
     style: str = "university"
     language: str = "en"

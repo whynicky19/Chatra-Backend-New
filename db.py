@@ -24,16 +24,14 @@ def get_db():
     finally:
         db.close()
 
+# BE-3: изоляция university/school держится на колонке org_type в каждой
+# таблице (так работают все роутеры). Отдельные Postgres-схемы через search_path
+# были вторым, несовместимым механизмом: на проде схемы university/school пусты,
+# все данные лежат в public, а переключение search_path лишь плодило движки/пулы
+# (источник утечки из BE-4). Убрано: get_engine/get_session_for_org теперь всегда
+# работают с единым движком (public). org_type фильтруется на уровне запросов.
 def get_engine(org_type: str = "university"):
-    if DATABASE_URL.startswith("sqlite"):
-        return engine
-    schema = "school" if org_type == "school" else "university"
-    return create_engine(
-        DATABASE_URL,
-        connect_args={"options": f"-csearch_path={schema},public"},
-    )
+    return engine
 
-def get_session_for_org(org_type: str):
-    eng = get_engine(org_type)
-    OrgSession = sessionmaker(bind=eng)
-    return OrgSession()
+def get_session_for_org(org_type: str = "university"):
+    return SessionLocal()

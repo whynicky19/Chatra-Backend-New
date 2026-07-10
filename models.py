@@ -267,6 +267,13 @@ class AssignmentVariant(Base):
 
 class Submission(Base):
     __tablename__ = "submissions"
+    __table_args__ = (
+        # BE-1: одна сдача на пару (задание, студент). Приложение уже проверяет
+        # это в student_already_submitted(), но без БД-инварианта двойной клик
+        # или «сайт+приложение одновременно» проскакивал проверку (TOCTOU) и
+        # создавал две сдачи. Ловим IntegrityError в submit_assignment → 409.
+        UniqueConstraint("assignment_id", "student_id", name="ux_submissions_assignment_student"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     assignment_id: Mapped[int] = mapped_column(ForeignKey("assignments.id"), nullable=False)

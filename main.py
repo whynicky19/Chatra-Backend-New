@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from services.file_urls import sign_uploads_in_text, verify_signature
-from db import Base, engine, get_engine
+from db import Base, engine
 from models import Base
 from routers import auth, admin, users, posts, chats, messages, reactions, uploads, ai, avatars, notifications
 from routers.assignments import router as assignments_router
@@ -38,21 +38,10 @@ def _check_db():
 
 _check_db()
 
-def _ensure_schemas():
-    if not str(engine.url).startswith("postgresql"):
-        return
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("CREATE SCHEMA IF NOT EXISTS university"))
-            conn.execute(text("CREATE SCHEMA IF NOT EXISTS school"))
-            conn.commit()
-        for org in ["university", "school"]:
-            Base.metadata.create_all(bind=get_engine(org))
-        logging.info("Schemas ready: university, school")
-    except Exception as e:
-        logging.warning(f"Schema init skipped: {e}")
-
-_ensure_schemas()
+# BE-3: раньше здесь создавались отдельные схемы university/school и таблицы в
+# них — второй, несовместимый с колонкой org_type механизм изоляции. На проде
+# он не работал (схемы пусты, данные в public) и лишь плодил движки/пулы.
+# Изоляция организаций держится на колонке org_type; отдельные схемы убраны.
 
 _cors_raw = os.getenv("CORS_ORIGINS", "*")
 _cors_origins = [o.strip() for o in _cors_raw.split(",")] if _cors_raw != "*" else ["*"]

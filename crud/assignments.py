@@ -71,29 +71,6 @@ def delete_assignment(db: Session, assignment_id: int) -> bool:
     db.commit()
     return True
 
-def create_submission(
-    db: Session,
-    assignment_id: int,
-    student_id: int,
-    text_content: Optional[str],
-    file_url: Optional[str],
-    file_urls: Optional[list] = None,
-    is_late: bool = False,
-) -> Submission:
-    status = "late" if is_late else "submitted"
-    obj = Submission(
-        assignment_id=assignment_id,
-        student_id=student_id,
-        text_content=text_content,
-        file_url=file_url,
-        file_urls=json.dumps(file_urls, ensure_ascii=False) if file_urls else None,
-        status=status,
-    )
-    db.add(obj)
-    db.commit()
-    db.refresh(obj)
-    return obj
-
 def get_submission(db: Session, submission_id: int) -> Optional[Submission]:
     return db.query(Submission).filter(Submission.id == submission_id).first()
 
@@ -125,21 +102,6 @@ def get_submissions_for_student(db: Session, student_id: int) -> List[Submission
         .order_by(Submission.submitted_at.desc())
         .all()
     )
-
-def delete_submission(db: Session, submission_id: int, student_id: int) -> bool:
-    obj = (
-        db.query(Submission)
-        .filter(Submission.id == submission_id, Submission.student_id == student_id)
-        .first()
-    )
-    if not obj:
-        return False
-    if obj.status in ("graded",):
-        return False
-    db.query(Grade).filter(Grade.submission_id == submission_id).delete()
-    db.delete(obj)
-    db.commit()
-    return True
 
 def student_already_submitted(db: Session, assignment_id: int, student_id: int) -> bool:
     return (

@@ -146,9 +146,18 @@ async def upload_file(
             detail=f"Тип файла '.{ext}' не разрешён. Допустимые: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
         )
 
-    content = await file.read()
-    if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="Файл слишком большой (максимум 50 МБ)")
+    # BE-10: читаем потоково и обрываемся, как только превышен лимит — раньше
+    # весь файл (любого размера) целиком буферизовался в память ДО проверки,
+    # что позволяло исчерпать RAM большим аплоадом.
+    content = bytearray()
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        content.extend(chunk)
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=413, detail="Файл слишком большой (максимум 50 МБ)")
+    content = bytes(content)
 
 
     if not _validate_file_content(content, ext):
