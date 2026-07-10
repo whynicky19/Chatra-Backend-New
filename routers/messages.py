@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -8,6 +9,11 @@ from permissions import require_chat_member, require_message_chat_member
 from datetime import datetime, timezone
 
 router = APIRouter(prefix="/messages", tags=["Messages"])
+logger = logging.getLogger(__name__)
+
+# SEC-9: детали внутренних ошибок (трассировки/структура БД) наружу не отдаём —
+# логируем полностью, клиенту возвращаем обезличенный текст.
+_INTERNAL_ERROR = "Внутренняя ошибка сервера"
 
 
 def _safe_date(val) -> str | None:
@@ -56,9 +62,10 @@ def send_message(
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("messages error")
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR)
 
 
 @router.get("/chat/{chat_id}")
@@ -92,8 +99,9 @@ def get_messages(
         ]
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("messages error")
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR)
 
 
 @router.delete("/{message_id}")
@@ -113,9 +121,10 @@ def delete_message(
         db.execute(text("DELETE FROM messages WHERE id = :id"), {"id": message_id})
         db.commit()
         return {"status": "deleted"}
-    except Exception as e:
+    except Exception:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("messages error")
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR)
 
 
 @router.put("/{message_id}/read")
@@ -132,9 +141,10 @@ def mark_read(
         )
         db.commit()
         return {"status": "read"}
-    except Exception as e:
+    except Exception:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("messages error")
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR)
 
 
 @router.get("/unread")
@@ -163,5 +173,6 @@ def unread_messages(
             }
             for r in result
         ]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("messages error")
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR)

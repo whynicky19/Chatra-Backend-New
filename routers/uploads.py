@@ -96,19 +96,36 @@ async def get_file_text(
     url: str,
     current_user=Depends(get_current_user),
 ):
-    # Эндпоинт нужен и студентам (мобильный клиент собирает AI-контекст класса),
-    # поэтому по роли не ограничиваем — но читать можно только своё хранилище.
+    # Эндпоинт нужен и студентам (мобильный клиент собирает AI-контекст класса).
+    # SEC-6: одной SSRF-проверки мало — иначе любой авторизованный извлекал бы
+    # текст чужой сдачи/эталона по угаданному URL. Требуем валидную подпись:
+    # её получает только тот, кому сервер уже отдал ссылку на этот файл.
     from services.url_safety import is_safe_fetch_url
     if not is_safe_fetch_url(url):
         raise HTTPException(status_code=400, detail="Недопустимый URL файла")
-    cached = _file_text_cache.get(url)
+
+    from urllib.parse import urlparse, parse_qs
+    from services.file_urls import verify_signature
+    parsed = urlparse(url)
+    prefix = "/uploads/"
+    if not parsed.path.startswith(prefix):
+        raise HTTPException(status_code=400, detail="Недопустимый URL файла")
+    file_path = parsed.path[len(prefix):]
+    qs = parse_qs(parsed.query)
+    exp = (qs.get("exp") or [None])[0]
+    sig = (qs.get("sig") or [None])[0]
+    if not verify_signature(file_path, exp, sig):
+        raise HTTPException(status_code=403, detail="Недействительная или просроченная ссылка")
+
+    # Кэш по пути файла (подпись меняется от запроса к запросу).
+    cached = _file_text_cache.get(file_path)
     if cached is not None:
-        _file_text_cache.move_to_end(url)
+        _file_text_cache.move_to_end(file_path)
         return {"text": cached}
     from services.ai_grader import _fetch_file_text
     text = await _fetch_file_text(url)
     if text:
-        _file_text_cache[url] = text
+        _file_text_cache[file_path] = text
         if len(_file_text_cache) > _FILE_TEXT_CACHE_MAX:
             _file_text_cache.popitem(last=False)
     return {"text": text}

@@ -80,3 +80,6 @@ urllib3==2.6.3
 uvicorn==0.43.0
 watchfiles==1.1.1
 websockets==16.0
+# Опционально: общий rate-limiter между воркерами (SEC-8). Без REDIS_URL
+# лимитер работает in-memory и этот пакет не требуется.
+redis==5.2.1

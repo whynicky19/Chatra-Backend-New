@@ -272,8 +272,8 @@ class SubmissionCreateV2(BaseModel):
 
 class StudentRatingEntry(BaseModel):
     student_id: int
-    email: str
-    full_name: Optional[str] = None
+    # SEC-4: e-mail одноклассников из рейтинга убран — отдаём только имя.
+    full_name: str
     total_score: int
     graded_count: int
     avg_score: float

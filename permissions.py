@@ -7,8 +7,62 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from models import Chat, Class, class_members
+from models import Chat, Class, Assignment, AssignmentVariant, Submission, class_members
 from crud import cohorts as crud_cohorts
+
+
+def require_class_owner(db: Session, class_id: int, current_user) -> Class:
+    """Мутации класса/заданий/оценок: только владелец класса или админ.
+    Org-проверки недостаточно — иначе любой преподаватель организации правит
+    и удаляет ЧУЖИЕ классы (см. SEC-2). Возвращает класс."""
+    cls = db.query(Class).filter(Class.id == class_id).first()
+    if not cls or cls.org_type != current_user.org_type:
+        raise HTTPException(status_code=404, detail="Класс не найден")
+    if current_user.role == "admin" or cls.created_by == current_user.id:
+        return cls
+    raise HTTPException(
+        status_code=403,
+        detail="Только владелец класса или администратор может это изменить",
+    )
+
+
+def require_assignment_owner(db: Session, assignment, current_user) -> Class:
+    """Мутации задания/варианта/оценки — по владению классом задания."""
+    return require_class_owner(db, assignment.class_id, current_user)
+
+
+def require_variant_of_owned_assignment(
+    db: Session, assignment_id: int, variant_id: int, current_user
+) -> AssignmentVariant:
+    """SEC-3: удаление/правка варианта. Вариант должен принадлежать именно
+    этому заданию, а задание — владельцу (или админу). Иначе любой
+    преподаватель удалит любой вариант по одному variant_id (IDOR)."""
+    variant = (
+        db.query(AssignmentVariant)
+        .filter(AssignmentVariant.id == variant_id)
+        .first()
+    )
+    if not variant or variant.assignment_id != assignment_id:
+        raise HTTPException(status_code=404, detail="Variant not found")
+    assignment = (
+        db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    )
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    require_assignment_owner(db, assignment, current_user)
+    return variant
+
+
+def require_submission_class_owner(db: Session, submission, current_user):
+    """Мутации сдачи преподавателем (оценка/статус) — только владелец класса."""
+    assignment = (
+        db.query(Assignment)
+        .filter(Assignment.id == submission.assignment_id)
+        .first()
+    )
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    return require_assignment_owner(db, assignment, current_user)
 
 
 def require_chat_member(db: Session, chat_id: int, user_id: int) -> None:

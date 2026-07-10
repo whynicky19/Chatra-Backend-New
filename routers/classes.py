@@ -8,6 +8,7 @@ from crud import cohorts as crud_cohorts
 from models import Class, Cohort, User, class_members, cohort_students
 from db import get_db
 from deps import get_current_user, get_current_teacher
+from permissions import require_class_owner, require_class_access
 from services.image_storage import convert_cover_if_data_uri
 from services.rate_limit import RateLimiter
 from sqlalchemy import func, case
@@ -202,9 +203,7 @@ def update_class(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_teacher),
 ):
-    obj = crud.get_class(db, class_id)
-    if not obj or obj.org_type != current_user.org_type:
-        raise HTTPException(status_code=404, detail="Класс не найден")
+    obj = require_class_owner(db, class_id, current_user)
     data = body.model_dump(exclude_none=True)
     if "cover_image" in data:
         data["cover_image"] = convert_cover_if_data_uri(data["cover_image"])
@@ -219,9 +218,7 @@ def delete_class(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_teacher),
 ):
-    obj = crud.get_class(db, class_id)
-    if not obj or obj.org_type != current_user.org_type:
-        raise HTTPException(status_code=404, detail="Класс не найден")
+    require_class_owner(db, class_id, current_user)
     crud.delete_class(db, class_id)
 
 
@@ -239,6 +236,8 @@ def get_members(
     obj = crud.get_class(db, class_id)
     if not obj or obj.org_type != current_user.org_type:
         raise HTTPException(status_code=404, detail="Класс не найден")
+    # SEC-4: студент видит участников только своего класса, а не любого по ID.
+    require_class_access(db, class_id, current_user)
     if cohort_id is not None:
         _require_cohort_of_class(db, obj, cohort_id, current_user)
     return crud.get_members(db, class_id, cohort_id=cohort_id)
@@ -414,8 +413,10 @@ def class_rating(
     """Рейтинг по активному потоку; cohort_id — прошлые годы
     (только владелец класса или админ)."""
     obj = crud.get_class(db, class_id)
-    if not obj:
+    if not obj or obj.org_type != current_user.org_type:
         raise HTTPException(status_code=404, detail="Класс не найден")
+    # SEC-4: рейтинг чужого класса по прямому ID больше не раскрывается.
+    require_class_access(db, class_id, current_user)
     if cohort_id is not None:
         _require_cohort_of_class(db, obj, cohort_id, current_user)
     rows = crud.get_student_rating(db, class_id=class_id, org_type=current_user.org_type,

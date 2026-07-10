@@ -189,7 +189,7 @@ def get_student_rating(db: Session, class_id: Optional[int] = None,
     q = (
         db.query(
             User.id.label("student_id"),
-            User.email.label("email"),
+            User.full_name.label("full_name"),
             func.sum(Grade.score).label("total_score"),
             func.count(Grade.id).label("graded_count"),
             func.avg(Grade.score).label("avg_score"),
@@ -231,12 +231,14 @@ def get_student_rating(db: Session, class_id: Optional[int] = None,
                 ),
             )
 
-    rows = q.group_by(User.id, User.email).order_by(func.sum(Grade.score).desc()).all()
+    rows = q.group_by(User.id, User.full_name).order_by(func.sum(Grade.score).desc()).all()
 
+    # SEC-4: e-mail (PII) из рейтинга исключён. Отдаём отображаемое имя;
+    # если ФИО не задано — обезличенный "Студент #<id>", а не логин-почту.
     return [
         {
             "student_id": r.student_id,
-            "email": r.email,
+            "full_name": (r.full_name or "").strip() or f"Студент #{r.student_id}",
             "total_score": int(r.total_score or 0),
             "graded_count": int(r.graded_count or 0),
             "avg_score": round(float(r.avg_score or 0), 1),

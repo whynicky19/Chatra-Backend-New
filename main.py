@@ -6,10 +6,13 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from starlette.staticfiles import StaticFiles
-from fastapi import FastAPI
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from services.file_urls import sign_uploads_in_text, verify_signature
 from db import Base, engine, get_engine
 from models import Base
 from routers import auth, admin, users, posts, chats, messages, reactions, uploads, ai, avatars, notifications
@@ -77,6 +80,36 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Chatra API", version="3.0", lifespan=lifespan)
 
+
+class UploadUrlSignerMiddleware(BaseHTTPMiddleware):
+    """SEC-1: подписывает все ссылки на /uploads в JSON-ответах. Клиент
+    получает временную подписанную ссылку, по которой прокси отдаёт файл;
+    публичного доступа по «голому» URL больше нет. Не-JSON (сами файлы,
+    стримы) проходят насквозь без буферизации."""
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        ctype = response.headers.get("content-type", "")
+        if not ctype.startswith("application/json"):
+            return response
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        try:
+            signed = sign_uploads_in_text(body.decode("utf-8")).encode("utf-8")
+        except UnicodeDecodeError:
+            signed = body
+        headers = dict(response.headers)
+        headers.pop("content-length", None)
+        return Response(
+            content=signed,
+            status_code=response.status_code,
+            headers=headers,
+            media_type=ctype,
+        )
+
+
+# ВАЖЕН порядок: signer добавляется ПЕРВЫМ, значит он самый внутренний и
+# видит несжатый JSON. GZip добавляется позже и сжимает уже подписанное тело.
+app.add_middleware(UploadUrlSignerMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -116,16 +149,35 @@ _INLINE_EXTENSIONS = {
     "pdf",  # нужен для iframe-предпросмотра на фронте
 }
 
-class UploadsStaticFiles(StaticFiles):
-    async def get_response(self, path: str, scope):
-        response = await super().get_response(path, scope)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
-        if ext not in _INLINE_EXTENSIONS:
-            response.headers["Content-Disposition"] = "attachment"
-        return response
+_uploads_root = os.path.realpath(_upload_dir)
 
-app.mount("/uploads", UploadsStaticFiles(directory=_upload_dir), name="uploads")
+
+@app.get("/uploads/{filename:path}")
+def serve_upload(
+    filename: str,
+    exp: int = Query(...),
+    sig: str = Query(...),
+):
+    """SEC-1: файлы отдаются только по действующей подписанной ссылке.
+    Подпись выдаёт бэкенд при возврате ресурса (сдача/эталон/обложка), поэтому
+    получить её может лишь тот, кто вправе прочитать сам ресурс."""
+    if not verify_signature(filename, exp, sig):
+        raise HTTPException(status_code=403, detail="Invalid or expired file link")
+
+    full = os.path.realpath(os.path.join(_uploads_root, filename))
+    # Защита от path traversal (../): результат обязан лежать внутри uploads.
+    if full != _uploads_root and not full.startswith(_uploads_root + os.sep):
+        raise HTTPException(status_code=404, detail="File not found")
+    if not os.path.isfile(full):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    disposition = "inline" if ext in _INLINE_EXTENSIONS else "attachment"
+    return FileResponse(
+        full,
+        headers={"X-Content-Type-Options": "nosniff"},
+        content_disposition_type=disposition,
+    )
 
 
 @app.get("/health")

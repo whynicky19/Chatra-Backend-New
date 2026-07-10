@@ -143,6 +143,10 @@ async def _fetch_file_text(url: str) -> str:
     from services.url_safety import is_safe_fetch_url
     if not is_safe_fetch_url(url):
         return ""
+    # SEC-1: /uploads закрыт подписью. Серверная загрузка своих же файлов
+    # подписывает URL на лету (ACL уже проверен на уровне вызывающего эндпоинта).
+    from services.file_urls import sign_upload_url
+    url = sign_upload_url(url)
     try:
         async with httpx.AsyncClient(timeout=25.0) as client:
             resp = await client.get(url)

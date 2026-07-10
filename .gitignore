@@ -46,3 +46,6 @@ Thumbs.db
 
 uploads/*
 !uploads/.gitkeep
+# Дампы БД (SEC-5): содержат e-mail и хеши паролей — не коммитить
+*.sql
+backup_*.sql

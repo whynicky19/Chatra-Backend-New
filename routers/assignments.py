@@ -13,7 +13,13 @@ from crud import cohorts as crud_cohorts
 from db import get_db
 from deps import get_current_user, get_current_teacher
 from models import Class as ClassModel
-from permissions import require_class_access, require_active_cohort_access
+from permissions import (
+    require_class_access,
+    require_active_cohort_access,
+    require_assignment_owner,
+    require_variant_of_owned_assignment,
+    require_submission_class_owner,
+)
 from services.ai_grader import grade_submission as _ai_grade
 from routers.ai import _check_rate_limit
 
@@ -163,8 +169,10 @@ def my_rating(
             "total_score": total_score,
             "max_possible": max_possible,
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("my_rating failed")
+        raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
 
 
 @router.get("/assignments/{assignment_id}", response_model=schemas.AssignmentResponseFull)
@@ -191,7 +199,7 @@ def update_assignment(
     obj = crud.get_assignment(db, assignment_id)
     if not obj:
         raise HTTPException(status_code=404, detail="Assignment not found")
-    _check_assignment_org(db, obj, current_user)
+    require_assignment_owner(db, obj, current_user)  # SEC-2
     data = body.model_dump(exclude_none=True)
     obj = crud.update_assignment(db, assignment_id, data)
     # Правка дедлайна задания = правка дедлайна АКТИВНОГО потока (архивные
@@ -213,7 +221,7 @@ def delete_assignment(
     obj = crud.get_assignment(db, assignment_id)
     if not obj:
         raise HTTPException(status_code=404, detail="Assignment not found")
-    _check_assignment_org(db, obj, current_user)
+    require_assignment_owner(db, obj, current_user)  # SEC-2
     crud.delete_assignment(db, assignment_id)
 
 
@@ -250,7 +258,7 @@ def add_variant(
     obj = crud.get_assignment(db, assignment_id)
     if not obj:
         raise HTTPException(status_code=404, detail="Assignment not found")
-    _check_assignment_org(db, obj, current_user)
+    require_assignment_owner(db, obj, current_user)  # SEC-2
     return crud_classes.add_variant(
         db=db,
         assignment_id=assignment_id,
@@ -270,7 +278,9 @@ def delete_variant(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_teacher),
 ):
-
+    # SEC-3: вариант должен принадлежать этому заданию владельца — иначе
+    # любой преподаватель удалял любой вариант по одному variant_id (IDOR).
+    require_variant_of_owned_assignment(db, assignment_id, variant_id, current_user)
     if not crud_classes.delete_variant(db, variant_id):
         raise HTTPException(status_code=404, detail="Variant not found")
 
@@ -363,7 +373,7 @@ def get_submissions(
     assignment = crud.get_assignment(db, assignment_id)
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
-    _check_assignment_org(db, assignment, current_user)
+    require_assignment_owner(db, assignment, current_user)  # SEC-2
     if cohort_id is not None:
         cohort = crud_cohorts.get_cohort(db, cohort_id)
         if not cohort or cohort.class_id != assignment.class_id:
@@ -392,16 +402,18 @@ def get_submission(
     obj = crud.get_submission(db, submission_id)
     if not obj:
         raise HTTPException(status_code=404, detail="Submission not found")
-    _check_submission_org(db, obj, current_user)
-    if current_user.role == "student" and obj.student_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    if current_user.role == "student":
+        _check_submission_org(db, obj, current_user)
+        if obj.student_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        return obj
 
-    # Enrich with student ФИО для учителя
-    if current_user.role in ("teacher", "admin"):
-        from models import User
-        user = db.query(User).filter(User.id == obj.student_id).first()
-        if user:
-            obj.student_name = user.full_name or user.email
+    # Преподаватель/админ — только владелец класса задания (SEC-2).
+    require_submission_class_owner(db, obj, current_user)
+    from models import User
+    user = db.query(User).filter(User.id == obj.student_id).first()
+    if user:
+        obj.student_name = user.full_name or user.email
     return obj
 
 
@@ -418,15 +430,16 @@ def delete_submission(
     obj = crud.get_submission(db, submission_id)
     if not obj:
         raise HTTPException(status_code=404, detail="Submission not found")
-    _check_submission_org(db, obj, current_user)
 
     if current_user.role == "student":
+        _check_submission_org(db, obj, current_user)
         if obj.student_id != current_user.id:
             raise HTTPException(status_code=403, detail="Access denied")
         if obj.status == "graded":
             raise HTTPException(status_code=400, detail="Нельзя удалить уже проверенную сдачу")
-    elif current_user.role not in ("teacher", "admin"):
-        raise HTTPException(status_code=403, detail="Access denied")
+    else:
+        # Преподаватель удаляет сдачи только в своём классе (SEC-2).
+        require_submission_class_owner(db, obj, current_user)
 
     from models import Grade
     db.query(Grade).filter(Grade.submission_id == submission_id).delete()
@@ -448,7 +461,7 @@ def save_grade(
     sub = crud.get_submission(db, submission_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
-    _check_submission_org(db, sub, current_user)
+    require_submission_class_owner(db, sub, current_user)  # SEC-2
 
     crud.set_submission_status(db, submission_id, "graded")
     # graded_by выставляется сервером: ручную оценку нельзя выдать за ИИ-проверку
@@ -473,10 +486,14 @@ def get_grade(
         raise HTTPException(status_code=404, detail="Grade not found yet")
 
     sub = crud.get_submission(db, submission_id)
-    if sub:
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if current_user.role == "student":
         _check_submission_org(db, sub, current_user)
-    if current_user.role == "student" and sub.student_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Access denied")
+        if sub.student_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+    else:
+        require_submission_class_owner(db, sub, current_user)  # SEC-2
     return grade
 
 
@@ -493,7 +510,7 @@ def update_status(
     sub = crud.get_submission(db, submission_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
-    _check_submission_org(db, sub, current_user)
+    require_submission_class_owner(db, sub, current_user)  # SEC-2
     obj = crud.set_submission_status(db, submission_id, new_status)
     return {"id": obj.id, "status": obj.status}
 
@@ -514,7 +531,7 @@ async def ai_grade_submission(
     sub = crud.get_submission(db, submission_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
-    _check_submission_org(db, sub, current_user)
+    require_submission_class_owner(db, sub, current_user)  # SEC-2
 
     _check_rate_limit(current_user.id)
 
