@@ -14,7 +14,8 @@ def get_post_by_id(db: Session, post_id: int):
 def get_posts_for_user(db: Session, user_id: int):
     return db.query(Posts).filter(Posts.user_id == user_id).order_by(Posts.id.desc()).all()
 
-def get_all_posts(db: Session, org_type: str = None, class_id: int = None):
+def get_all_posts(db: Session, org_type: str = None, class_id: int = None,
+                  limit: int = None, offset: int = 0):
     q = db.query(Posts).join(User, User.id == Posts.user_id)
     if org_type:
         q = q.filter(User.org_type == org_type)
@@ -25,7 +26,12 @@ def get_all_posts(db: Session, org_type: str = None, class_id: int = None):
             Posts.title.like(f"[LECTURE][{class_id}]%")
             | Posts.title.like(f"[HW][{class_id}]%")
         )
-    return q.order_by(Posts.id.desc()).all()
+    q = q.order_by(Posts.id.desc())
+    if offset:
+        q = q.offset(offset)
+    if limit is not None:
+        q = q.limit(limit)
+    return q.all()
 
 def delete_post(db: Session, post_id: int) -> bool:
     deleted = db.query(Posts).filter(Posts.id == post_id).delete()

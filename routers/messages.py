@@ -1,5 +1,5 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from db import get_db
@@ -71,20 +71,45 @@ def send_message(
 @router.get("/chat/{chat_id}")
 def get_messages(
     chat_id: int,
+    limit: int | None = Query(None, ge=1, le=200),
+    before_id: int | None = Query(None, ge=1),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    """FE-1: keyset-пагинация истории чата. limit опционален (совместимость:
+    без него отдаём всю историю в ASC, как раньше). С limit — последние `limit`
+    сообщений; при скролле вверх клиент передаёт id самого верхнего сообщения
+    как before_id и получает предыдущую порцию. Внутри выбираем DESC по id и
+    разворачиваем в ASC для отображения."""
     require_chat_member(db, chat_id, current_user.id)
     try:
-        result = db.execute(
-            text(
-                "SELECT id, content, chat_id, user_id, created_at, "
-                "COALESCE(is_read, false) as is_read, file_url "
-                "FROM messages WHERE chat_id = :cid ORDER BY id"
-            ),
-            {"cid": chat_id},
-        ).fetchall()
-
+        if limit is None and before_id is None:
+            # Легаси-путь: вся история по возрастанию id.
+            result = db.execute(
+                text(
+                    "SELECT id, content, chat_id, user_id, created_at, "
+                    "COALESCE(is_read, false) as is_read, file_url "
+                    "FROM messages WHERE chat_id = :cid ORDER BY id"
+                ),
+                {"cid": chat_id},
+            ).fetchall()
+            rows = list(result)
+        else:
+            params = {"cid": chat_id, "limit": limit or 50}
+            before_clause = ""
+            if before_id is not None:
+                before_clause = "AND id < :before_id "
+                params["before_id"] = before_id
+            result = db.execute(
+                text(
+                    "SELECT id, content, chat_id, user_id, created_at, "
+                    "COALESCE(is_read, false) as is_read, file_url "
+                    f"FROM messages WHERE chat_id = :cid {before_clause}"
+                    "ORDER BY id DESC LIMIT :limit"
+                ),
+                params,
+            ).fetchall()
+            rows = list(reversed(result))  # ASC для показа
         return [
             {
                 "id": r[0],
@@ -95,7 +120,7 @@ def get_messages(
                 "is_read": bool(r[5]) if r[5] is not None else False,
                 "file_url": r[6],
             }
-            for r in result
+            for r in rows
         ]
     except HTTPException:
         raise

@@ -42,13 +42,19 @@ def regenerate_invite_code(db: Session, class_id: int) -> Optional[Class]:
     return obj
 
 def get_all_classes(db: Session, teacher_id: Optional[int] = None,
-                    org_type: Optional[str] = None) -> List[Class]:
+                    org_type: Optional[str] = None,
+                    limit: Optional[int] = None, offset: int = 0) -> List[Class]:
     q = db.query(Class)
     if org_type is not None:
         q = q.filter(Class.org_type == org_type)
     if teacher_id is not None:
         q = q.filter(Class.created_by == teacher_id)
-    return q.order_by(Class.created_at.desc()).all()
+    q = q.order_by(Class.created_at.desc())
+    if offset:
+        q = q.offset(offset)
+    if limit is not None:
+        q = q.limit(limit)
+    return q.all()
 
 def update_class(db: Session, class_id: int, data: dict) -> Optional[Class]:
     obj = get_class(db, class_id)

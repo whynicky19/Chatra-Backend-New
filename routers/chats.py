@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from db import get_db
 from deps import get_current_user
@@ -20,14 +20,23 @@ def create_chat(chat: ChatCreate, db: Session = Depends(get_db), current_user=De
     return db_chat
 
 @router.get("/", response_model=list[ChatResponse])
-def get_chats(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    chats = (
+def get_chats(
+    limit: int | None = Query(None, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    q = (
         db.query(Chat)
         .join(chat_members)
         .filter(chat_members.c.user_id == current_user.id)
-        .all()
+        .order_by(Chat.id.desc())
     )
-    return chats
+    if offset:
+        q = q.offset(offset)
+    if limit is not None:
+        q = q.limit(limit)
+    return q.all()
 
 @router.get("/{chat_id}/users")
 def get_chat_users(chat_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):

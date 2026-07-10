@@ -3,7 +3,7 @@ from datetime import datetime
 from utils.time import utcnow
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -101,6 +101,8 @@ def create_assignment(
 def list_assignments(
     class_id: Optional[int] = None,
     active_only: bool = False,
+    limit: int | None = Query(None, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -110,7 +112,8 @@ def list_assignments(
             raise HTTPException(status_code=404, detail="Assignment not found")
         require_class_access(db, class_id, current_user)
     items = crud.get_all_assignments(db, class_id=class_id, active_only=active_only,
-                                     org_type=current_user.org_type)
+                                     org_type=current_user.org_type,
+                                     limit=limit, offset=offset)
     # Задания-черновики (неопубликованный дедлайн потока) не показываем ученикам.
     dmap, hidden = crud_cohorts.deadlines_map(db, items, current_user)
     return [
@@ -123,10 +126,12 @@ def list_assignments(
 # NOTE: Must be before /assignments/{assignment_id}
 @router.get("/assignments/student/my-submissions", response_model=List[schemas.SubmissionWithGrade])
 def my_submissions(
+    limit: int | None = Query(None, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    return crud.get_submissions_for_student(db, current_user.id)
+    return crud.get_submissions_for_student(db, current_user.id, limit=limit, offset=offset)
 
 
 @router.get("/assignments/student/my-rating")
@@ -372,6 +377,8 @@ def submit_assignment(
 def get_submissions(
     assignment_id: int,
     cohort_id: Optional[int] = None,
+    limit: int | None = Query(None, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_teacher),
 ):
@@ -387,7 +394,8 @@ def get_submissions(
             raise HTTPException(status_code=404, detail="Поток не найден")
     else:
         cohort = crud_cohorts.get_active_cohort(db, assignment.class_id)
-    subs = crud.get_submissions_for_assignment(db, assignment_id, cohort=cohort)
+    subs = crud.get_submissions_for_assignment(db, assignment_id, cohort=cohort,
+                                               limit=limit, offset=offset)
 
     # BE-7: одним запросом тянем всех студентов сдач вместо User-запроса на
     # каждую сдачу (N+1).

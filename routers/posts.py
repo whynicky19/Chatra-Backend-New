@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from fastapi import APIRouter, status, Depends, HTTPException
+from fastapi import APIRouter, status, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 import schemas
@@ -56,10 +56,13 @@ def create_post(
 @router.get("/", response_model=List[schemas.PostResponse])
 def get_posts_for_user(
     class_id: Optional[int] = None,
+    limit: int | None = Query(None, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    return crud_posts.get_all_posts(db=db, org_type=current_user.org_type, class_id=class_id)
+    return crud_posts.get_all_posts(db=db, org_type=current_user.org_type, class_id=class_id,
+                                    limit=limit, offset=offset)
 
 
 @router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)

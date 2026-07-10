@@ -1,5 +1,5 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 import schemas
@@ -80,10 +80,13 @@ def _require_cohort_of_class(db: Session, obj: Class, cohort_id: int, current_us
 
 @router.get("/all", response_model=List[schemas.ClassResponse])
 def list_all_classes(
+    limit: int | None = Query(None, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    classes = crud.get_all_classes(db, org_type=current_user.org_type)
+    classes = crud.get_all_classes(db, org_type=current_user.org_type,
+                                   limit=limit, offset=offset)
     counts = _member_counts(db, [c.id for c in classes])
     result = []
     for c in classes:
@@ -97,6 +100,8 @@ def list_all_classes(
 @router.get("/", response_model=List[schemas.ClassResponse])
 def list_classes(
     my_only: bool = False,
+    limit: int | None = Query(None, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -133,6 +138,13 @@ def list_classes(
     else:
         teacher_id = current_user.id if my_only else None
         classes = crud.get_all_classes(db, teacher_id=teacher_id, org_type=current_user.org_type)
+    # FE-1: студенческий путь собирает список в Python (слияние потоков и
+    # легаси-членства), поэтому пагинацию применяем срезом уже отсортированного
+    # списка — единообразно для обеих веток. limit=None → полный список (совместимо).
+    if limit is not None:
+        classes = classes[offset:offset + limit]
+    elif offset:
+        classes = classes[offset:]
     counts = _member_counts(db, [c.id for c in classes])
     result = [
         _to_class_response(c, current_user, member_count=counts.get(c.id, 0),

@@ -37,7 +37,8 @@ def get_assignment(db: Session, assignment_id: int) -> Optional[Assignment]:
     return db.query(Assignment).filter(Assignment.id == assignment_id).first()
 
 def get_all_assignments(db: Session, class_id: Optional[int] = None, active_only: bool = False,
-                        org_type: Optional[str] = None) -> List[Assignment]:
+                        org_type: Optional[str] = None,
+                        limit: Optional[int] = None, offset: int = 0) -> List[Assignment]:
     q = db.query(Assignment)
     if class_id is not None:
         q = q.filter(Assignment.class_id == class_id)
@@ -48,7 +49,14 @@ def get_all_assignments(db: Session, class_id: Optional[int] = None, active_only
         q = q.join(User, User.id == Assignment.created_by).filter(User.org_type == org_type)
     if active_only:
         q = q.filter(Assignment.is_active == True)
-    return q.order_by(Assignment.created_at.desc()).all()
+    q = q.order_by(Assignment.created_at.desc())
+    # FE-1: пагинация. limit=None — вернуть всё (фоновые задачи вроде
+    # deadline_checker, которым нужен полный список).
+    if offset:
+        q = q.offset(offset)
+    if limit is not None:
+        q = q.limit(limit)
+    return q.all()
 
 def update_assignment(db: Session, assignment_id: int, data: dict) -> Optional[Assignment]:
     obj = get_assignment(db, assignment_id)
@@ -75,7 +83,8 @@ def get_submission(db: Session, submission_id: int) -> Optional[Submission]:
     return db.query(Submission).filter(Submission.id == submission_id).first()
 
 def get_submissions_for_assignment(db: Session, assignment_id: int,
-                                   cohort: Optional[Cohort] = None) -> List[Submission]:
+                                   cohort: Optional[Cohort] = None,
+                                   limit: Optional[int] = None, offset: int = 0) -> List[Submission]:
     """Сдачи задания; с cohort — только его учебного года: сдачи учеников
     потока плюс сдачи, заякоренные на дедлайн потока (ученик мог быть
     исключён из потока позже)."""
@@ -93,15 +102,25 @@ def get_submissions_for_assignment(db: Session, assignment_id: int,
                 ),
             )
         )
-    return q.order_by(Submission.submitted_at.desc()).all()
+    q = q.order_by(Submission.submitted_at.desc())
+    if offset:
+        q = q.offset(offset)
+    if limit is not None:
+        q = q.limit(limit)
+    return q.all()
 
-def get_submissions_for_student(db: Session, student_id: int) -> List[Submission]:
-    return (
+def get_submissions_for_student(db: Session, student_id: int,
+                                limit: Optional[int] = None, offset: int = 0) -> List[Submission]:
+    q = (
         db.query(Submission)
         .filter(Submission.student_id == student_id)
         .order_by(Submission.submitted_at.desc())
-        .all()
     )
+    if offset:
+        q = q.offset(offset)
+    if limit is not None:
+        q = q.limit(limit)
+    return q.all()
 
 def student_already_submitted(db: Session, assignment_id: int, student_id: int) -> bool:
     return (
