@@ -138,15 +138,28 @@ class Deadline(Base):
 
 class User(Base):
     __tablename__ = "users"
+    # Личность = пара (email, org_type): один и тот же email может существовать в
+    # университете и школе как разные аккаунты. Глобальный unique на email убран —
+    # он конфликтовал с логикой login/register (та ключует по org_type) и ронял
+    # регистрацию второго org_type в IntegrityError → 500.
+    __table_args__ = (
+        UniqueConstraint("email", "org_type", name="ux_users_email_org"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    email: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    email: Mapped[str] = mapped_column(String, index=True, nullable=False)
     hashed_password: Mapped[str] = mapped_column(String, nullable=False)
     role: Mapped[str] = mapped_column(String, default="student", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     full_name: Mapped[str] = mapped_column(String(200), nullable=True)
     org_type: Mapped[str] = mapped_column(String, nullable=False, default="university")
     ai_unlimited: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
+    # Версия токенов: инкрементируется при logout/смене пароля. Access/refresh
+    # несут её в claim "tv"; при несовпадении токен считается отозванным.
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # Подтверждён ли email кодом из письма. Существующие аккаунты мигрируются в
+    # true (server_default), новые регистрации создаются с false.
+    is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="true")
 
     posts: Mapped[list["Posts"]] = relationship(
         back_populates="user",
@@ -518,3 +531,21 @@ class AvatarLectureSlide(Base):
     audio_duration_seconds: Mapped[float] = mapped_column(Integer, nullable=True)
 
     lecture: Mapped["AvatarLecture"] = relationship(back_populates="slides")
+
+class EmailCode(Base):
+    """Одноразовый 6-значный код для подтверждения email и сброса пароля.
+    Код хранится только в виде хэша. На пару (email, org_type, purpose) держим
+    не более одной активной записи — новый запрос затирает предыдущий."""
+    __tablename__ = "email_codes"
+    __table_args__ = (
+        Index("ix_email_codes_lookup", "email", "org_type", "purpose"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    email: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    org_type: Mapped[str] = mapped_column(String, nullable=False, default="university")
+    purpose: Mapped[str] = mapped_column(String(16), nullable=False)  # 'verify' | 'reset'
+    code_hash: Mapped[str] = mapped_column(String, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

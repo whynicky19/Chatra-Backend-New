@@ -30,17 +30,20 @@ def create_user(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_admin),
 ):
-    existing = crud_users.get_user_by_email(db, user.email, current_user.org_type)
+    email = user.email.strip().lower()
+    existing = crud_users.get_user_by_email(db, email, current_user.org_type)
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
 
     hashed_password = hash_password(user.password)
 
     db_user = User(
-        email=user.email,
+        email=email,
         hashed_password=hashed_password,
         role=user.role,
         org_type=current_user.org_type,
+        # Аккаунты, созданные админом, сразу подтверждены — верификация не нужна.
+        is_verified=True,
     )
 
     db.add(db_user)

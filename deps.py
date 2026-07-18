@@ -25,8 +25,21 @@ def get_current_user(
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
 
+    # Отзыв токенов: если версия в токене не совпадает с текущей версией юзера
+    # (logout/смена пароля инкрементируют её) — токен считается недействительным.
+    # get(..., 0) — обратная совместимость с токенами, выпущенными до введения tv.
+    if int(payload.get("tv", 0)) != user.token_version:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token revoked")
+
     if not user.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User inactive")
+        # detail="user_inactive" — стабильный код: клиент по нему принудительно
+        # разлогинивает заблокированного пользователя с понятным сообщением.
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="user_inactive")
+
+    # Неподтверждённый email не должен пользоваться приложением даже по ранее
+    # сохранённому токену (иначе верификация обходится сессией со старого входа).
+    if not user.is_verified:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="email_not_verified")
 
     return user
 

@@ -6,6 +6,8 @@ os.close(_test_db_fd)
 os.environ["DATABASE_URL"] = f"sqlite:///{_test_db_path}"
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 os.environ.setdefault("REFRESH_SECRET_KEY", "test-refresh-secret-key")
+# Возвращать OTP-код в ответе (dev/тесты) — SMTP в тестах не настроен.
+os.environ["OTP_DEBUG"] = "1"
 
 import pytest
 from fastapi.testclient import TestClient
@@ -39,7 +41,12 @@ def make_user(db, role="student", org_type="university"):
     _counter["n"] += 1
     email = f"user{_counter['n']}@example.com"
     hashed = hash_password("password123")
-    return crud_users.create_user(db, email, hashed, role=role, org_type=org_type)
+    user = crud_users.create_user(db, email, hashed, role=role, org_type=org_type)
+    # Фикстурные пользователи считаются подтверждёнными (иначе login → 403).
+    user.is_verified = True
+    db.commit()
+    db.refresh(user)
+    return user
 
 
 def auth_headers(user):

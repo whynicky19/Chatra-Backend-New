@@ -51,6 +51,30 @@ class AiUnlimitedUpdate(BaseModel):
 class UpdateMe(BaseModel):
     full_name: Optional[str] = Field(default=None, max_length=200)
 
+class ChangePassword(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
+
+class DeleteAccount(BaseModel):
+    # Подтверждение паролем — защита от удаления по украденному access-токену.
+    password: str
+
+class EmailCodeRequest(BaseModel):
+    """Запрос кода: forgot-password и resend-verification."""
+    email: EmailStr
+    org_type: str = "university"
+
+class VerifyEmailRequest(BaseModel):
+    email: EmailStr
+    org_type: str = "university"
+    code: str = Field(min_length=4, max_length=8)
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    org_type: str = "university"
+    code: str = Field(min_length=4, max_length=8)
+    new_password: str = Field(min_length=8)
+
 class Token(BaseModel):
     access_token: str
     refresh_token: str
