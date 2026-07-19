@@ -65,6 +65,29 @@ def _check_submission_org(db: Session, submission, current_user):
 
 
 
+def _notify_grade(submission, assignment, score: int, max_score: int) -> None:
+    """Push студенту о выставленной оценке. Никогда не роняет запрос."""
+    try:
+        from services.fcm import send_push_bg
+
+        title = "Работа оценена"
+        body = f"«{assignment.title}» — {score}/{max_score}"
+        send_push_bg(
+            [submission.student_id],
+            title,
+            body,
+            {
+                "type": "grade",
+                "notif_key": f"grade:{submission.id}",
+                "submission_id": submission.id,
+                "assignment_id": assignment.id,
+                "class_id": assignment.class_id,
+            },
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @router.post(
     "/assignments/",
     response_model=schemas.AssignmentResponseFull,
@@ -494,7 +517,7 @@ def save_grade(
 
     crud.set_submission_status(db, submission_id, "graded")
     # graded_by выставляется сервером: ручную оценку нельзя выдать за ИИ-проверку
-    return crud.create_or_update_grade(
+    grade = crud.create_or_update_grade(
         db=db,
         submission_id=submission_id,
         score=clamped_score,
@@ -502,6 +525,8 @@ def save_grade(
         criteria_scores=body.criteria_scores,
         graded_by="teacher",
     )
+    _notify_grade(sub, assignment, clamped_score, max_score)
+    return grade
 
 
 @router.get("/submissions/{submission_id}/grade", response_model=schemas.GradeResponse)
@@ -720,7 +745,7 @@ async def ai_grade_submission(
         pass
 
     crud.set_submission_status(db, submission_id, "graded")
-    return crud.create_or_update_grade(
+    grade = crud.create_or_update_grade(
         db=db,
         submission_id=submission_id,
         score=result["score"],
@@ -728,3 +753,5 @@ async def ai_grade_submission(
         criteria_scores=result.get("criteria_scores"),
         graded_by="ai",
     )
+    _notify_grade(sub, assignment, result["score"], assignment.max_score)
+    return grade

@@ -49,3 +49,7 @@ uploads/*
 
 *.sql
 backup_*.sql
+
+# Firebase service account (push-уведомления) — не коммитить
+*firebase-adminsdk*.json
+fcm-service-account*.json

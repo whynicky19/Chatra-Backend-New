@@ -124,6 +124,24 @@ async def _grade_one(db: Session, submission, assignment, org_type: str = "unive
         )
         logger.info("Сдача %s оценена ИИ: %s/%s", sub_id, result["score"], assignment.max_score)
 
+        try:
+            from services.fcm import send_push_bg
+
+            send_push_bg(
+                [submission.student_id],
+                "Работа оценена",
+                f"«{assignment.title}» — {result['score']}/{assignment.max_score}",
+                {
+                    "type": "grade",
+                    "notif_key": f"grade:{sub_id}",
+                    "submission_id": sub_id,
+                    "assignment_id": assignment.id,
+                    "class_id": assignment.class_id,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     except Exception as e:
         logger.error("Ошибка при оценке сдачи %s: %s", sub_id, e)
         try:

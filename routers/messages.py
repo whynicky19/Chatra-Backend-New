@@ -50,6 +50,12 @@ def send_message(
         )
         db.commit()
         new_id = result.scalar_one_or_none()
+        try:
+            from services.fcm import notify_chat_message
+
+            notify_chat_message(chat_id, current_user.id, current_user.full_name, msg.content)
+        except Exception:  # noqa: BLE001
+            pass
         return {
             "status": "sent",
             "id": new_id,

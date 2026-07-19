@@ -15,7 +15,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from services.file_urls import sign_uploads_in_text, verify_signature
 from db import Base, engine
 from models import Base
-from routers import auth, admin, users, posts, chats, messages, reactions, uploads, ai, avatars, notifications
+from routers import auth, admin, users, posts, chats, messages, reactions, uploads, ai, avatars, notifications, push
 from routers.assignments import router as assignments_router
 from routers.classes import router as classes_router, rating_router
 from routers.cohorts import router as cohorts_router
@@ -23,6 +23,7 @@ from routers.rag import router as rag_router
 from websocket import router as ws_router
 from sqlalchemy import text
 from services.deadline_checker import deadline_checker_loop
+from services.deadline_reminder import deadline_reminder_loop
 
 logging.basicConfig(level=logging.INFO)
 
@@ -58,14 +59,16 @@ if not _cors_credentials:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(deadline_checker_loop())
+    reminder_task = asyncio.create_task(deadline_reminder_loop())
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        for t in (task, reminder_task):
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
 
 app = FastAPI(title="Chatra API", version="3.0", lifespan=lifespan)
 
@@ -120,6 +123,7 @@ app.include_router(reactions.router)
 app.include_router(uploads.router)
 app.include_router(ai.router)
 app.include_router(notifications.router)
+app.include_router(push.router)
 app.include_router(avatars.router)
 app.include_router(assignments_router)
 app.include_router(classes_router)

@@ -549,3 +549,40 @@ class EmailCode(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class DeviceToken(Base):
+    """FCM-токен устройства пользователя для push-уведомлений. У одного юзера
+    может быть несколько устройств. token уникален глобально: если то же
+    устройство залогинилось под другим аккаунтом — запись переезжает на нового
+    владельца (upsert по token в /push/register)."""
+    __tablename__ = "device_tokens"
+    __table_args__ = (
+        UniqueConstraint("token", name="ux_device_tokens_token"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token: Mapped[str] = mapped_column(Text, nullable=False)
+    platform: Mapped[str] = mapped_column(String(16), nullable=True)  # android | ios
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PushLog(Base):
+    """Дедуп однократных пушей (напр. напоминание о дедлайне): чтобы фоновый
+    цикл не слал одно и то же уведомление повторно на каждой итерации и после
+    рестарта. dedup_key — произвольный ключ события, напр. 'deadline:{id}'."""
+    __tablename__ = "push_log"
+    __table_args__ = (
+        UniqueConstraint("user_id", "dedup_key", name="ux_push_log_user_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    dedup_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

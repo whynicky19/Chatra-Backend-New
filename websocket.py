@@ -147,6 +147,12 @@ async def websocket_endpoint(
             saved = _save_message(chat_id, user_id, parsed["content"])
             if saved:
                 await _broadcast(chat_id, saved)
+                try:
+                    from services.fcm import notify_chat_message
+
+                    notify_chat_message(chat_id, user_id, None, parsed["content"])
+                except Exception:
+                    pass
 
     except WebSocketDisconnect:
         try:

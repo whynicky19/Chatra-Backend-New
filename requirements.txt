@@ -16,6 +16,7 @@ et_xmlfile==2.0.0
 fastapi==0.135.3
 filelock==3.29.0
 fsspec==2026.3.0
+google-auth==2.38.0
 greenlet==3.3.2
 h11==0.16.0
 httpcore==1.0.9
