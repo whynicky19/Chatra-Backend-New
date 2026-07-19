@@ -586,3 +586,25 @@ class PushLog(Base):
     )
     dedup_key: Mapped[str] = mapped_column(String(64), nullable=False)
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class Report(Base):
+    """Жалоба пользователя на пользователя/сообщение (UGC-модерация, App Store
+    Guideline 1.2). Модератор просматривает открытые жалобы и обязан реагировать
+    в течение 24 часов. Таблица создаётся автоматически (Base.metadata.create_all)."""
+    __tablename__ = "reports"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    reporter_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    reported_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=True)
+    message_id: Mapped[int] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="open", server_default="open"
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
