@@ -24,12 +24,8 @@ def get_db():
     finally:
         db.close()
 
-# BE-3: изоляция university/school держится на колонке org_type в каждой
-# таблице (так работают все роутеры). Отдельные Postgres-схемы через search_path
-# были вторым, несовместимым механизмом: на проде схемы university/school пусты,
-# все данные лежат в public, а переключение search_path лишь плодило движки/пулы
-# (источник утечки из BE-4). Убрано: get_engine/get_session_for_org теперь всегда
-# работают с единым движком (public). org_type фильтруется на уровне запросов.
+# Изоляция university/school — по колонке org_type, а не по схемам Postgres:
+# отдельные схемы плодили движки и пулы (BE-3/BE-4). Движок всегда один.
 def get_engine(org_type: str = "university"):
     return engine
 

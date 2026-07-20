@@ -92,9 +92,8 @@ def login(
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="user_inactive")
-    # Email не подтверждён — клиент по этому коду уводит на экран ввода кода.
-    # Письмо здесь НЕ шлём (чтобы ретраи входа не спамили почту): код запросит
-    # экран верификации через /auth/resend-verification.
+    # По этому коду клиент уводит на экран ввода кода. Письмо тут не шлём, иначе
+    # ретраи входа спамят почту — его запросит /auth/resend-verification.
     if not user.is_verified:
         raise HTTPException(status_code=403, detail="email_not_verified")
     _login_limiter.reset(rate_key)
@@ -179,9 +178,8 @@ def resend_verification(body: schemas.EmailCodeRequest, request: Request, db: Se
     user = crud_users.get_user_by_email(db, email, org_type)
     if user and not user.is_verified:
         code = issue_code(db, email, org_type, "verify")
-        # sent отражает РЕАЛЬНУЮ отправку: если письмо не ушло, честнее сказать
-        # «не отправлено», чем оставить пользователя ждать. Анти-энумерация не
-        # страдает — ответ становится таким же, как для несуществующего аккаунта.
+        # sent = реальная отправка: честнее сказать «не ушло», чем заставить ждать.
+        # Анти-энумерация не страдает — ответ как для несуществующего аккаунта.
         resp["sent"] = send_code_email(email, code, "verify")
         if otp_debug():
             resp["dev_code"] = code

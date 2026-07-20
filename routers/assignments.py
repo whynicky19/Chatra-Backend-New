@@ -35,9 +35,8 @@ def _check_assignment_org(db: Session, assignment, current_user):
 
 
 def _check_assignment_access(db: Session, assignment, current_user):
-    """Org-проверка + студент должен состоять в классе задания. Задание с
-    неопубликованным дедлайном (черновик после rollover) для студента потока
-    скрыто целиком — отдаём 404, как будто его нет."""
+    """Org-проверка + членство студента в классе. Задание с неопубликованным
+    дедлайном (черновик после rollover) для студента скрыто — 404."""
     _check_assignment_org(db, assignment, current_user)
     require_class_access(db, assignment.class_id, current_user)
     if crud_cohorts.is_hidden_for_user(db, assignment, current_user):
@@ -358,8 +357,7 @@ def submit_assignment(
                 detail=f"Вариант {body.variant_number} не найден. Доступные: {valid_numbers}",
             )
 
-    # Просрочка — по дедлайну потока ученика (fallback на deprecated-поле
-    # задания внутри resolve_deadline); сдача якорится к deadline_id.
+    # Просрочка считается по дедлайну потока ученика; сдача якорится к deadline_id.
     deadline_row, due_date = crud_cohorts.resolve_deadline(db, assignment, current_user)
     is_late = bool(due_date and utcnow() > due_date)
 
@@ -681,9 +679,8 @@ async def ai_grade_submission(
                 reference_urls.append(assignment.reference_solution_url)
 
 
-    # Собираем контекст лекций ТОЛЬКО нужного класса. class_id лежит внутри
-    # JSON-поля body, поэтому сужаем выборку в SQL по подстроке, а точное
-    # совпадение перепроверяем в Python; посты без class_id не включаем.
+    # class_id лежит внутри JSON-поля body: сужаем выборку в SQL по подстроке,
+    # точное совпадение перепроверяем в Python. Посты без class_id не берём.
     lecture_context = ""
     try:
         from models import Posts

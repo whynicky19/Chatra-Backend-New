@@ -62,10 +62,8 @@ def send_email(to: str, subject: str, text_body: str, html_body: str | None = No
                     s.login(user, password)
                 s.send_message(msg)
 
-    # Временные отказы (SMTP 4.x.x) стоит повторить: типичный случай — Gmail
-    # отвечает «421 4.7.28 rate limited» на всплеск писем с общего домена
-    # провайдера. Постоянные ошибки (5.x.x — нет такого ящика, отказ в
-    # авторизации) повторять бессмысленно, выходим сразу.
+    # Повторяем только временные отказы (4.x.x, обычно rate limit).
+    # Постоянные (5.x.x — нет ящика, отказ авторизации) повторять бессмысленно.
     delays = (2, 8)
     for attempt in range(len(delays) + 1):
         try:

@@ -39,16 +39,12 @@ def _check_db():
 
 _check_db()
 
-# BE-3: раньше здесь создавались отдельные схемы university/school и таблицы в
-# них — второй, несовместимый с колонкой org_type механизм изоляции. На проде
-# он не работал (схемы пусты, данные в public) и лишь плодил движки/пулы.
-# Изоляция организаций держится на колонке org_type; отдельные схемы убраны.
+# Схемы university/school не создаём: изоляция идёт по колонке org_type (BE-3).
 
 _cors_raw = os.getenv("CORS_ORIGINS", "*")
 _cors_origins = [o.strip() for o in _cors_raw.split(",")] if _cors_raw != "*" else ["*"]
-# Wildcard-origin вместе с credentials — это фактически отключенный CORS:
-# браузеру отражается любой Origin. С "*" работаем без credentials;
-# в проде задайте явный список в CORS_ORIGINS.
+# "*" + credentials = отключённый CORS, поэтому с "*" работаем без credentials.
+# В проде задайте явный список в CORS_ORIGINS.
 _cors_credentials = _cors_origins != ["*"]
 if not _cors_credentials:
     logging.warning(
@@ -74,10 +70,8 @@ app = FastAPI(title="Chatra API", version="3.0", lifespan=lifespan)
 
 
 class UploadUrlSignerMiddleware(BaseHTTPMiddleware):
-    """SEC-1: подписывает все ссылки на /uploads в JSON-ответах. Клиент
-    получает временную подписанную ссылку, по которой прокси отдаёт файл;
-    публичного доступа по «голому» URL больше нет. Не-JSON (сами файлы,
-    стримы) проходят насквозь без буферизации."""
+    """Подписывает ссылки на /uploads в JSON-ответах (SEC-1): доступа по «голому»
+    URL нет. Не-JSON проходит насквозь, без буферизации."""
 
     async def dispatch(self, request, call_next):
         response = await call_next(request)
@@ -99,8 +93,8 @@ class UploadUrlSignerMiddleware(BaseHTTPMiddleware):
         )
 
 
-# ВАЖЕН порядок: signer добавляется ПЕРВЫМ, значит он самый внутренний и
-# видит несжатый JSON. GZip добавляется позже и сжимает уже подписанное тело.
+# Порядок важен: signer первый = самый внутренний, видит несжатый JSON.
+# GZip добавляется после и сжимает уже подписанное тело.
 app.add_middleware(UploadUrlSignerMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -153,9 +147,8 @@ def serve_upload(
     exp: int = Query(...),
     sig: str = Query(...),
 ):
-    """SEC-1: файлы отдаются только по действующей подписанной ссылке.
-    Подпись выдаёт бэкенд при возврате ресурса (сдача/эталон/обложка), поэтому
-    получить её может лишь тот, кто вправе прочитать сам ресурс."""
+    """Отдаёт файл только по действующей подписи (SEC-1). Подпись выдаётся вместе
+    с ресурсом, поэтому получить её может лишь тот, кто вправе его прочитать."""
     if not verify_signature(filename, exp, sig):
         raise HTTPException(status_code=403, detail="Invalid or expired file link")
 
@@ -168,11 +161,8 @@ def serve_upload(
 
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     disposition = "inline" if ext in _INLINE_EXTENSIONS else "attachment"
-    # filename обязателен: без него Starlette не шлёт Content-Disposition вообще,
-    # и content_disposition_type молча ни на что не влияет — «attachment» для
-    # неотображаемых типов не выставлялся. Имя на диске это UUID.ext (исходное
-    # живёт в #fragment, который до сервера не доходит), поэтому скачанный файл
-    # называется так же, как и раньше — регрессии в имени нет.
+    # filename обязателен: без него Starlette вообще не шлёт Content-Disposition,
+    # и content_disposition_type ни на что не влияет.
     return FileResponse(
         full,
         headers={"X-Content-Type-Options": "nosniff"},

@@ -138,10 +138,8 @@ class Deadline(Base):
 
 class User(Base):
     __tablename__ = "users"
-    # Личность = пара (email, org_type): один и тот же email может существовать в
-    # университете и школе как разные аккаунты. Глобальный unique на email убран —
-    # он конфликтовал с логикой login/register (та ключует по org_type) и ронял
-    # регистрацию второго org_type в IntegrityError → 500.
+    # Личность = пара (email, org_type): один email живёт в вузе и школе как разные
+    # аккаунты. Глобальный unique на email ронял регистрацию второго org_type в 500.
     __table_args__ = (
         UniqueConstraint("email", "org_type", name="ux_users_email_org"),
     )
@@ -244,9 +242,8 @@ class Assignment(Base):
     description: Mapped[str] = mapped_column(Text, nullable=True)
     criteria: Mapped[str] = mapped_column(Text, nullable=False)
     max_score: Mapped[int] = mapped_column(Integer, default=100)
-    # DEPRECATED: дедлайны переехали в таблицу deadlines (по потокам).
-    # Поле оставлено для обратной совместимости и как fallback для заданий
-    # с легаси class_id, у которых нет потока. Не удалять до полного переезда.
+    # DEPRECATED: дедлайны переехали в deadlines (по потокам). Оставлено как
+    # fallback для легаси-заданий без потока — не удалять до полного переезда.
     deadline: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -282,10 +279,8 @@ class AssignmentVariant(Base):
 class Submission(Base):
     __tablename__ = "submissions"
     __table_args__ = (
-        # BE-1: одна сдача на пару (задание, студент). Приложение уже проверяет
-        # это в student_already_submitted(), но без БД-инварианта двойной клик
-        # или «сайт+приложение одновременно» проскакивал проверку (TOCTOU) и
-        # создавал две сдачи. Ловим IntegrityError в submit_assignment → 409.
+        # Одна сдача на (задание, студент). Проверка в коде есть, но без инварианта
+        # БД двойной клик проскакивал её по TOCTOU. IntegrityError → 409 (BE-1).
         UniqueConstraint("assignment_id", "student_id", name="ux_submissions_assignment_student"),
     )
 

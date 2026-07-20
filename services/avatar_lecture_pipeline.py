@@ -80,10 +80,8 @@ async def run_lecture_generation(lecture_id: int, org_type: str = "university") 
             db.commit()
             return
 
-        # Сначала готовим презентацию (картинки слайдов). Если она не
-        # отрендерилась — останавливаемся с понятной ошибкой до генерации
-        # текста и озвучки: «готовая» лекция без слайдов выглядит как вечное
-        # «презентация готовится», а деньги на TTS уже потрачены.
+        # Слайды рендерим первыми: без них «готовая» лекция висит в «презентация
+        # готовится», а деньги на TTS уже потрачены.
         slide_images_error = await _ensure_slide_images(db, lecture, slides)
         if slide_images_error:
             lecture.status = "failed"

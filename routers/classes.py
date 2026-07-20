@@ -138,9 +138,8 @@ def list_classes(
     else:
         teacher_id = current_user.id if my_only else None
         classes = crud.get_all_classes(db, teacher_id=teacher_id, org_type=current_user.org_type)
-    # FE-1: студенческий путь собирает список в Python (слияние потоков и
-    # легаси-членства), поэтому пагинацию применяем срезом уже отсортированного
-    # списка — единообразно для обеих веток. limit=None → полный список (совместимо).
+    # Студенческая ветка собирает список в Python, поэтому пагинация — срезом,
+    # единообразно для обеих веток. limit=None отдаёт всё.
     if limit is not None:
         classes = classes[offset:offset + limit]
     elif offset:

@@ -41,10 +41,8 @@ class UserResponse(BaseModel):
     full_name: Optional[str] = Field(default=None, max_length=200)
     org_type: str = "university"
     ai_unlimited: bool = False
-    # Ушло ли письмо с кодом подтверждения. False — аккаунт создан, но письмо не
-    # доставлено (SMTP лежит, лимит провайдера): клиент должен сказать об этом,
-    # иначе пользователь ждёт код, которого не будет. Здесь раскрывать факт
-    # безопасно — аккаунт только что создал сам вызывающий.
+    # False = аккаунт создан, но письмо не ушло (SMTP лёг). Клиент обязан сказать
+    # об этом, иначе юзер ждёт код, которого не будет.
     email_sent: bool = True
 
     model_config = ConfigDict(from_attributes=True)
@@ -98,9 +96,8 @@ class UserAdminUpdate(BaseModel):
     def _role_valid(cls, v):
         return None if v is None else validate_role(v)
 
-# BE-6: единые верхние границы длины пользовательских строк. Без них студент/
-# преподаватель мог прислать мегабайты текста — раздувает БД, а для сдач весь
-# text_content ещё и улетает в GPT (файлы обрезаются 25k, текст не обрезался).
+# Верхние границы пользовательских строк: без них можно прислать мегабайты —
+# раздувает БД, а текст сдачи ещё и целиком улетает в GPT (BE-6).
 MAX_TITLE_LEN = 500
 MAX_NAME_LEN = 256
 MAX_DESCRIPTION_LEN = 5000
@@ -200,10 +197,8 @@ class SubmissionWithGrade(SubmissionResponse):
     model_config = ConfigDict(from_attributes=True)
 
 class GradeCreate(BaseModel):
-    # graded_by намеренно отсутствует: сервер выставляет его сам,
-    # значение из тела запроса игнорируется.
-    # BE-5: неотрицательный балл; верхнюю границу (max_score задания) сервер
-    # клампит в save_grade, здесь она неизвестна.
+    # graded_by не принимаем — сервер ставит сам.
+    # Верхнюю границу клампит save_grade: max_score задания здесь неизвестен.
     score: int = Field(ge=0)
     feedback: Optional[str] = Field(default=None, max_length=MAX_DESCRIPTION_LEN)
     criteria_scores: Optional[List[Any]] = None

@@ -71,10 +71,8 @@ def delete_class(db: Session, class_id: int) -> bool:
     obj = get_class(db, class_id)
     if not obj:
         return False
-    # Удаление класса каскадит на потоки → дедлайны, но submissions.deadline_id
-    # ссылается на дедлайны без ON DELETE (FK submissions_deadline_id_fkey).
-    # Обнуляем ссылки заранее, иначе ForeignKeyViolation. Сами сдачи — история
-    # ученика, их не трогаем (для них останется fallback assignment.deadline).
+    # submissions.deadline_id ссылается на дедлайны без ON DELETE — обнуляем
+    # заранее, иначе ForeignKeyViolation. Сами сдачи не трогаем: это история ученика.
     deadline_ids = (
         db.query(Deadline.id)
         .join(Cohort, Cohort.id == Deadline.cohort_id)

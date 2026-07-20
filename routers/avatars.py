@@ -17,9 +17,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/avatars", tags=["Teacher Avatars"])
 
 ALLOWED_STYLES = {"school", "university", "professional"}
-# Языки, которые надёжно поддерживает голосовая модель ElevenLabs
-# (eleven_multilingual_v2). Казахского в её списке нет — добавлять сюда
-# язык без поддержки TTS нельзя, озвучка выйдет ломаной.
+# Языки с надёжным TTS в eleven_multilingual_v2. Казахского там нет: язык без
+# поддержки добавлять нельзя — озвучка выйдет ломаной.
 ALLOWED_LANGUAGES = {"ru", "en"}
 
 
