@@ -608,3 +608,28 @@ class Report(Base):
         String(16), nullable=False, default="open", server_default="open"
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class UserBlock(Base):
+    """Блокировка пользователя пользователем (UGC-модерация, App Store
+    Guideline 1.2). Раньше блок-лист жил только в SharedPreferences на
+    устройстве: терялся при переустановке и не синхронизировался между
+    устройствами. Теперь это серверная истина.
+
+    Пара (user_id, blocked_user_id) уникальна — повторный блок идемпотентен."""
+
+    __tablename__ = "user_blocks"
+    __table_args__ = (
+        UniqueConstraint("user_id", "blocked_user_id", name="ux_user_blocks_pair"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    # Кто заблокировал.
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Кого заблокировали.
+    blocked_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

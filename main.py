@@ -15,7 +15,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from services.file_urls import sign_uploads_in_text, verify_signature
 from db import Base, engine
 from models import Base
-from routers import auth, admin, users, posts, chats, messages, reactions, uploads, ai, avatars, notifications, push, reports
+from routers import auth, admin, users, posts, chats, messages, reactions, uploads, ai, avatars, notifications, push, reports, blocks
 from routers.assignments import router as assignments_router
 from routers.classes import router as classes_router, rating_router
 from routers.cohorts import router as cohorts_router
@@ -125,6 +125,7 @@ app.include_router(ai.router)
 app.include_router(notifications.router)
 app.include_router(push.router)
 app.include_router(reports.router)
+app.include_router(blocks.router)
 app.include_router(avatars.router)
 app.include_router(assignments_router)
 app.include_router(classes_router)
