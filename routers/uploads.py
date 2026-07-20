@@ -1,5 +1,6 @@
 import os
 import io
+import logging
 from collections import OrderedDict
 from uuid import uuid4
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
@@ -9,6 +10,8 @@ import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from services.file_service import read_file
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
 
@@ -175,6 +178,16 @@ async def upload_file(
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
-    parsed = read_file(file_path)
+    # Парсер не должен решать судьбу аплоада: magic-байты уже подтвердили тип, а
+    # повреждённый (или просто нестандартный) PDF/DOCX роняет pdfplumber/python-docx
+    # исключением. Раньше оно улетало наружу как 500, и файл оставался сиротой на
+    # диске. Текст нужен только ИИ-контексту — без него файл всё равно скачивается
+    # и открывается, поэтому деградируем так же, как ветка «неизвестный формат».
+    try:
+        parsed = read_file(file_path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Не удалось распарсить %s (%s): %s", file.filename, unique_filename, e)
+        parsed = {"type": "unparsed", "error": "Не удалось извлечь текст из файла"}
+
     file_url = f"{APP_BASE_URL.rstrip('/')}/uploads/{unique_filename}"
     return JSONResponse(content={"file_url": file_url, "filename": file.filename, "parsed": parsed})
