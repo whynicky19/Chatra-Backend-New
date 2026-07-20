@@ -168,10 +168,16 @@ def serve_upload(
 
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     disposition = "inline" if ext in _INLINE_EXTENSIONS else "attachment"
+    # filename обязателен: без него Starlette не шлёт Content-Disposition вообще,
+    # и content_disposition_type молча ни на что не влияет — «attachment» для
+    # неотображаемых типов не выставлялся. Имя на диске это UUID.ext (исходное
+    # живёт в #fragment, который до сервера не доходит), поэтому скачанный файл
+    # называется так же, как и раньше — регрессии в имени нет.
     return FileResponse(
         full,
         headers={"X-Content-Type-Options": "nosniff"},
         content_disposition_type=disposition,
+        filename=os.path.basename(full),
     )
 
 
