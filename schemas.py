@@ -41,6 +41,11 @@ class UserResponse(BaseModel):
     full_name: Optional[str] = Field(default=None, max_length=200)
     org_type: str = "university"
     ai_unlimited: bool = False
+    # Ушло ли письмо с кодом подтверждения. False — аккаунт создан, но письмо не
+    # доставлено (SMTP лежит, лимит провайдера): клиент должен сказать об этом,
+    # иначе пользователь ждёт код, которого не будет. Здесь раскрывать факт
+    # безопасно — аккаунт только что создал сам вызывающий.
+    email_sent: bool = True
 
     model_config = ConfigDict(from_attributes=True)
 

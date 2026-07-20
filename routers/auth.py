@@ -69,8 +69,12 @@ def register(user: schemas.UserRegister, db: Session = Depends(get_db)):
     # Новый аккаунт не подтверждён (ORM default), сразу шлём код на email.
     # Вход будет заблокирован до подтверждения (login → 403 email_not_verified).
     code = issue_code(db, email, org_type, "verify")
-    send_code_email(email, code, "verify")
-    return created
+    sent = send_code_email(email, code, "verify")
+    # Аккаунт уже создан — откатывать регистрацию из-за почты нельзя, но клиент
+    # должен знать, что кода не будет, и предложить запросить его повторно.
+    resp = schemas.UserResponse.model_validate(created)
+    resp.email_sent = sent
+    return resp
 
 
 @router.post("/login", response_model=schemas.Token)
@@ -175,8 +179,10 @@ def resend_verification(body: schemas.EmailCodeRequest, request: Request, db: Se
     user = crud_users.get_user_by_email(db, email, org_type)
     if user and not user.is_verified:
         code = issue_code(db, email, org_type, "verify")
-        send_code_email(email, code, "verify")
-        resp["sent"] = True
+        # sent отражает РЕАЛЬНУЮ отправку: если письмо не ушло, честнее сказать
+        # «не отправлено», чем оставить пользователя ждать. Анти-энумерация не
+        # страдает — ответ становится таким же, как для несуществующего аккаунта.
+        resp["sent"] = send_code_email(email, code, "verify")
         if otp_debug():
             resp["dev_code"] = code
     return resp
@@ -192,8 +198,7 @@ def forgot_password(body: schemas.EmailCodeRequest, request: Request, db: Sessio
     user = crud_users.get_user_by_email(db, email, org_type)
     if user and user.is_active:
         code = issue_code(db, email, org_type, "reset")
-        send_code_email(email, code, "reset")
-        resp["sent"] = True
+        resp["sent"] = send_code_email(email, code, "reset")
         if otp_debug():
             resp["dev_code"] = code
     return resp

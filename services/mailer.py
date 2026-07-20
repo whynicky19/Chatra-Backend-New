@@ -13,6 +13,7 @@ import logging
 import os
 import smtplib
 import ssl
+import time
 from email.message import EmailMessage
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ def send_email(to: str, subject: str, text_body: str, html_body: str | None = No
     if html_body:
         msg.add_alternative(html_body, subtype="html")
 
-    try:
+    def _deliver() -> None:
         if port == 465:
             with smtplib.SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=10) as s:
                 if user:
@@ -60,10 +61,36 @@ def send_email(to: str, subject: str, text_body: str, html_body: str | None = No
                 if user:
                     s.login(user, password)
                 s.send_message(msg)
-        return True
-    except Exception as e:
-        logger.error("Ошибка отправки письма на %s: %s", to, e)
-        return False
+
+    # Временные отказы (SMTP 4.x.x) стоит повторить: типичный случай — Gmail
+    # отвечает «421 4.7.28 rate limited» на всплеск писем с общего домена
+    # провайдера. Постоянные ошибки (5.x.x — нет такого ящика, отказ в
+    # авторизации) повторять бессмысленно, выходим сразу.
+    delays = (2, 8)
+    for attempt in range(len(delays) + 1):
+        try:
+            _deliver()
+            return True
+        except smtplib.SMTPResponseException as e:
+            transient = 400 <= e.smtp_code < 500
+            if not transient or attempt == len(delays):
+                logger.error(
+                    "Письмо на %s не отправлено (%s, код %s): %s",
+                    to,
+                    "временная ошибка, попытки исчерпаны" if transient else "постоянная ошибка",
+                    e.smtp_code,
+                    e.smtp_error,
+                )
+                return False
+            logger.warning(
+                "Временный отказ SMTP для %s (код %s), повтор через %d с",
+                to, e.smtp_code, delays[attempt],
+            )
+            time.sleep(delays[attempt])
+        except Exception as e:
+            logger.error("Ошибка отправки письма на %s: %s", to, e)
+            return False
+    return False
 
 
 def send_code_email(to: str, code: str, purpose: str) -> bool:
