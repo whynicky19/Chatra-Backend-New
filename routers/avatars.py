@@ -54,6 +54,7 @@ def create_my_avatar(
         existing.reviewed_at = None
         db.commit()
         db.refresh(existing)
+        _notify_admins_avatar_request(current_user)
         return existing
 
     avatar = TeacherAvatar(
@@ -67,7 +68,21 @@ def create_my_avatar(
     db.add(avatar)
     db.commit()
     db.refresh(avatar)
+    _notify_admins_avatar_request(current_user)
     return avatar
+
+
+def _notify_admins_avatar_request(teacher) -> None:
+    """Пуш админам организации о новой заявке на аватар — она ждёт ручного
+    одобрения в админке."""
+    from services.fcm import notify_admins
+    name = teacher.full_name or teacher.email
+    notify_admins(
+        teacher.org_type,
+        "Заявка на аватар",
+        f"{name} подал(а) заявку на создание аватара",
+        {"type": "avatar_request", "notif_key": f"avatar:{teacher.id}"},
+    )
 
 
 def _get_approved_avatar_or_404(db: Session, teacher_id: int) -> TeacherAvatar:
@@ -152,6 +167,16 @@ async def create_lecture(
 
     db.commit()
     db.refresh(lecture)
+
+    # Лекция рождается в pending_approval и ждёт одобрения в админке.
+    from services.fcm import notify_admins
+    name = current_user.full_name or current_user.email
+    notify_admins(
+        current_user.org_type,
+        "Лекция на модерации",
+        f"{name}: «{lecture.title}»",
+        {"type": "lecture_request", "notif_key": f"lecture:{lecture.id}", "lecture_id": lecture.id},
+    )
     return lecture
 
 

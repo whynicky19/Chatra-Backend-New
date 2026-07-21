@@ -236,6 +236,33 @@ def notify_chat_message(chat_id: int, sender_id: int, sender_name: Optional[str]
         logger.warning("notify_chat_message: %s", e)
 
 
+def notify_admins(org_type: str, title: str, body: str, data: Optional[dict] = None) -> None:
+    """Push всем активным админам организации (жалобы, заявки на аватары,
+    лекции на модерации). Адресаты выбираются в короткой собственной сессии,
+    отправка — фоново; вызывающий код не роняем никогда."""
+    try:
+        from sqlalchemy import text as _sql
+
+        from db import SessionLocal
+
+        db = SessionLocal()
+        try:
+            rows = db.execute(
+                _sql(
+                    "SELECT id FROM users "
+                    "WHERE role = 'admin' AND org_type = :org AND is_active = true"
+                ),
+                {"org": org_type},
+            ).fetchall()
+            ids = [r.id for r in rows]
+        finally:
+            db.close()
+        if ids:
+            send_push_bg(ids, title, body, data)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("notify_admins: %s", e)
+
+
 def send_push_bg(user_ids: Iterable[int], title: str, body: str, data: Optional[dict] = None) -> None:
     """Fire-and-forget отправка в отдельном потоке с собственной сессией БД.
     Безопасно вызывать из sync- и async-обработчиков: не блокирует ответ/event loop

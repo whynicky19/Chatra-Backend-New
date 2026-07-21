@@ -59,6 +59,17 @@ def create_report(
     db.add(report)
     db.commit()
     db.refresh(report)
+
+    # Пуш админам организации: жалоба лежит в админке, без пуша её заметят
+    # только при следующем заходе.
+    from services.fcm import notify_admins
+    reporter = current_user.full_name or current_user.email
+    notify_admins(
+        current_user.org_type,
+        "Новая жалоба",
+        f"{reporter}: {report.reason}",
+        {"type": "admin_report", "notif_key": f"report:{report.id}", "report_id": report.id},
+    )
     return {"id": report.id, "status": report.status}
 
 
