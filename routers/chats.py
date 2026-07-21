@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from db import get_db
 from deps import get_current_user
 from models import Chat, chat_members, Message
 from permissions import require_chat_member
-from schemas import ChatCreate, ChatResponse
+from schemas import ChatCreate, ChatResponse, LastMessagePreview
 from models import User
 
 router = APIRouter(prefix="/chats", tags=["Chats"])
@@ -36,7 +37,65 @@ def get_chats(
         q = q.offset(offset)
     if limit is not None:
         q = q.limit(limit)
-    return q.all()
+    chats = q.all()
+
+    chat_ids = [c.id for c in chats]
+    unread_map: dict[int, int] = {}
+    last_map: dict[int, Message] = {}
+    if chat_ids:
+        rows = (
+            db.query(Message.chat_id, func.count(Message.id))
+            .filter(Message.chat_id.in_(chat_ids))
+            .filter(Message.user_id != current_user.id)
+            .filter(or_(Message.is_read.is_(False), Message.is_read.is_(None)))
+            .group_by(Message.chat_id)
+            .all()
+        )
+        unread_map = {cid: cnt for cid, cnt in rows}
+
+        # Последнее сообщение на чат — превью в списке без загрузки полной
+        # истории (раньше клиент тянул все сообщения каждого чата на поллинге).
+        latest_sub = (
+            db.query(Message.chat_id, func.max(Message.id).label("max_id"))
+            .filter(Message.chat_id.in_(chat_ids))
+            .group_by(Message.chat_id)
+            .subquery()
+        )
+        last_rows = (
+            db.query(Message)
+            .join(latest_sub, (Message.chat_id == latest_sub.c.chat_id) & (Message.id == latest_sub.c.max_id))
+            .all()
+        )
+        last_map = {m.chat_id: m for m in last_rows}
+
+    def _preview(c: Chat) -> LastMessagePreview | None:
+        m = last_map.get(c.id)
+        if m is None:
+            return None
+        return LastMessagePreview(
+            id=m.id,
+            content=m.content or "",
+            user_id=m.user_id,
+            created_at=m.created_at.isoformat() if m.created_at else None,
+            is_read=bool(m.is_read),
+        )
+
+    return [
+        ChatResponse(id=c.id, name=c.name, unread_count=unread_map.get(c.id, 0), last_message=_preview(c))
+        for c in chats
+    ]
+
+
+@router.put("/{chat_id}/read")
+def mark_chat_read(chat_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    require_chat_member(db, chat_id, current_user.id)
+    db.query(Message).filter(
+        Message.chat_id == chat_id,
+        Message.user_id != current_user.id,
+        or_(Message.is_read.is_(False), Message.is_read.is_(None)),
+    ).update({"is_read": True}, synchronize_session=False)
+    db.commit()
+    return {"status": "read"}
 
 @router.get("/{chat_id}/users")
 def get_chat_users(chat_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):

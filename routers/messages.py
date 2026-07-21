@@ -26,7 +26,7 @@ def _safe_date(val) -> str | None:
 
 
 @router.post("/chat/{chat_id}")
-def send_message(
+async def send_message(
     chat_id: int,
     msg: MessageCreate,
     db: Session = Depends(get_db),
@@ -50,6 +50,27 @@ def send_message(
         )
         db.commit()
         new_id = result.scalar_one_or_none()
+        payload = {
+            "type": "message",
+            "id": new_id,
+            "content": msg.content,
+            "chat_id": chat_id,
+            "user_id": current_user.id,
+            "created_at": now.isoformat(),
+            "is_read": False,
+            "file_url": None,
+        }
+        # Сообщения раньше сохранялись только через REST, а рассылка по WS
+        # была только у сообщений, присланных сырым фреймом в /ws/{chat_id} —
+        # в реальности этим путём никто не пользуется (и сайт, и приложение
+        # шлют через REST), поэтому получатели узнавали о новом сообщении
+        # только на следующем поллинге. Рассылаем и здесь.
+        try:
+            from websocket import broadcast
+
+            await broadcast(chat_id, payload)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             from services.fcm import notify_chat_message
 

@@ -121,9 +121,18 @@ class PostResponse(BaseModel):
 class ChatCreate(BaseModel):
     name: str = Field(max_length=MAX_NAME_LEN)
 
+class LastMessagePreview(BaseModel):
+    id: int
+    content: str
+    user_id: int
+    created_at: Optional[str] = None
+    is_read: bool = False
+
 class ChatResponse(BaseModel):
     id: int
     name: str
+    unread_count: int = 0
+    last_message: Optional[LastMessagePreview] = None
 
     model_config = ConfigDict(from_attributes=True)
 

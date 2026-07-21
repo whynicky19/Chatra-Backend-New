@@ -118,6 +118,11 @@ async def _broadcast(chat_id: int, payload: dict) -> None:
             pass
 
 
+# Публичный алиас для использования из других роутеров (например, чтобы
+# разослать событие "read" когда собеседник открыл чат — см. routers/chats.py).
+broadcast = _broadcast
+
+
 @router.websocket("/ws/{chat_id}")
 async def websocket_endpoint(
     websocket: WebSocket,
