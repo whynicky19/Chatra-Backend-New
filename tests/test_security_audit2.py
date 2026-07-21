@@ -141,3 +141,27 @@ def test_file_text_requires_signature(client, db_session):
     signed = sign_upload_url(unsigned)
     r = client.get("/upload/utils/file-text", params={"url": signed}, headers=auth_headers(user))
     assert r.status_code == 200  # подпись валидна; текст пуст (файла нет)
+
+
+def test_sign_uploads_in_text_signs_relative_urls():
+    """Приложение сохраняет вложения относительной ссылкой «/uploads/x.png».
+    Без подписи прокси отдавал 422 — фото не открывалось ни в приложении, ни
+    на сайте. Проверяем, что относительные ссылки тоже подписываются, а чужие
+    хосты не трогаются."""
+    import json
+    import re
+    from services.file_urls import sign_uploads_in_text, verify_signature
+
+    body = json.dumps({
+        "bare": "/uploads/x.png",
+        "markdown": "🖼️ [Фото](/uploads/z.png) — ceo.png",
+        "foreign": "https://cdn.example.com/uploads/foreign.png",
+    }, ensure_ascii=False)
+
+    out = json.loads(sign_uploads_in_text(body))
+
+    for key in ("bare", "markdown"):
+        m = re.search(r"/uploads/([^?)\s\"]+)\?exp=(\d+)&sig=(\w+)", out[key])
+        assert m, out[key]
+        assert verify_signature(m.group(1), m.group(2), m.group(3))
+    assert out["foreign"] == "https://cdn.example.com/uploads/foreign.png"

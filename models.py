@@ -358,6 +358,10 @@ class RagChunk(Base):
 
 class AiUsageLog(Base):
     __tablename__ = "ai_usage_logs"
+    __table_args__ = (
+        # Дневная квота сообщений ИИ считает строки за сутки по пользователю.
+        Index("ix_ai_usage_logs_user_created", "user_id", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

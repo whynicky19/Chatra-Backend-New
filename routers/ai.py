@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from deps import get_current_user
 from db import get_db
 from services.rate_limit import RateLimiter
+from services import ai_quota
 from sqlalchemy.orm import Session
 
 from models import AiMessage
@@ -41,6 +42,9 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     content: str
+    # Состояние дневной квоты после этого сообщения — чтобы клиент обновлял
+    # счётчик без дополнительного запроса к /ai/limits.
+    quota: Optional[dict] = None
 
 
 def _serialize_message(m: ChatMessage) -> dict:
@@ -102,6 +106,8 @@ async def ai_chat(
         )
 
     _check_rate_limit(current_user.id)
+    # Дневная квота сообщений на пользователя (общая для приложения и сайта).
+    ai_quota.enforce(db, current_user)
 
     if not body.messages:
         raise HTTPException(status_code=422, detail="messages must not be empty")
@@ -154,6 +160,8 @@ async def ai_chat(
     content = data["choices"][0]["message"]["content"]
 
 
+    # ВАЖНО: эта же строка — счётчик дневной квоты (services/ai_quota.py),
+    # поэтому при сбое откатываем сессию, а не оставляем её сломанной.
     try:
         usage = data.get("usage", {})
         from models import AiUsageLog
@@ -169,12 +177,29 @@ async def ai_chat(
         db.add(log)
         db.commit()
     except Exception:
-        pass
+        db.rollback()
 
     # Персистим переписку на сервер — история синхронизируется между устройствами.
     _persist_ai_exchange(db, current_user.id, body.class_id, body.messages, content)
 
-    return ChatResponse(content=content)
+    return ChatResponse(content=content, quota=ai_quota.quota_status(db, current_user))
+
+
+class AiLimitsResponse(BaseModel):
+    limit: int
+    used: int
+    remaining: Optional[int] = None   # None — безлимит
+    unlimited: bool
+    resets_at: str
+
+
+@router.get("/limits", response_model=AiLimitsResponse)
+def get_ai_limits(
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Дневная квота сообщений ИИ текущего пользователя (для счётчика в UI)."""
+    return AiLimitsResponse(**ai_quota.quota_status(db, current_user))
 
 
 class AiMessageResponse(BaseModel):

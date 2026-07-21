@@ -83,15 +83,29 @@ def _uploads_url_regex() -> re.Pattern:
     return re.compile(base + r"([A-Za-z0-9_\-.\/]+)(\?[A-Za-z0-9_\-.=&%]*)?")
 
 
+# Относительная ссылка «/uploads/<файл>»: так вложения сохраняет мобильное
+# приложение (оно намеренно режет хост, чтобы ссылка не привязывалась к
+# конкретному LAN-адресу). Без подписи такой URL отдавал 422 — фото не
+# открывалось ни в приложении, ни на сайте, поэтому подписываем и его.
+# Ограничение по предшествующему символу (кавычка/пробел/скобка) не даёт
+# зацепить путь внутри уже подписанного абсолютного URL и чужие хосты.
+_RELATIVE_UPLOADS_RE = re.compile(
+    r"(?P<pre>[\"'\s,\[(])/uploads/(?P<path>[A-Za-z0-9_\-.\/]+)"
+    r"(?P<query>\?[A-Za-z0-9_\-.=&%]*)?"
+)
+
+
 def sign_uploads_in_text(text: str) -> str:
     """Подписывает все ссылки на своё хранилище в готовом текстовом теле
-    ответа (JSON). Существующие подписи заменяются на свежие."""
+    ответа (JSON) — и абсолютные, и относительные. Существующие подписи
+    заменяются на свежие."""
     base = _uploads_base()
-    pattern = _uploads_url_regex()
 
-    def _repl(m: re.Match) -> str:
-        path = m.group(1)
+    def _signed(path: str) -> str:
         exp, sig = make_signature(path)
         return f"{base}{path}?{urlencode({'exp': exp, 'sig': sig})}"
 
-    return pattern.sub(_repl, text)
+    text = _uploads_url_regex().sub(lambda m: _signed(m.group(1)), text)
+    return _RELATIVE_UPLOADS_RE.sub(
+        lambda m: f"{m.group('pre')}{_signed(m.group('path'))}", text
+    )
