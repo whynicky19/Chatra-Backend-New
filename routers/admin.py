@@ -1,14 +1,12 @@
 import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-import json
-from datetime import datetime
 from utils.time import utcnow
 from models import User, AiUsageLog, TeacherAvatar, AvatarLecture, Class as ClassModel
 from crud import classes as crud_classes
 import schemas
 from schemas import UserCreate, UserResponse
-from deps import get_current_admin, get_current_user
+from deps import get_current_admin
 from db import get_db
 from crud import users as crud_users
 from security import hash_password
@@ -176,7 +174,7 @@ def get_ai_usage(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_admin),
 ):
-    from sqlalchemy import desc, func
+    from sqlalchemy import desc
     q = db.query(AiUsageLog).filter(AiUsageLog.org_type == current_user.org_type)
     if class_id is not None:
         q = q.filter(AiUsageLog.class_id == class_id)

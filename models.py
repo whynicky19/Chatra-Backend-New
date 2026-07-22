@@ -32,13 +32,6 @@ cohort_students = Table(
     Column("joined_at", DateTime, default=utcnow),
 )
 
-chat_members = Table(
-    "chat_members",
-    Base.metadata,
-    Column("chat_id", Integer, ForeignKey("chats.id")),
-    Column("user_id", Integer, ForeignKey("users.id")),
-)
-
 class Class(Base):
     __tablename__ = "classes"
 
@@ -163,11 +156,6 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
-    chats: Mapped[list["Chat"]] = relationship(
-        "Chat",
-        secondary=chat_members,
-        back_populates="members",
-    )
     submissions: Mapped[list["Submission"]] = relationship(
         back_populates="student",
         cascade="all, delete-orphan",
@@ -202,36 +190,6 @@ class Posts(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     user: Mapped["User"] = relationship(back_populates="posts")
-
-class Chat(Base):
-    __tablename__ = "chats"
-
-    id = Column(Integer, primary_key=True)
-    name = Column(String)
-    members: Mapped[list["User"]] = relationship(
-        "User",
-        secondary=chat_members,
-        back_populates="chats",
-    )
-
-class Message(Base):
-    __tablename__ = "messages"
-
-    id = Column(Integer, primary_key=True)
-    content = Column(Text)
-    created_at = Column(DateTime, default=utcnow)
-    chat_id = Column(Integer, ForeignKey("chats.id"))
-    user_id = Column(Integer, ForeignKey("users.id"))
-    is_read = Column(Boolean, default=False)
-    file_url = Column(String, nullable=True)
-
-class Reaction(Base):
-    __tablename__ = "reactions"
-
-    id = Column(Integer, primary_key=True)
-    message_id = Column(Integer, ForeignKey("messages.id"))
-    user_id = Column(Integer, ForeignKey("users.id"))
-    emoji = Column(String)
 
 class Assignment(Base):
     __tablename__ = "assignments"
@@ -587,48 +545,3 @@ class PushLog(Base):
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
-class Report(Base):
-    """Жалоба пользователя на пользователя/сообщение (UGC-модерация, App Store
-    Guideline 1.2). Модератор просматривает открытые жалобы и обязан реагировать
-    в течение 24 часов. Таблица создаётся автоматически (Base.metadata.create_all)."""
-    __tablename__ = "reports"
-
-    id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    reporter_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    reported_user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    reason: Mapped[str] = mapped_column(String(64), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=True)
-    message_id: Mapped[int] = mapped_column(Integer, nullable=True)
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="open", server_default="open"
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
-
-
-class UserBlock(Base):
-    """Блокировка пользователя пользователем (UGC-модерация, App Store
-    Guideline 1.2). Раньше блок-лист жил только в SharedPreferences на
-    устройстве: терялся при переустановке и не синхронизировался между
-    устройствами. Теперь это серверная истина.
-
-    Пара (user_id, blocked_user_id) уникальна — повторный блок идемпотентен."""
-
-    __tablename__ = "user_blocks"
-    __table_args__ = (
-        UniqueConstraint("user_id", "blocked_user_id", name="ux_user_blocks_pair"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    # Кто заблокировал.
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    # Кого заблокировали.
-    blocked_user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

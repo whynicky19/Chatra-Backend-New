@@ -4,10 +4,9 @@
 роутеры не должны дублировать эти запросы.
 """
 from fastapi import HTTPException
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from models import Chat, Class, Assignment, AssignmentVariant, Submission, class_members
+from models import Class, Assignment, AssignmentVariant, class_members
 from crud import cohorts as crud_cohorts
 
 
@@ -63,31 +62,6 @@ def require_submission_class_owner(db: Session, submission, current_user):
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
     return require_assignment_owner(db, assignment, current_user)
-
-
-def require_chat_member(db: Session, chat_id: int, user_id: int) -> None:
-    """404 если чата нет, 403 если пользователь не участник."""
-    chat = db.query(Chat).filter(Chat.id == chat_id).first()
-    if not chat:
-        raise HTTPException(status_code=404, detail="Chat not found")
-    row = db.execute(
-        text("SELECT 1 FROM chat_members WHERE chat_id = :cid AND user_id = :uid"),
-        {"cid": chat_id, "uid": user_id},
-    ).fetchone()
-    if not row:
-        raise HTTPException(status_code=403, detail="Not a member of this chat")
-
-
-def require_message_chat_member(db: Session, message_id: int, user_id: int):
-    """404 если сообщения нет, 403 если пользователь не участник его чата.
-    Возвращает строку (id, chat_id)."""
-    msg = db.execute(
-        text("SELECT id, chat_id FROM messages WHERE id = :id"), {"id": message_id}
-    ).fetchone()
-    if not msg:
-        raise HTTPException(status_code=404, detail="Message not found")
-    require_chat_member(db, msg[1], user_id)
-    return msg
 
 
 def is_class_member(db: Session, class_id: int, user_id: int) -> bool:

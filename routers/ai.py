@@ -1,4 +1,3 @@
-import json
 import os
 import httpx
 from typing import List, Optional, Union, Any
@@ -48,10 +47,7 @@ class ChatResponse(BaseModel):
 
 
 def _serialize_message(m: ChatMessage) -> dict:
-
-    if isinstance(m.content, str):
-        return {"role": m.role, "content": m.content}
-
+    # Строку и vision-список (list of parts) OpenAI принимает как есть.
     return {"role": m.role, "content": m.content}
 
 

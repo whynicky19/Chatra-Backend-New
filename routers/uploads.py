@@ -1,5 +1,4 @@
 import os
-import io
 import logging
 from collections import OrderedDict
 from uuid import uuid4

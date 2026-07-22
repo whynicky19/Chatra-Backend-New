@@ -187,55 +187,6 @@ def send_push(db, user_ids: Iterable[int], title: str, body: str, data: Optional
     return len(tokens)
 
 
-def notify_chat_message(chat_id: int, sender_id: int, sender_name: Optional[str], content: str) -> None:
-    """Push всем участникам чата, кроме отправителя, о новом сообщении.
-    Открывает собственную короткую сессию (адресаты + имя), затем шлёт в фоне.
-    Никогда не роняет вызывающий код."""
-    try:
-        from sqlalchemy import text as _sql
-
-        from db import SessionLocal
-
-        db = SessionLocal()
-        try:
-            rows = db.execute(
-                _sql("SELECT user_id FROM chat_members WHERE chat_id = :cid"),
-                {"cid": chat_id},
-            ).fetchall()
-            recipients = [r.user_id for r in rows if r.user_id != sender_id]
-            if not recipients:
-                return
-            name = sender_name
-            if not name:
-                r = db.execute(
-                    _sql("SELECT full_name FROM users WHERE id = :uid"),
-                    {"uid": sender_id},
-                ).fetchone()
-                name = (r.full_name if r else None) or "Новое сообщение"
-        finally:
-            db.close()
-
-        preview = (content or "").strip().replace("\n", " ")
-        if len(preview) > 120:
-            preview = preview[:117] + "…"
-        if not preview:
-            preview = "Вложение"
-
-        send_push_bg(
-            recipients,
-            name or "Новое сообщение",
-            preview,
-            {
-                "type": "message",
-                "notif_key": f"chat:{chat_id}",
-                "chat_id": chat_id,
-                "sender_id": sender_id,
-            },
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("notify_chat_message: %s", e)
-
-
 def notify_admins(org_type: str, title: str, body: str, data: Optional[dict] = None) -> None:
     """Push всем активным админам организации (жалобы, заявки на аватары,
     лекции на модерации). Адресаты выбираются в короткой собственной сессии,

@@ -17,7 +17,6 @@
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy import func

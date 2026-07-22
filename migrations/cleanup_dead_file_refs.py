@@ -6,7 +6,6 @@
 Обрабатывает:
   * submissions.file_url / file_urls
   * assignments.reference_solution_url
-  * messages.file_url
   * posts: списки files в JSON-теле
   * avatar_lectures.intro_video_url / source_file_url,
     avatar_lecture_slides.slide_image_url / audio_url (только /uploads/-ссылки)
@@ -28,7 +27,7 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(BACKEND, ".env"))
 
 from db import SessionLocal
-from models import Assignment, AvatarLecture, AvatarLectureSlide, Message, Posts, Submission
+from models import Assignment, AvatarLecture, AvatarLectureSlide, Posts, Submission
 
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
 APPLY = "--apply" in sys.argv
@@ -85,12 +84,6 @@ try:
             print(f"assignment {a.id}: reference_solution_url мёртв -> NULL")
             a.reference_solution_url = None
             bump("assignments.reference_solution_url")
-
-    for msg in db.query(Message).filter(Message.file_url.isnot(None)).all():
-        if is_dead(msg.file_url):
-            print(f"message {msg.id}: file_url мёртв -> NULL")
-            msg.file_url = None
-            bump("messages.file_url")
 
     for post in db.query(Posts).filter(Posts.body.like('%"files"%')).all():
         try:

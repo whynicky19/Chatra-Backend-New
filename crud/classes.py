@@ -2,7 +2,7 @@ from typing import Optional, List
 from sqlalchemy.orm import Session
 from models import (
     Class, User, AssignmentVariant, Assignment, Submission, Grade, Deadline,
-    Cohort, class_members, cohort_students,
+    Cohort, cohort_students,
 )
 from sqlalchemy import func
 from services.invite_codes import generate_unique_code

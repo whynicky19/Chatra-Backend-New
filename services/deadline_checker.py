@@ -1,7 +1,7 @@
 import asyncio
 import json as _json
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from utils.time import utcnow
 
 from sqlalchemy.orm import Session

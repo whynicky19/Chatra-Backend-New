@@ -1,10 +1,8 @@
 import io
-import json
 import logging
 import re
 import zipfile
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +23,9 @@ def process_document(data: bytes, filename: str) -> dict:
     result["full_text"] = _build_full_text(result)
     return result
 
-def doc_to_prompt_text(doc_json: dict, max_chars: int = 12000) -> str:
-    return doc_json.get("full_text", "")[:max_chars]
-
 def _parse_docx(data: bytes, filename: str) -> dict:
     try:
         from docx import Document
-        from docx.oxml.ns import qn
     except ImportError:
         return _parse_docx_raw_xml(data, filename)
 
@@ -139,7 +133,6 @@ def _parse_pdf(data: bytes, filename: str) -> dict:
 def _ocr_pdf_page(page) -> str:
     try:
         import pytesseract
-        from PIL import Image as PILImage
         pil_image = page.to_image(resolution=150).original
         return pytesseract.image_to_string(pil_image, lang="rus+eng").strip()
     except Exception as e:

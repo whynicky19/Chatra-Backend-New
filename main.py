@@ -13,14 +13,13 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from services.file_urls import sign_uploads_in_text, verify_signature
-from db import Base, engine
+from db import engine
 from models import Base
-from routers import auth, admin, users, posts, chats, messages, reactions, uploads, ai, avatars, notifications, push, reports, blocks
+from routers import auth, admin, users, posts, uploads, ai, avatars, notifications, push
 from routers.assignments import router as assignments_router
 from routers.classes import router as classes_router, rating_router
 from routers.cohorts import router as cohorts_router
 from routers.rag import router as rag_router
-from websocket import router as ws_router
 from sqlalchemy import text
 from services.deadline_checker import deadline_checker_loop
 from services.deadline_reminder import deadline_reminder_loop
@@ -110,16 +109,10 @@ app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(users.router)
 app.include_router(posts.router)
-app.include_router(chats.router)
-app.include_router(messages.router)
-app.include_router(ws_router)
-app.include_router(reactions.router)
 app.include_router(uploads.router)
 app.include_router(ai.router)
 app.include_router(notifications.router)
 app.include_router(push.router)
-app.include_router(reports.router)
-app.include_router(blocks.router)
 app.include_router(avatars.router)
 app.include_router(assignments_router)
 app.include_router(classes_router)

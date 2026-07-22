@@ -41,8 +41,6 @@ def _extract_pdf(data: bytes) -> str:
 def _ocr_pdf_page(page) -> str:
     try:
         import pytesseract
-        from PIL import Image
-
         pil_image = page.to_image(resolution=200).original
         return pytesseract.image_to_string(pil_image, lang="rus+eng").strip()
     except Exception as exc:

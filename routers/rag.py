@@ -10,7 +10,7 @@ from db import get_db
 from deps import get_current_user, get_current_teacher
 from models import ProcessedDocument, RagChunk, RagDocument
 from services.chunker import chunk_text, count_tokens
-from services.document_processor import doc_to_prompt_text, process_document
+from services.document_processor import process_document
 from services.embedder import embed_texts_sync
 from services.retriever import retrieve_and_answer
 

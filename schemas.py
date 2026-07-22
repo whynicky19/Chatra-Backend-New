@@ -118,27 +118,6 @@ class PostResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-class ChatCreate(BaseModel):
-    name: str = Field(max_length=MAX_NAME_LEN)
-
-class LastMessagePreview(BaseModel):
-    id: int
-    content: str
-    user_id: int
-    created_at: Optional[str] = None
-    is_read: bool = False
-
-class ChatResponse(BaseModel):
-    id: int
-    name: str
-    unread_count: int = 0
-    last_message: Optional[LastMessagePreview] = None
-
-    model_config = ConfigDict(from_attributes=True)
-
-class MessageCreate(BaseModel):
-    content: str = Field(max_length=MAX_POST_BODY_LEN)
-
 class CriterionIn(BaseModel):
     name: str = Field(max_length=MAX_NAME_LEN)
     # BE-5: вес критерия не может быть отрицательным (сумма весов формирует
@@ -323,6 +302,15 @@ class SubmissionCreateV2(BaseModel):
     file_url: Optional[str] = None
     file_urls: Optional[List[str]] = None
     variant_number: Optional[int] = None
+
+class PublicUserResponse(BaseModel):
+    id: int
+    full_name: Optional[str] = None
+    role: str
+    org_type: str = "university"
+
+    model_config = ConfigDict(from_attributes=True)
+
 
 class StudentRatingEntry(BaseModel):
     student_id: int

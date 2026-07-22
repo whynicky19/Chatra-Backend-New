@@ -11,7 +11,7 @@ from datetime import date, datetime
 from utils.time import utcnow
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import case, func
+from sqlalchemy import case
 from sqlalchemy.orm import Session
 
 from models import Assignment, Class, Cohort, Deadline, User, cohort_students
