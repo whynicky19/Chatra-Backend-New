@@ -7,7 +7,20 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./chatra.db")
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 else:
-    engine = create_engine(DATABASE_URL)
+    # Sync-эндпоинты FastAPI выполняются в пуле потоков (по умолчанию ~40), и
+    # каждый на время запроса держит соединение из этого пула. Дефолтные
+    # pool_size=5 + max_overflow=10 = 15 соединений: под нагрузкой лишние потоки
+    # висли на checkout до pool_timeout (30 с) — для клиента это «зависание».
+    # Поднимаем пул под конкурентность и включаем pre_ping/recycle, чтобы
+    # мёртвые соединения (простой, рестарт БД) не отдавались в запрос как ошибка.
+    engine = create_engine(
+        DATABASE_URL,
+        pool_size=int(os.getenv("DB_POOL_SIZE", "20")),
+        max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "20")),
+        pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "10")),
+        pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "1800")),
+        pool_pre_ping=True,
+    )
 
 SessionLocal = sessionmaker(
     autocommit=False,

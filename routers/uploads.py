@@ -4,6 +4,7 @@ from collections import OrderedDict
 from uuid import uuid4
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from deps import get_current_user
 import sys
 
@@ -168,16 +169,22 @@ async def upload_file(
     unique_filename = f"{uuid4().hex}.{ext}"
     file_path = os.path.join(UPLOAD_DIR, unique_filename)
 
-    try:
+    # Запись файла и парсинг (pdfplumber/python-docx/openpyxl/OCR) — блокирующие
+    # операции; в async-обработчике их нельзя выполнять напрямую, иначе они
+    # заморозят весь event loop и все параллельные запросы. Выносим в пул потоков.
+    def _write() -> None:
         with open(file_path, "wb") as buffer:
             buffer.write(content)
+
+    try:
+        await run_in_threadpool(_write)
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
     # Повреждённый PDF/DOCX роняет парсер исключением, а раньше это улетало как 500.
     # Тип уже подтверждён magic-байтами, текст нужен только ИИ — деградируем молча.
     try:
-        parsed = read_file(file_path)
+        parsed = await run_in_threadpool(read_file, file_path)
     except Exception as e:  # noqa: BLE001
         logger.warning("Не удалось распарсить %s (%s): %s", file.filename, unique_filename, e)
         parsed = {"type": "unparsed", "error": "Не удалось извлечь текст из файла"}

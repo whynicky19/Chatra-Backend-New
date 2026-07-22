@@ -154,11 +154,20 @@ def list_documents(
     current_user=Depends(get_current_user),
 ):
     docs = db.query(RagDocument).filter(RagDocument.org_type == current_user.org_type).order_by(RagDocument.created_at.desc()).all()
+    # N+1: len(d.chunks) тянул чанки каждого документа отдельным запросом (а это
+    # тяжёлые строки с эмбеддингами). Считаем количество чанков одним GROUP BY.
+    from sqlalchemy import func
+    counts = dict(
+        db.query(RagChunk.document_id, func.count(RagChunk.id))
+        .filter(RagChunk.document_id.in_([d.id for d in docs]))
+        .group_by(RagChunk.document_id)
+        .all()
+    ) if docs else {}
     return [
         schemas.RagIngestResponse(
             document_id=d.id,
             filename=d.filename,
-            chunks_created=len(d.chunks),
+            chunks_created=counts.get(d.id, 0),
         )
         for d in docs
     ]

@@ -244,7 +244,11 @@ class Submission(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     assignment_id: Mapped[int] = mapped_column(ForeignKey("assignments.id"), nullable=False)
-    student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    # Индекс нужен для выборок по студенту: /assignments/student/my-submissions,
+    # my-rating и join рейтинга фильтруют по student_id в одиночку. Составной
+    # unique (assignment_id, student_id) ведёт по assignment_id и такие запросы
+    # не покрывает — без этого индекса шёл seq scan submissions.
+    student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     # Дедлайн потока, в рамках которого сдана работа. NULL — легаси-сдачи
     # заданий без потока (битый class_id), для них действует assignment.deadline.
     deadline_id: Mapped[int] = mapped_column(

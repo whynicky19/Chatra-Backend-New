@@ -73,7 +73,7 @@ def _remind_one(db: Session, deadline: Deadline, assignment: Assignment) -> None
     logger.info("Напоминание о дедлайне #%s отправлено %s студ.", deadline.id, len(targets))
 
 
-async def _check_reminders() -> None:
+def _check_reminders_sync() -> None:
     db: Session = SessionLocal()
     try:
         now = utcnow()
@@ -100,6 +100,14 @@ async def _check_reminders() -> None:
         logger.error("Ошибка в deadline_reminder: %s", e)
     finally:
         db.close()
+
+
+async def _check_reminders() -> None:
+    # Тело полностью синхронное (sync-запросы к БД + блокирующая отправка через
+    # requests в send_push). Этот цикл живёт в общем event loop с обработкой
+    # запросов, поэтому выполняем его в отдельном потоке — иначе на каждой
+    # итерации весь API «подвисал» бы на время рассылки напоминаний.
+    await asyncio.to_thread(_check_reminders_sync)
 
 
 async def deadline_reminder_loop() -> None:

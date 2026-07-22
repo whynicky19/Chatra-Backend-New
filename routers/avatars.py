@@ -128,7 +128,13 @@ async def create_lecture(
 
     filename = body.source_filename or body.source_file_url.split("/")[-1]
     try:
-        slides_data = slide_extractor.extract_slides(file_resp.content, filename)
+        # extract_slides шеллит soffice/pdftoppm и парсит презентацию — тяжёлая
+        # блокирующая работа. В async-обработчике её нельзя звать напрямую: она
+        # заморозит event loop и все параллельные запросы. Выносим в пул потоков.
+        from starlette.concurrency import run_in_threadpool
+        slides_data = await run_in_threadpool(
+            slide_extractor.extract_slides, file_resp.content, filename
+        )
     except ValueError as exc:
         raise HTTPException(status_code=415, detail=str(exc))
     except Exception:
