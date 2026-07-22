@@ -139,9 +139,17 @@ def serve_upload(
     filename: str,
     exp: int = Query(...),
     sig: str = Query(...),
+    name: str | None = Query(None),
 ):
     """Отдаёт файл только по действующей подписи (SEC-1). Подпись выдаётся вместе
-    с ресурсом, поэтому получить её может лишь тот, кто вправе его прочитать."""
+    с ресурсом, поэтому получить её может лишь тот, кто вправе его прочитать.
+
+    Необязательный `name` задаёт ОРИГИНАЛЬНОЕ имя файла в Content-Disposition,
+    чтобы при скачивании юзер получал «Отчёт.pdf», а не «<uuid>.pdf». Имя не
+    входит в подпись (оно косметическое и не даёт доступа), поэтому клиент
+    добавляет его сам из #fragment сохранённой ссылки. Starlette сам кодирует
+    не-ASCII имена (filename*), CR/LF вырезаем от инъекции заголовка.
+    """
     if not verify_signature(filename, exp, sig):
         raise HTTPException(status_code=403, detail="Invalid or expired file link")
 
@@ -154,13 +162,18 @@ def serve_upload(
 
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     disposition = "inline" if ext in _INLINE_EXTENSIONS else "attachment"
+    download_name = os.path.basename(full)
+    if name:
+        cleaned = name.replace("\r", "").replace("\n", "").strip()
+        if cleaned:
+            download_name = cleaned[:255]
     # filename обязателен: без него Starlette вообще не шлёт Content-Disposition,
     # и content_disposition_type ни на что не влияет.
     return FileResponse(
         full,
         headers={"X-Content-Type-Options": "nosniff"},
         content_disposition_type=disposition,
-        filename=os.path.basename(full),
+        filename=download_name,
     )
 
 
