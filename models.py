@@ -335,11 +335,35 @@ class AiUsageLog(Base):
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
+class AiThread(Base):
+    """Именованный тред (диалог) главного ассистента «Chatra AI» (class_id IS
+    NULL). Позволяет пользователю вести несколько независимых, именуемых и
+    закрепляемых бесед, синхронизируемых между устройствами. У ИИ-репетиторов
+    класса (class_id задан) тредов нет — там ровно один неявный диалог на class_id."""
+    __tablename__ = "ai_threads"
+    __table_args__ = (
+        Index("ix_ai_threads_user_sort", "user_id", "pinned", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(120), nullable=False, default="Новый чат")
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class AiMessage(Base):
     """Сообщение переписки с ИИ, сохранённое на сервере — чтобы история
     синхронизировалась между приложением и сайтом на всех устройствах.
-    Тред = все сообщения одного (user_id, class_id) по порядку id.
-    class_id = NULL — глобальный ИИ-экран; иначе — ИИ-вкладка класса."""
+
+    Главный ассистент (class_id IS NULL): сообщение принадлежит явному
+    thread_id (обязателен начиная с версии с мульти-чатами — проверяется в
+    роутере, а НЕ NOT NULL на уровне БД, чтобы не ломать до-миграционные строки).
+    ИИ-репетитор класса (class_id задан): thread_id остаётся NULL ровно как
+    раньше, поведение не меняется — тред = все сообщения (user_id, class_id)."""
     __tablename__ = "ai_messages"
     __table_args__ = (
         Index("ix_ai_messages_thread", "user_id", "class_id", "id"),
@@ -350,6 +374,9 @@ class AiMessage(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     class_id: Mapped[int] = mapped_column(Integer, nullable=True)
+    thread_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ai_threads.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     role: Mapped[str] = mapped_column(String(16), nullable=False)  # user | assistant
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

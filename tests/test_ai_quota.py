@@ -4,10 +4,16 @@ from tests.conftest import make_user, auth_headers
 from tests.test_sync import _FakeClient
 
 
-def _send(client, user):
+def _new_thread(client, user):
+    return client.post("/ai/threads", headers=auth_headers(user)).json()["id"]
+
+
+def _send(client, user, thread_id=None):
+    if thread_id is None:
+        thread_id = _new_thread(client, user)
     return client.post(
         "/ai/chat",
-        json={"messages": [{"role": "user", "content": "hi"}]},
+        json={"messages": [{"role": "user", "content": "hi"}], "thread_id": thread_id},
         headers=auth_headers(user),
     )
 

@@ -1,11 +1,19 @@
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./chatra.db")
 
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+
+    # SQLite по умолчанию НЕ применяет ON DELETE CASCADE. Включаем построчно,
+    # чтобы поведение внешних ключей (dev/тесты на sqlite) совпадало с Postgres.
+    @event.listens_for(engine, "connect")
+    def _sqlite_fk_pragma(dbapi_conn, _):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
 else:
     # Sync-эндпоинты FastAPI выполняются в пуле потоков (по умолчанию ~40), и
     # каждый на время запроса держит соединение из этого пула. Дефолтные
