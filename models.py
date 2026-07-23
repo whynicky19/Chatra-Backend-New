@@ -261,7 +261,16 @@ class Submission(Base):
     variant_number: Mapped[int] = mapped_column(Integer, nullable=True)
 
     submitted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # "submitted" | "grading" | "graded" | "late" | "needs_review" (низкая
+    # уверенность распознавания рукописного фото — ИИ-оценка не выставлена,
+    # ждёт ручной проверки учителем).
     status: Mapped[str] = mapped_column(String, default="submitted")
+
+    # Заполняются только для фото-сдач, прошедших через vision-путь
+    # ai_grader.grade_handwritten_submission. NULL — обычная текстовая/
+    # документная сдача, распознавание не требовалось.
+    ai_confidence: Mapped[int] = mapped_column(Integer, nullable=True)
+    ai_review_reasons: Mapped[str] = mapped_column(Text, nullable=True)  # JSON-список строк
 
     assignment: Mapped["Assignment"] = relationship(back_populates="submissions")
     student: Mapped["User"] = relationship(back_populates="submissions")

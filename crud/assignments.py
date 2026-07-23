@@ -142,6 +142,18 @@ def set_submission_status(db: Session, submission_id: int, status: str) -> Optio
     db.refresh(obj)
     return obj
 
+def set_submission_ai_confidence(
+    db: Session, submission_id: int, confidence: Optional[int], reasons: Optional[list]
+) -> Optional[Submission]:
+    obj = get_submission(db, submission_id)
+    if not obj:
+        return None
+    obj.ai_confidence = confidence
+    obj.ai_review_reasons = json.dumps(reasons or [], ensure_ascii=False)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
 def create_or_update_grade(
     db: Session,
     submission_id: int,

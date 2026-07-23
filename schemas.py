@@ -176,6 +176,10 @@ class SubmissionResponse(BaseModel):
     submitted_at: datetime
     status: str
     student_name: Optional[str] = None
+    # Только для учителя: teacher-эндпоинты возвращают как есть, студенческие
+    # (my-submissions, GET своей сдачи) обнуляют перед отдачей — см. роутер.
+    ai_confidence: Optional[int] = None
+    ai_review_reasons: Optional[str] = None  # JSON-список строк, как criteria_scores
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -203,6 +207,20 @@ class GradeResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 SubmissionWithGrade.model_rebuild()
+
+class AiGradeResult(BaseModel):
+    """Ответ POST /submissions/{id}/ai-grade.
+
+    status="needs_review" — распознавание фото ненадёжно (ниже порога
+    AI_CONFIDENCE_THRESHOLD): grade всегда None, оценку выставляет учитель
+    вручную через POST /submissions/{id}/grade.
+    """
+    status: str  # "graded" | "needs_review"
+    grade: Optional[GradeResponse] = None
+    ai_confidence: Optional[int] = None
+    ai_review_reasons: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 class RagIngestResponse(BaseModel):
     document_id: int

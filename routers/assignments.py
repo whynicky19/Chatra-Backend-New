@@ -1,4 +1,5 @@
 import json as _json
+import os
 from utils.time import utcnow
 from typing import List, Optional
 
@@ -21,9 +22,16 @@ from permissions import (
     require_submission_class_owner,
 )
 from services.ai_grader import grade_submission as _ai_grade
+from services.ai_grader import grade_handwritten_submission as _ai_grade_handwritten
 from routers.ai import _check_rate_limit
 
 router = APIRouter(tags=["Assignments"])
+
+# Ниже этого порога уверенности распознавания рукописного фото ИИ-оценка не
+# выставляется вообще — сдача уходит в needs_review на ручную проверку
+# учителя. Порог глобальный для платформы (см. план AI-confidence-gate).
+_IMAGE_EXTS = {"png", "jpg", "jpeg", "webp", "bmp", "gif"}
+AI_CONFIDENCE_THRESHOLD = int(os.getenv("AI_GRADING_CONFIDENCE_THRESHOLD", "80"))
 
 
 def _check_assignment_org(db: Session, assignment, current_user):
@@ -70,6 +78,30 @@ def _notify_grade(submission, assignment, score: int, max_score: int) -> None:
 
         title = "Работа оценена"
         body = f"«{assignment.title}» — {score}/{max_score}"
+        send_push_bg(
+            [submission.student_id],
+            title,
+            body,
+            {
+                "type": "grade",
+                "notif_key": f"grade:{submission.id}",
+                "submission_id": submission.id,
+                "assignment_id": assignment.id,
+                "class_id": assignment.class_id,
+            },
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _notify_needs_review(submission, assignment) -> None:
+    """Push студенту: работа передана на ручную проверку. Без чисел/деталей
+    распознавания — студент не должен видеть уверенность ИИ."""
+    try:
+        from services.fcm import send_push_bg
+
+        title = "Работа на проверке"
+        body = f"«{assignment.title}» — проверяется учителем"
         send_push_bg(
             [submission.student_id],
             title,
@@ -152,7 +184,15 @@ def my_submissions(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    return crud.get_submissions_for_student(db, current_user.id, limit=limit, offset=offset)
+    subs = crud.get_submissions_for_student(db, current_user.id, limit=limit, offset=offset)
+    # Уверенность/причины распознавания — только для учителя (см. teacher-
+    # эндпоинты ниже). Студент никогда не должен видеть confidence ИИ.
+    return [
+        schemas.SubmissionWithGrade.model_validate(s).model_copy(
+            update={"ai_confidence": None, "ai_review_reasons": None}
+        )
+        for s in subs
+    ]
 
 
 @router.get("/assignments/student/my-rating")
@@ -445,7 +485,11 @@ def get_submission(
         _check_submission_org(db, obj, current_user)
         if obj.student_id != current_user.id:
             raise HTTPException(status_code=403, detail="Access denied")
-        return obj
+        # Уверенность/причины распознавания — только для учителя, студент их
+        # никогда не должен видеть.
+        return schemas.SubmissionWithGrade.model_validate(obj).model_copy(
+            update={"ai_confidence": None, "ai_review_reasons": None}
+        )
 
     # Преподаватель/админ — только владелец класса задания (SEC-2).
     require_submission_class_owner(db, obj, current_user)
@@ -555,7 +599,7 @@ def update_status(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_teacher),
 ):
-    allowed = {"submitted", "grading", "graded", "late"}
+    allowed = {"submitted", "grading", "graded", "late", "needs_review"}
     if new_status not in allowed:
         raise HTTPException(status_code=422, detail=f"Status must be one of {allowed}")
     sub = crud.get_submission(db, submission_id)
@@ -578,8 +622,7 @@ def update_status(
 
 @router.post(
     "/submissions/{submission_id}/ai-grade",
-    response_model=schemas.GradeResponse,
-    status_code=status.HTTP_201_CREATED,
+    response_model=schemas.AiGradeResult,
 )
 async def ai_grade_submission(
     submission_id: int,
@@ -625,18 +668,24 @@ async def ai_grade_submission(
     if not all_urls and sub.file_url:
         all_urls = [sub.file_url]
 
+    # Фото рукописных работ идут отдельным vision-путём (grade_handwritten_
+    # submission) с обязательной проверкой уверенности распознавания —
+    # остальные файлы (docx/pdf/txt/...) читаются как раньше в full_text.
+    image_urls = [u for u in all_urls if u.split("?")[0].rsplit(".", 1)[-1].lower() in _IMAGE_EXTS]
+    doc_urls = [u for u in all_urls if u not in image_urls]
+
     from services.ai_grader import _fetch_file_text
-    for i, url in enumerate(all_urls):
+    for i, url in enumerate(doc_urls):
         file_text = await _fetch_file_text(url)
         if file_text.strip():
-            label = f"ФАЙЛ {i+1}" if len(all_urls) > 1 else "СОДЕРЖИМОЕ ФАЙЛА"
+            label = f"ФАЙЛ {i+1}" if len(doc_urls) > 1 else "СОДЕРЖИМОЕ ФАЙЛА"
             full_text = (
                 (full_text + f"\n\n{label}:\n" + file_text).strip()
                 if full_text
                 else f"{label}:\n{file_text}"
             )
 
-    if not full_text:
+    if not full_text and not image_urls:
         full_text = f"[Студент сдал файл(ы), но прочитать не удалось: {', '.join(all_urls)}]"
 
 
@@ -708,16 +757,37 @@ async def ai_grade_submission(
     except Exception:
         pass
 
+    is_handwritten = bool(image_urls)
     try:
-        result = await _ai_grade(
-            text=full_text,
-            file_url=None,
-            criteria=criteria,
-            max_score=assignment.max_score,
-            reference_solution_url=None,
-            reference_solution_urls=reference_urls if reference_urls else None,
-            lecture_context=lecture_context if lecture_context else None,
-        )
+        if is_handwritten:
+            reference_text = None
+            if reference_urls:
+                ref_parts = []
+                for ref_url in reference_urls:
+                    ref_content = await _fetch_file_text(ref_url)
+                    if ref_content.strip() and not ref_content.startswith("["):
+                        ref_parts.append(ref_content[:6000])
+                if ref_parts:
+                    reference_text = "\n\n---\n\n".join(ref_parts)
+
+            result = await _ai_grade_handwritten(
+                image_urls=image_urls,
+                text=full_text,
+                criteria=criteria,
+                max_score=assignment.max_score,
+                reference_text=reference_text,
+                lecture_context=lecture_context if lecture_context else None,
+            )
+        else:
+            result = await _ai_grade(
+                text=full_text,
+                file_url=None,
+                criteria=criteria,
+                max_score=assignment.max_score,
+                reference_solution_url=None,
+                reference_solution_urls=reference_urls if reference_urls else None,
+                lecture_context=lecture_context if lecture_context else None,
+            )
     except RuntimeError as e:
         crud.set_submission_status(db, submission_id, "submitted")
         raise HTTPException(status_code=502, detail=str(e))
@@ -740,6 +810,25 @@ async def ai_grade_submission(
     except Exception:
         pass
 
+    confidence = result.get("confidence") if is_handwritten else None
+    reasons = result.get("confidence_reasons") if is_handwritten else None
+
+    if is_handwritten:
+        crud.set_submission_ai_confidence(db, submission_id, confidence, reasons)
+
+    if is_handwritten and (confidence is None or confidence < AI_CONFIDENCE_THRESHOLD):
+        # Уверенность распознавания недостаточна — ИИ-оценку не показываем
+        # никому, сдача ждёт ручной проверки учителем (единый источник
+        # истины для web/Flutter: оба читают статус/поля отсюда).
+        crud.set_submission_status(db, submission_id, "needs_review")
+        _notify_needs_review(sub, assignment)
+        return schemas.AiGradeResult(
+            status="needs_review",
+            grade=None,
+            ai_confidence=confidence,
+            ai_review_reasons=_json.dumps(reasons or [], ensure_ascii=False),
+        )
+
     crud.set_submission_status(db, submission_id, "graded")
     grade = crud.create_or_update_grade(
         db=db,
@@ -750,4 +839,9 @@ async def ai_grade_submission(
         graded_by="ai",
     )
     _notify_grade(sub, assignment, result["score"], assignment.max_score)
-    return grade
+    return schemas.AiGradeResult(
+        status="graded",
+        grade=grade,
+        ai_confidence=confidence,
+        ai_review_reasons=_json.dumps(reasons, ensure_ascii=False) if reasons is not None else None,
+    )
