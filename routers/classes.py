@@ -9,7 +9,7 @@ from models import Class, Cohort, User, class_members, cohort_students
 from db import get_db
 from deps import get_current_user, get_current_teacher
 from permissions import require_class_owner, require_class_access
-from services.image_storage import convert_cover_if_data_uri
+from services.image_storage import convert_cover_with_thumbnail
 from services.rate_limit import RateLimiter
 from sqlalchemy import func, case
 
@@ -159,10 +159,12 @@ def create_class(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_teacher),
 ):
+    cover_image, cover_thumbnail = convert_cover_with_thumbnail(body.cover_image)
     obj = crud.create_class(db, name=body.name, description=body.description,
                             created_by=current_user.id,
                             org_type=current_user.org_type,
-                            cover_image=convert_cover_if_data_uri(body.cover_image),
+                            cover_image=cover_image,
+                            cover_thumbnail=cover_thumbnail,
                             teacher=body.teacher,
                             period=body.period)
     return _to_class_response(obj, current_user, member_count=0)
@@ -217,7 +219,10 @@ def update_class(
     obj = require_class_owner(db, class_id, current_user)
     data = body.model_dump(exclude_none=True)
     if "cover_image" in data:
-        data["cover_image"] = convert_cover_if_data_uri(data["cover_image"])
+        cover_image, cover_thumbnail = convert_cover_with_thumbnail(data["cover_image"])
+        data["cover_image"] = cover_image
+        if cover_thumbnail:
+            data["cover_thumbnail"] = cover_thumbnail
     obj = crud.update_class(db, class_id, data)
     counts = _member_counts(db, [obj.id])
     return _to_class_response(obj, current_user, member_count=counts.get(obj.id, 0))

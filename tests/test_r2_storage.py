@@ -1,5 +1,6 @@
 """Юнит-тесты R2StorageService: upload/delete/exists/replace/get_url и ретраи.
 boto3-клиент замокан — реального обращения к Cloudflare R2 нет."""
+import io
 from unittest.mock import MagicMock
 
 import botocore.exceptions
@@ -40,9 +41,22 @@ def test_get_url_without_public_base_uses_signed_proxy():
     assert svc.get_url("uploads/abc.pdf") == "http://localhost:8000/uploads/r2/uploads/abc.pdf"
 
 
-def test_get_url_with_public_base_is_direct():
+def test_get_url_with_public_base_is_direct_for_public_category():
     svc = _service(public_base_url="https://cdn.example.com")
-    assert svc.get_url("uploads/abc.pdf") == "https://cdn.example.com/uploads/abc.pdf"
+    assert svc.get_url("materials/covers/x.webp") == "https://cdn.example.com/materials/covers/x.webp"
+    assert (
+        svc.get_url("materials/covers/thumbnails/x.webp")
+        == "https://cdn.example.com/materials/covers/thumbnails/x.webp"
+    )
+
+
+def test_get_url_with_public_base_still_proxies_private_categories():
+    # submissions/assignments и т.п. остаются приватными (SEC-1) даже если
+    # R2_PUBLIC_BASE_URL включён ради обложек — паблик-домен не должен
+    # случайно рассекретить чужие сдачи.
+    svc = _service(public_base_url="https://cdn.example.com")
+    assert svc.get_url("submissions/x.pdf") == "http://localhost:8000/uploads/r2/submissions/x.pdf"
+    assert svc.get_url("uploads/abc.pdf") == "http://localhost:8000/uploads/r2/uploads/abc.pdf"
 
 
 def test_upload_calls_put_object_and_returns_url():
@@ -154,3 +168,59 @@ def test_build_key_no_extension_when_none_present():
     svc._client.head_object.side_effect = _client_error(404)
     key = svc.build_key("attachments", "README")
     assert key == "attachments/README"
+
+
+def test_upload_passes_cache_control_when_given():
+    svc = _service()
+    svc.upload(b"data", "materials/covers/x.webp", "image/webp", cache_control="public, max-age=31536000, immutable")
+    svc._client.put_object.assert_called_once_with(
+        Bucket="test-bucket", Key="materials/covers/x.webp", Body=b"data", ContentType="image/webp",
+        CacheControl="public, max-age=31536000, immutable",
+    )
+
+
+def test_upload_omits_cache_control_when_not_given():
+    svc = _service()
+    svc.upload(b"data", "uploads/x.pdf", "application/pdf")
+    kwargs = svc._client.put_object.call_args.kwargs
+    assert "CacheControl" not in kwargs
+
+
+def test_get_object_returns_body_etag_and_cache_control():
+    svc = _service()
+    svc._client.get_object.return_value = {
+        "Body": io.BytesIO(b"hello world"),
+        "ContentType": "image/webp",
+        "ETag": '"abc123"',
+        "CacheControl": "public, max-age=31536000, immutable",
+        "ContentLength": 11,
+    }
+    obj = svc.get_object("materials/covers/x.webp")
+    assert obj.body == b"hello world"
+    assert obj.etag == "abc123"
+    assert obj.cache_control == "public, max-age=31536000, immutable"
+    assert obj.partial is False
+    svc._client.get_object.assert_called_once_with(Bucket="test-bucket", Key="materials/covers/x.webp")
+
+
+def test_get_object_passes_range_header_and_reports_partial():
+    svc = _service()
+    svc._client.get_object.return_value = {
+        "Body": io.BytesIO(b"ell"),
+        "ContentType": "image/webp",
+        "ETag": '"abc123"',
+        "ContentRange": "bytes 1-3/11",
+        "ContentLength": 3,
+    }
+    obj = svc.get_object("materials/covers/x.webp", range_header="bytes=1-3")
+    svc._client.get_object.assert_called_once_with(
+        Bucket="test-bucket", Key="materials/covers/x.webp", Range="bytes=1-3",
+    )
+    assert obj.partial is True
+    assert obj.content_range == "bytes 1-3/11"
+
+
+def test_get_object_returns_none_on_404():
+    svc = _service()
+    svc._client.get_object.side_effect = _client_error(404)
+    assert svc.get_object("materials/covers/missing.webp") is None

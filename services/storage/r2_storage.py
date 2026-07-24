@@ -1,27 +1,31 @@
 """Cloudflare R2 (S3-совместимый API) как хранилище новых файлов.
 
-URL-схема (см. план миграции с локального uploads/):
-  * Без R2_PUBLIC_BASE_URL (по умолчанию, текущий режим): get_url() возвращает
-    "{APP_BASE_URL}/uploads/r2/{key}" — тот же вид, что и у локальных файлов
-    "{APP_BASE_URL}/uploads/{name}". Это значит, что существующий
-    UploadUrlSignerMiddleware/sign_uploads_in_text (services/file_urls.py)
-    автоматически проставляет HMAC-подпись и на эти ссылки без единой правки в
-    самой подписи. Раздача — через /uploads/{filename:path} в main.py: после
-    проверки подписи путь с префиксом "r2/" стримится из R2, без него — читается
-    с локального диска, как раньше.
-  * С R2_PUBLIC_BASE_URL (заготовка под будущий CDN, например
-    cdn.chatra.aican.cloud): get_url() отдаёт прямую публичную ссылку в обход
-    прокси и подписи. Сейчас не используется (переменная не задана).
+URL-схема:
+  * Приватные категории (submissions, assignments, attachments, ...) — всегда
+    через "{APP_BASE_URL}/uploads/r2/{key}", подписанный HMAC (SEC-1). Так
+    было с самого начала переезда на R2 и не меняется.
+  * Публичные категории (см. services/storage/base.py: PUBLIC_KEY_PREFIXES —
+    сейчас только обложки классов, materials/covers/...) — если задан
+    R2_PUBLIC_BASE_URL, отдают прямую публичную ссылку на R2/CDN в обход
+    прокси и подписи целиком (обложки не содержат ничего секретного). Без
+    R2_PUBLIC_BASE_URL они тоже пока идут через прокси — это временный
+    фолбэк, а не постоянный режим: R2_PUBLIC_BASE_URL нужно включить в
+    Cloudflare (R2 → бакет → Settings → Public access, или свой домен) —
+    это не часть S3 API, из кода не включается.
+  Раздача приватных и публичных-без-домена URL — через /uploads/{filename:path}
+  в main.py: после проверки подписи путь с префиксом "r2/" стримится из R2
+  (см. get_object), без него — читается с локального диска, как раньше.
 """
 import logging
 import os
 import time
+from dataclasses import dataclass
 
 import botocore.exceptions
 from botocore.client import Config as BotoConfig
 import boto3
 
-from services.storage.base import StorageError, StorageService
+from services.storage.base import StorageError, StorageService, is_public_key
 
 logger = logging.getLogger(__name__)
 
@@ -102,17 +106,17 @@ class R2StorageService(StorageService):
             app_base_url=os.getenv("APP_BASE_URL", "http://localhost:8000"),
         )
 
-    def upload(self, content: bytes, key: str, content_type: str = "application/octet-stream") -> str:
-        _with_retries(
-            lambda: self._client.put_object(
-                Bucket=self._bucket, Key=key, Body=content, ContentType=content_type,
-            ),
-            op=f"upload({key})",
-        )
+    def upload(self, content: bytes, key: str, content_type: str = "application/octet-stream",
+               cache_control: str | None = None) -> str:
+        kwargs = {"Bucket": self._bucket, "Key": key, "Body": content, "ContentType": content_type}
+        if cache_control:
+            kwargs["CacheControl"] = cache_control
+        _with_retries(lambda: self._client.put_object(**kwargs), op=f"upload({key})")
         return self.get_url(key)
 
-    def replace(self, content: bytes, key: str, content_type: str = "application/octet-stream") -> str:
-        return self.upload(content, key, content_type)
+    def replace(self, content: bytes, key: str, content_type: str = "application/octet-stream",
+                cache_control: str | None = None) -> str:
+        return self.upload(content, key, content_type, cache_control)
 
     def delete(self, key: str) -> bool:
         if not self.exists(key):
@@ -137,13 +141,44 @@ class R2StorageService(StorageService):
         return _with_retries(_head, op=f"head({key})")
 
     def get_url(self, key: str) -> str:
-        if self._public_base_url:
+        if self._public_base_url and is_public_key(key):
             return f"{self._public_base_url}/{key}"
         return f"{self._app_base_url}/uploads/r2/{key}"
 
-    def get_object_bytes(self, key: str) -> bytes:
-        """Читает объект целиком. Используется прокси-эндпоином /uploads/r2/<key>."""
-        def _get() -> bytes:
-            resp = self._client.get_object(Bucket=self._bucket, Key=key)
-            return resp["Body"].read()
+    def get_object(self, key: str, range_header: str | None = None) -> "R2Object | None":
+        """Читает объект (целиком или по Range) для прокси-эндпоинта
+        /uploads/r2/<key> в main.py. None — объекта нет (404), без ретраев и
+        лишнего логирования как для настоящей ошибки."""
+        def _get():
+            kwargs = {"Bucket": self._bucket, "Key": key}
+            if range_header:
+                kwargs["Range"] = range_header
+            try:
+                resp = self._client.get_object(**kwargs)
+            except botocore.exceptions.ClientError as exc:
+                status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
+                if status in (404, 416):
+                    return None
+                raise
+            return R2Object(
+                body=resp["Body"].read(),
+                content_type=resp.get("ContentType") or "application/octet-stream",
+                etag=(resp.get("ETag") or "").strip('"'),
+                cache_control=resp.get("CacheControl"),
+                content_length=resp.get("ContentLength", 0),
+                content_range=resp.get("ContentRange"),
+                partial="ContentRange" in resp,
+            )
+
         return _with_retries(_get, op=f"get({key})")
+
+
+@dataclass(frozen=True)
+class R2Object:
+    body: bytes
+    content_type: str
+    etag: str
+    cache_control: str | None
+    content_length: int
+    content_range: str | None
+    partial: bool

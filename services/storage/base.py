@@ -15,6 +15,17 @@ from uuid import uuid4
 # это тоже "автоматически формируемый путь", просто более специфичный.
 CATEGORIES = {"avatars", "lectures", "materials", "assignments", "submissions", "attachments"}
 
+# Префиксы ключей, которые не содержат ничего приватного (их и так видит
+# любой, кто открыл список классов) — в отличие от сдач/эталонов, им не
+# нужна HMAC-подпись/прокси через бэкенд (SEC-1 продолжает защищать всё
+# остальное). Для них get_url() отдаёт прямую ссылку на R2, если задан
+# R2_PUBLIC_BASE_URL (см. r2_storage.py).
+PUBLIC_KEY_PREFIXES = ("materials/covers/",)
+
+
+def is_public_key(key: str) -> bool:
+    return key.startswith(PUBLIC_KEY_PREFIXES)
+
 _UNSAFE_CHARS_RE = re.compile(r"[^\w\-. ]", re.UNICODE)
 _WHITESPACE_RE = re.compile(r"\s+")
 _MAX_STEM_LENGTH = 150
@@ -40,11 +51,14 @@ def _sanitize_filename(original_filename: str) -> tuple[str, str]:
 
 class StorageService(ABC):
     @abstractmethod
-    def upload(self, content: bytes, key: str, content_type: str = "application/octet-stream") -> str:
-        """Загружает файл под указанным ключом. Возвращает URL для сохранения в БД."""
+    def upload(self, content: bytes, key: str, content_type: str = "application/octet-stream",
+               cache_control: str | None = None) -> str:
+        """Загружает файл под указанным ключом. Возвращает URL для сохранения в БД.
+        cache_control, если задан, идёт в S3 Cache-Control метаданные объекта."""
 
     @abstractmethod
-    def replace(self, content: bytes, key: str, content_type: str = "application/octet-stream") -> str:
+    def replace(self, content: bytes, key: str, content_type: str = "application/octet-stream",
+                cache_control: str | None = None) -> str:
         """Перезаписывает файл по существующему ключу. Возвращает URL."""
 
     @abstractmethod

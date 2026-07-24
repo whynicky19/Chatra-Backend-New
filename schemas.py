@@ -277,6 +277,7 @@ class ClassResponse(BaseModel):
     member_count: Optional[int] = None
     invite_code: Optional[str] = None
     cover_image: Optional[str] = None
+    cover_thumbnail: Optional[str] = None
     teacher: Optional[str] = None
     period: Optional[str] = None
     rotation_mode: str = "manual"

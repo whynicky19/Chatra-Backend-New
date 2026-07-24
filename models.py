@@ -47,6 +47,10 @@ class Class(Base):
     invite_code: Mapped[str] = mapped_column(String(6), unique=True, index=True, nullable=False)
 
     cover_image: Mapped[str] = mapped_column(Text, nullable=True)
+    # Уменьшенная версия обложки (≤480px) для карточек списка классов —
+    # см. services/image_processing.py. Может быть NULL для обложек,
+    # созданных до появления миниатюр (см. migrations/015_optimize_existing_covers.py).
+    cover_thumbnail: Mapped[str] = mapped_column(Text, nullable=True)
     teacher: Mapped[str] = mapped_column(String(200), nullable=True)
     period: Mapped[str] = mapped_column(String(100), nullable=True)
 

@@ -11,12 +11,12 @@ from urllib.parse import quote
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from services.file_urls import sign_uploads_in_text, verify_signature
-from services.storage import StorageError, get_storage_service
+from services.storage import StorageError, get_storage_service, is_public_key
 from db import engine
 from models import Base
 from routers import auth, admin, users, posts, uploads, ai, avatars, notifications, push
@@ -143,17 +143,33 @@ def _content_disposition(disposition: str, download_name: str) -> str:
     return f'{disposition}; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(download_name)}'
 
 
-def _serve_r2_upload(filename: str, name: str | None):
+_PUBLIC_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
+
+def _serve_r2_upload(filename: str, name: str | None, request: Request):
     """Отдаёт файл из R2 (новые загрузки), подпись уже проверена в serve_upload.
-    filename имеет вид 'r2/<key>'; ключ в бакете — без префикса 'r2/'."""
+    filename имеет вид 'r2/<key>'; ключ в бакете — без префикса 'r2/'.
+
+    Один GET к R2 вместо HEAD+GET (было два round-trip'а на каждый запрос) —
+    404 ловится по ответу самого GET. Пробрасывает Range (206 Partial
+    Content — важно для перемотки аудио/видео и прогрессивной загрузки
+    картинок) и ETag/Cache-Control из R2, с фолбэком Cache-Control для
+    публичных категорий (обложки классов), даже пока R2_PUBLIC_BASE_URL не
+    настроен и раздача всё ещё идёт через этот прокси."""
     key = filename[len("r2/"):]
     storage = get_storage_service()
-    if not storage.exists(key):
-        raise HTTPException(status_code=404, detail="File not found")
+
+    inm = request.headers.get("if-none-match")
+
     try:
-        data = storage.get_object_bytes(key)
+        obj = storage.get_object(key, range_header=request.headers.get("range"))
     except StorageError:
         raise HTTPException(status_code=502, detail="File storage temporarily unavailable")
+    if obj is None:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if inm and obj.etag and inm.strip('"') == obj.etag:
+        return Response(status_code=304, headers={"ETag": f'"{obj.etag}"'})
 
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     disposition = "inline" if ext in _INLINE_EXTENSIONS else "attachment"
@@ -162,20 +178,31 @@ def _serve_r2_upload(filename: str, name: str | None):
         cleaned = name.replace("\r", "").replace("\n", "").strip()
         if cleaned:
             download_name = cleaned[:255]
-    content_type = mimetypes.guess_type(download_name)[0] or "application/octet-stream"
-    return Response(
-        content=data,
-        media_type=content_type,
-        headers={
-            "X-Content-Type-Options": "nosniff",
-            "Content-Disposition": _content_disposition(disposition, download_name),
-        },
-    )
+    content_type = mimetypes.guess_type(download_name)[0] or obj.content_type
+
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": _content_disposition(disposition, download_name),
+        "Accept-Ranges": "bytes",
+    }
+    if obj.etag:
+        headers["ETag"] = f'"{obj.etag}"'
+    cache_control = obj.cache_control or (_PUBLIC_CACHE_CONTROL if is_public_key(key) else None)
+    if cache_control:
+        headers["Cache-Control"] = cache_control
+    if obj.partial and obj.content_range:
+        headers["Content-Range"] = obj.content_range
+        status_code = 206
+    else:
+        status_code = 200
+
+    return Response(content=obj.body, media_type=content_type, headers=headers, status_code=status_code)
 
 
 @app.get("/uploads/{filename:path}")
 def serve_upload(
     filename: str,
+    request: Request,
     exp: int = Query(...),
     sig: str = Query(...),
     name: str | None = Query(None),
@@ -193,7 +220,7 @@ def serve_upload(
         raise HTTPException(status_code=403, detail="Invalid or expired file link")
 
     if filename.startswith("r2/"):
-        return _serve_r2_upload(filename, name)
+        return _serve_r2_upload(filename, name, request)
 
     full = os.path.realpath(os.path.join(_uploads_root, filename))
     # Защита от path traversal (../): результат обязан лежать внутри uploads.
