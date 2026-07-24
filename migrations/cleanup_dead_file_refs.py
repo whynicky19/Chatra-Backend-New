@@ -42,10 +42,13 @@ APPLY = "--apply" in sys.argv
 
 def is_dead(url: str | None) -> bool:
     """True, если url указывает в /uploads/ и файла нет на диске.
-    Чужие URL (D-ID и т.п.) не трогаем."""
+    Чужие URL (D-ID и т.п.) не трогаем. Новые файлы в /uploads/r2/... живут в
+    Cloudflare R2, а не на диске, — эта проверка их не касается."""
     if not url or not isinstance(url, str):
         return False
     path = urlparse(url.split("#")[0]).path
+    if "/uploads/r2/" in path:
+        return False
     if "/uploads/" not in path:
         return False
     name = os.path.basename(path)

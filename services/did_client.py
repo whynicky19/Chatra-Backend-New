@@ -2,15 +2,14 @@
 import asyncio
 import logging
 import os
-from uuid import uuid4
 
 import httpx
+
+from services.storage import get_storage_service
 
 logger = logging.getLogger(__name__)
 
 DID_BASE_URL = "https://api.d-id.com"
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
-APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
 
 _POLL_INTERVAL_SECONDS = 3
 _MAX_POLL_ATTEMPTS = 60
@@ -85,13 +84,9 @@ async def _download_and_save(video_url: str) -> str:
     if not resp.is_success:
         raise VideoServiceError("Не удалось скачать готовое видео с D-ID")
 
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    filename = f"intro_{uuid4().hex}.mp4"
-    path = os.path.join(UPLOAD_DIR, filename)
-    with open(path, "wb") as f:
-        f.write(resp.content)
-
-    return f"{APP_BASE_URL.rstrip('/')}/uploads/{filename}"
+    storage = get_storage_service()
+    key = storage.build_key("intro", "mp4")
+    return storage.upload(resp.content, key, "video/mp4")
 
 
 def is_configured() -> bool:

@@ -6,17 +6,15 @@
 """
 import base64
 import logging
-import os
 import re
-from uuid import uuid4
+
+from services.storage import StorageError, get_storage_service
 
 logger = logging.getLogger(__name__)
 
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
-APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
-
 _DATA_URI_RE = re.compile(r"^data:image/(jpeg|jpg|png|webp|gif);base64,", re.IGNORECASE)
 _EXT_BY_TYPE = {"jpeg": "jpg", "jpg": "jpg", "png": "png", "webp": "webp", "gif": "gif"}
+_MIME_BY_TYPE = {"jpeg": "image/jpeg", "jpg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif"}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
@@ -38,16 +36,13 @@ def data_uri_to_file_url(data_uri: str) -> str | None:
     if not raw or len(raw) > MAX_IMAGE_BYTES:
         return None
 
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    name = f"cover_{uuid4().hex}.{ext}"
-    path = os.path.join(UPLOAD_DIR, name)
+    storage = get_storage_service()
+    key = storage.build_key("covers", ext)
     try:
-        with open(path, "wb") as f:
-            f.write(raw)
-    except OSError:
-        logger.exception("Не удалось сохранить картинку обложки в %s", path)
+        return storage.upload(raw, key, _MIME_BY_TYPE[m.group(1).lower()])
+    except StorageError:
+        logger.exception("Не удалось сохранить картинку обложки (key=%s)", key)
         return None
-    return f"{APP_BASE_URL.rstrip('/')}/uploads/{name}"
 
 
 def convert_cover_if_data_uri(value: str | None) -> str | None:

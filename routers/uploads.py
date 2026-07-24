@@ -1,7 +1,7 @@
 import os
 import logging
+import tempfile
 from collections import OrderedDict
-from uuid import uuid4
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
@@ -10,15 +10,11 @@ import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from services.file_service import read_file
+from services.storage import StorageError, get_storage_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
-
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
 
 # zip/rar убраны: архивы не нужны учебному флоу и не читаются парсерами
 ALLOWED_EXTENSIONS = {
@@ -29,6 +25,21 @@ ALLOWED_EXTENSIONS = {
     "mp3", "wav", "m4a", "webm", "ogg", "mp4",
 }
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+
+_CONTENT_TYPE_BY_EXT = {
+    "pdf": "application/pdf",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "ppt": "application/vnd.ms-powerpoint",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "xls": "application/vnd.ms-excel",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "txt": "text/plain", "md": "text/markdown", "csv": "text/csv", "rtf": "application/rtf",
+    "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp",
+    "sm": "text/plain",
+    "mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4", "webm": "video/webm",
+    "ogg": "audio/ogg", "mp4": "video/mp4",
+}
 
 
 MAGIC_BYTES: dict = {
@@ -166,28 +177,30 @@ async def upload_file(
             detail=f"Содержимое файла не соответствует расширению .{ext}. Загрузите настоящий {ext.upper()} файл.",
         )
 
-    unique_filename = f"{uuid4().hex}.{ext}"
-    file_path = os.path.join(UPLOAD_DIR, unique_filename)
+    storage = get_storage_service()
+    key = storage.build_key("uploads", ext)
+    content_type = _CONTENT_TYPE_BY_EXT.get(ext, "application/octet-stream")
 
-    # Запись файла и парсинг (pdfplumber/python-docx/openpyxl/OCR) — блокирующие
-    # операции; в async-обработчике их нельзя выполнять напрямую, иначе они
-    # заморозят весь event loop и все параллельные запросы. Выносим в пул потоков.
-    def _write() -> None:
-        with open(file_path, "wb") as buffer:
-            buffer.write(content)
+    # Парсеры (pdfplumber/python-docx/openpyxl/OCR) читают с диска, поэтому
+    # файл временно пишется во временный файл — он не остаётся на диске
+    # постоянно, содержимое хранится только в R2. Запись, парсинг и загрузка в
+    # R2 — блокирующие операции, выносим в пул потоков, чтобы не заморозить
+    # event loop (BE-10).
+    def _parse_via_tempfile() -> dict:
+        with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=True) as tmp:
+            tmp.write(content)
+            tmp.flush()
+            try:
+                return read_file(tmp.name)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Не удалось распарсить %s: %s", file.filename, e)
+                return {"type": "unparsed", "error": "Не удалось извлечь текст из файла"}
+
+    parsed = await run_in_threadpool(_parse_via_tempfile)
 
     try:
-        await run_in_threadpool(_write)
-    except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+        file_url = await run_in_threadpool(storage.upload, content, key, content_type)
+    except StorageError as e:
+        raise HTTPException(status_code=502, detail=f"Не удалось загрузить файл в хранилище: {e}")
 
-    # Повреждённый PDF/DOCX роняет парсер исключением, а раньше это улетало как 500.
-    # Тип уже подтверждён magic-байтами, текст нужен только ИИ — деградируем молча.
-    try:
-        parsed = await run_in_threadpool(read_file, file_path)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Не удалось распарсить %s (%s): %s", file.filename, unique_filename, e)
-        parsed = {"type": "unparsed", "error": "Не удалось извлечь текст из файла"}
-
-    file_url = f"{APP_BASE_URL.rstrip('/')}/uploads/{unique_filename}"
     return JSONResponse(content={"file_url": file_url, "filename": file.filename, "parsed": parsed})

@@ -1,18 +1,23 @@
-"""BE-10: удаление файлов из локального хранилища uploads/.
+"""BE-10: удаление файлов, на которые ссылается БД (локальный uploads/ и R2).
 
 Раньше при удалении сдачи/задания/класса запись в БД пропадала, а сами файлы
 навсегда оставались на диске. Здесь — безопасное best-effort удаление: только
-внутри UPLOAD_DIR (защита от path traversal), сбои логируются и не роняют
-основную операцию (удаление в БД важнее, чем очистка диска).
+внутри UPLOAD_DIR для локальных файлов (защита от path traversal) или через
+StorageService для новых файлов в R2 (см. services/storage/); сбои логируются
+и не роняют основную операцию (удаление в БД важнее, чем очистка хранилища).
 """
 import json
 import logging
 import os
 
+from services.storage import StorageError, get_storage_service
+
 logger = logging.getLogger(__name__)
 
 _UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
 _UPLOADS_ROOT = os.path.realpath(_UPLOAD_DIR)
+
+_R2_MARKER = "/uploads/r2/"
 
 
 def _filename_from_url(url: str) -> str | None:
@@ -27,8 +32,27 @@ def _filename_from_url(url: str) -> str | None:
     return tail or None
 
 
+def _r2_key_from_url(url: str) -> str | None:
+    if not url:
+        return None
+    path = url.split("?", 1)[0].split("#", 1)[0]
+    idx = path.find(_R2_MARKER)
+    if idx == -1:
+        return None
+    key = path[idx + len(_R2_MARKER):].strip("/")
+    return key or None
+
+
 def delete_upload_file(url: str) -> bool:
     """Удаляет один файл по его URL/пути. True — файл удалён."""
+    r2_key = _r2_key_from_url(url)
+    if r2_key is not None:
+        try:
+            return get_storage_service().delete(r2_key)
+        except StorageError as e:
+            logger.warning("file_cleanup: не удалось удалить из R2 %s (%s)", r2_key, e)
+            return False
+
     name = _filename_from_url(url)
     if not name:
         return False

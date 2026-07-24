@@ -8,10 +8,9 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
-logger = logging.getLogger(__name__)
+from services.storage import get_storage_service
 
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
-APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
+logger = logging.getLogger(__name__)
 
 
 class SlideData:
@@ -213,13 +212,12 @@ def _render_slide_images(data: bytes, filename: str, count: int) -> list[str]:
 
         logger.info("Успешно отрендерено %d картинок слайдов", len(generated))
 
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        storage = get_storage_service()
         urls: list[str] = []
         batch_id = uuid4().hex[:10]
         for i, src in enumerate(generated):
-            dest_name = f"slide_{batch_id}_{i}.png"
-            dest_path = os.path.join(UPLOAD_DIR, dest_name)
-            shutil.copyfile(src, dest_path)
-            urls.append(f"{APP_BASE_URL.rstrip('/')}/uploads/{dest_name}")
+            key = storage.build_key(f"slides/{batch_id}", "png")
+            with open(src, "rb") as f:
+                urls.append(storage.upload(f.read(), key, "image/png"))
 
         return urls

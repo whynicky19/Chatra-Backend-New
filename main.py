@@ -6,6 +6,9 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+import mimetypes
+from urllib.parse import quote
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 from fastapi import FastAPI, HTTPException, Query
@@ -13,6 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from services.file_urls import sign_uploads_in_text, verify_signature
+from services.storage import StorageError, get_storage_service
 from db import engine
 from models import Base
 from routers import auth, admin, users, posts, uploads, ai, avatars, notifications, push
@@ -134,6 +138,41 @@ _INLINE_EXTENSIONS = {
 _uploads_root = os.path.realpath(_upload_dir)
 
 
+def _content_disposition(disposition: str, download_name: str) -> str:
+    ascii_name = download_name.encode("ascii", "replace").decode().replace('"', "'")
+    return f'{disposition}; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(download_name)}'
+
+
+def _serve_r2_upload(filename: str, name: str | None):
+    """Отдаёт файл из R2 (новые загрузки), подпись уже проверена в serve_upload.
+    filename имеет вид 'r2/<key>'; ключ в бакете — без префикса 'r2/'."""
+    key = filename[len("r2/"):]
+    storage = get_storage_service()
+    if not storage.exists(key):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        data = storage.get_object_bytes(key)
+    except StorageError:
+        raise HTTPException(status_code=502, detail="File storage temporarily unavailable")
+
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    disposition = "inline" if ext in _INLINE_EXTENSIONS else "attachment"
+    download_name = os.path.basename(key)
+    if name:
+        cleaned = name.replace("\r", "").replace("\n", "").strip()
+        if cleaned:
+            download_name = cleaned[:255]
+    content_type = mimetypes.guess_type(download_name)[0] or "application/octet-stream"
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": _content_disposition(disposition, download_name),
+        },
+    )
+
+
 @app.get("/uploads/{filename:path}")
 def serve_upload(
     filename: str,
@@ -152,6 +191,9 @@ def serve_upload(
     """
     if not verify_signature(filename, exp, sig):
         raise HTTPException(status_code=403, detail="Invalid or expired file link")
+
+    if filename.startswith("r2/"):
+        return _serve_r2_upload(filename, name)
 
     full = os.path.realpath(os.path.join(_uploads_root, filename))
     # Защита от path traversal (../): результат обязан лежать внутри uploads.

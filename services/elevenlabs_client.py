@@ -1,15 +1,14 @@
 
 import logging
 import os
-from uuid import uuid4
 
 import httpx
+
+from services.storage import get_storage_service
 
 logger = logging.getLogger(__name__)
 
 ELEVENLABS_BASE_URL = "https://api.elevenlabs.io/v1"
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
-APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
 
 DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # "Rachel" - стандартный голос ElevenLabs
 
@@ -92,13 +91,9 @@ async def synthesize_speech(text: str, voice_id: str | None = None) -> tuple[byt
 
 
 def save_audio_file(audio_bytes: bytes, prefix: str = "narration") -> str:
-
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    filename = f"{prefix}_{uuid4().hex}.mp3"
-    path = os.path.join(UPLOAD_DIR, filename)
-    with open(path, "wb") as f:
-        f.write(audio_bytes)
-    return f"{APP_BASE_URL.rstrip('/')}/uploads/{filename}"
+    storage = get_storage_service()
+    key = storage.build_key(prefix, "mp3")
+    return storage.upload(audio_bytes, key, "audio/mpeg")
 
 
 def is_configured() -> bool:

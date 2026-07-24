@@ -202,10 +202,35 @@ static const String defaultBaseUrl = 'https://glacier-radiated-wipe.ngrok-free.d
 | `REFRESH_SECRET_KEY` | **Обязателен** — секрет для refresh-JWT (другой) | — (сервер не стартует) |
 | `DATABASE_URL` | SQLAlchemy строка подключения | `sqlite:///./chatra.db` |
 | `APP_BASE_URL` | Базовый URL для ссылок на файлы | `http://localhost:8000` |
-| `UPLOAD_DIR` | Папка для загружаемых файлов | `uploads` |
+| `UPLOAD_DIR` | Папка для файлов, загруженных **до** подключения R2 (legacy) | `uploads` |
+| `R2_ACCOUNT_ID` | ID аккаунта Cloudflare (для хранения **новых** файлов) | — |
+| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | S3-совместимые ключи R2 | — |
+| `R2_BUCKET_NAME` | Бакет R2 (разный для dev/prod) | — |
+| `R2_ENDPOINT_URL` | Свой endpoint R2 (если не строится из `R2_ACCOUNT_ID`) | не задан |
+| `R2_PUBLIC_BASE_URL` | Домен CDN перед бакетом (заготовка на будущее) | не задан → раздача через `/uploads/...` с подписью |
 | `CORS_ORIGINS` | Разрешённые origins через запятую, или `*` | `*` |
 | `ELEVENLABS_API_KEY` | Клон голоса учителя + озвучка лекций аватара | не задан → озвучка недоступна |
 | `DID_API_KEY` | Видео-интро аватара (говорящее фото, 15-30 сек) | не задан → видео-интро пропускается |
+
+---
+
+## Хранение файлов (Cloudflare R2)
+
+Все **новые** файлы (загрузки в классах, обложки, TTS/видео аватара, слайды
+лекций) сохраняются в Cloudflare R2 через `services/storage/`
+(S3-совместимый API, см. `services/storage/r2_storage.py`). Файлы,
+загруженные до подключения R2, остаются в локальной папке `uploads/` — они не
+мигрируются и продолжают отдаваться как раньше.
+
+И локальные, и R2-файлы отдаются клиенту через один и тот же защищённый
+эндпоинт `/uploads/...` с HMAC-подписью (SEC-1, `services/file_urls.py`) —
+прямого публичного доступа к бакету нет, ссылка на файл выдаётся только
+вместе с ресурсом, на который у пользователя есть права. Настройка R2 — в
+секции `R2_*` переменных выше и в `.env.example`.
+
+Чтобы подключить собственный CDN-домен перед бакетом (например
+`cdn.chatra.aican.cloud`), задайте `R2_PUBLIC_BASE_URL` — тогда новые файлы
+начнут отдаваться прямой публичной ссылкой в обход подписанного прокси.
 
 ---
 
@@ -251,8 +276,9 @@ security.py      — JWT утилиты
 routers/         — эндпоинты (auth, users, classes, cohorts, ai, avatars, ...)
 crud/            — операции с БД
 services/        — бизнес-логика (ai_grader, deadline_checker, ...)
+services/storage/ — Cloudflare R2 (хранилище новых файлов), см. раздел выше
 parsers/         — парсинг файлов (PDF, DOCX, OCR)
 websocket.py     — WebSocket чат
 migrations/      — SQL + Python миграции (НЕ Alembic, см. раздел 5)
-uploads/         — загруженные файлы
+uploads/         — файлы, загруженные до подключения R2 (legacy, не пополняется)
 ```
