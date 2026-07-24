@@ -2,7 +2,7 @@ import os
 import logging
 import tempfile
 from collections import OrderedDict
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 from deps import get_current_user
@@ -10,7 +10,7 @@ import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from services.file_service import read_file
-from services.storage import StorageError, get_storage_service
+from services.storage import CATEGORIES, StorageError, get_storage_service
 
 logger = logging.getLogger(__name__)
 
@@ -143,13 +143,23 @@ async def get_file_text(
     return {"text": text}
 
 
+DEFAULT_CATEGORY = "attachments"
+
+
 @router.post("/")
 async def upload_file(
     file: UploadFile = File(...),
+    category: str = Form(DEFAULT_CATEGORY),
     current_user=Depends(get_current_user),
 ):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
+
+    if category not in CATEGORIES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"category должна быть одной из {sorted(CATEGORIES)}",
+        )
 
     ext = os.path.splitext(file.filename)[1].lstrip(".").lower()
     if ext not in ALLOWED_EXTENSIONS:
@@ -178,7 +188,7 @@ async def upload_file(
         )
 
     storage = get_storage_service()
-    key = storage.build_key("uploads", ext)
+    key = storage.build_key(category, file.filename)
     content_type = _CONTENT_TYPE_BY_EXT.get(ext, "application/octet-stream")
 
     # Парсеры (pdfplumber/python-docx/openpyxl/OCR) читают с диска, поэтому

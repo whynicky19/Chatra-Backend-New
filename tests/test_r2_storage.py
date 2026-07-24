@@ -111,8 +111,46 @@ def test_upload_does_not_retry_on_client_error_4xx():
     assert svc._client.put_object.call_count == 1
 
 
-def test_build_key_is_prefixed_and_unique():
-    key1 = R2StorageService.build_key("uploads", "pdf")
-    key2 = R2StorageService.build_key("uploads", "pdf")
-    assert key1.startswith("uploads/") and key1.endswith(".pdf")
-    assert key1 != key2
+def test_build_key_uses_original_filename_and_category():
+    svc = _service()
+    svc._client.head_object.side_effect = _client_error(404)
+    key = svc.build_key("submissions", "Домашнее задание.docx")
+    assert key == "submissions/Домашнее задание.docx"
+
+
+def test_build_key_strips_path_and_unsafe_chars():
+    svc = _service()
+    svc._client.head_object.side_effect = _client_error(404)
+    key = svc.build_key("attachments", "../../etc/passwd:evil<name>.txt")
+    assert key.startswith("attachments/")
+    assert "/" not in key[len("attachments/"):]
+    assert ".." not in key
+    assert ":" not in key and "<" not in key and ">" not in key
+
+
+def test_build_key_appends_numeric_suffix_on_collision():
+    svc = _service()
+    # Первые два кандидата уже заняты, третий свободен.
+    svc._client.head_object.side_effect = [
+        {}, {}, _client_error(404),
+    ]
+    key = svc.build_key("materials", "report.pdf")
+    assert key == "materials/report_2.pdf"
+
+
+def test_build_key_falls_back_to_uuid_after_exhausting_suffixes():
+    svc = _service()
+    svc._client.head_object.side_effect = [{}] * 25  # всегда занято
+    key = svc.build_key("materials", "report.pdf")
+    assert key.startswith("materials/report_") and key.endswith(".pdf")
+    assert key.count("_") >= 1
+    # UUID-хвост, а не порядковый номер из основного диапазона (1..20)
+    tail = key[len("materials/report_"):-len(".pdf")]
+    assert tail not in {str(i) for i in range(1, 21)}
+
+
+def test_build_key_no_extension_when_none_present():
+    svc = _service()
+    svc._client.head_object.side_effect = _client_error(404)
+    key = svc.build_key("attachments", "README")
+    assert key == "attachments/README"

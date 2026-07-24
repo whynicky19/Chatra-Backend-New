@@ -76,11 +76,25 @@ def sign_upload_url(url: str, ttl: int = _DEFAULT_TTL) -> str:
     return f"{base}{path}?{urlencode({'exp': exp, 'sig': sig})}"
 
 
+# Символы, допустимые в пути файла внутри JSON-текста. Ключи в R2 хранят
+# оригинальное имя файла (services/storage/base.py: build_key), которое может
+# содержать юникод (кириллицу) и пробелы — поэтому \w (юникодный по умолчанию
+# в Python 3) вместо A-Za-z0-9, плюс пробел и разделитель категорий "/".
+# Кавычки, "?", "&", "#", "%" и т.п. в имя не попадают (см. _sanitize_filename),
+# так что путь всегда корректно обрывается на границе значения в JSON. Пробел
+# разрешён только МЕЖДУ путевыми символами (не в начале/конце совпадения) —
+# _sanitize_filename никогда не оставляет пробел на конце имени, так что
+# завершающий пробел в совпадении — это уже посторонний текст, а не часть
+# ключа. Общая длина ограничена — реальные ключи короче лимита build_key.
+_PATH_MAX_LEN = 400
+_PATH_CHARS = r"[\w\-./]+(?:[ ]+[\w\-./]+)*"
+
+
 # Регулярка для поиска uploads-URL в JSON-ответах (см. middleware в main.py).
 # Захватывает базу + путь + необязательный старый query (чтобы переподписать).
 def _uploads_url_regex() -> re.Pattern:
     base = re.escape(_uploads_base())
-    return re.compile(base + r"([A-Za-z0-9_\-.\/]+)(\?[A-Za-z0-9_\-.=&%]*)?")
+    return re.compile(base + r"(" + _PATH_CHARS + r")(\?[A-Za-z0-9_\-.=&%]*)?")
 
 
 # Относительная ссылка «/uploads/<файл>»: так вложения сохраняет мобильное
@@ -90,7 +104,7 @@ def _uploads_url_regex() -> re.Pattern:
 # Ограничение по предшествующему символу (кавычка/пробел/скобка) не даёт
 # зацепить путь внутри уже подписанного абсолютного URL и чужие хосты.
 _RELATIVE_UPLOADS_RE = re.compile(
-    r"(?P<pre>[\"'\s,\[(])/uploads/(?P<path>[A-Za-z0-9_\-.\/]+)"
+    r"(?P<pre>[\"'\s,\[(])/uploads/(?P<path>" + _PATH_CHARS + r")"
     r"(?P<query>\?[A-Za-z0-9_\-.=&%]*)?"
 )
 
@@ -105,7 +119,17 @@ def sign_uploads_in_text(text: str) -> str:
         exp, sig = make_signature(path)
         return f"{base}{path}?{urlencode({'exp': exp, 'sig': sig})}"
 
-    text = _uploads_url_regex().sub(lambda m: _signed(m.group(1)), text)
-    return _RELATIVE_UPLOADS_RE.sub(
-        lambda m: f"{m.group('pre')}{_signed(m.group('path'))}", text
-    )
+    def _sub_absolute(m: re.Match) -> str:
+        path = m.group(1)
+        if len(path) > _PATH_MAX_LEN:
+            return m.group(0)
+        return _signed(path)
+
+    def _sub_relative(m: re.Match) -> str:
+        path = m.group("path")
+        if len(path) > _PATH_MAX_LEN:
+            return m.group(0)
+        return f"{m.group('pre')}{_signed(path)}"
+
+    text = _uploads_url_regex().sub(_sub_absolute, text)
+    return _RELATIVE_UPLOADS_RE.sub(_sub_relative, text)

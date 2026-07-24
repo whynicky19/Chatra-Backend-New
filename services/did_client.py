@@ -85,7 +85,7 @@ async def _download_and_save(video_url: str) -> str:
         raise VideoServiceError("Не удалось скачать готовое видео с D-ID")
 
     storage = get_storage_service()
-    key = storage.build_key("intro", "mp4")
+    key = storage.build_key("lectures/intro", "intro.mp4")
     return storage.upload(resp.content, key, "video/mp4")
 
 

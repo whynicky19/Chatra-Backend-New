@@ -216,7 +216,7 @@ def _render_slide_images(data: bytes, filename: str, count: int) -> list[str]:
         urls: list[str] = []
         batch_id = uuid4().hex[:10]
         for i, src in enumerate(generated):
-            key = storage.build_key(f"slides/{batch_id}", "png")
+            key = storage.build_key(f"lectures/slides/{batch_id}", f"slide_{i + 1}.png")
             with open(src, "rb") as f:
                 urls.append(storage.upload(f.read(), key, "image/png"))
 

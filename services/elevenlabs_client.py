@@ -92,7 +92,7 @@ async def synthesize_speech(text: str, voice_id: str | None = None) -> tuple[byt
 
 def save_audio_file(audio_bytes: bytes, prefix: str = "narration") -> str:
     storage = get_storage_service()
-    key = storage.build_key(prefix, "mp3")
+    key = storage.build_key("lectures/audio", f"{prefix}.mp3")
     return storage.upload(audio_bytes, key, "audio/mpeg")
 
 

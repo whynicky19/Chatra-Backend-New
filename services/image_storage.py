@@ -1,8 +1,8 @@
-"""Конвертация base64 data-URI картинок в файлы в uploads/.
+"""Конвертация base64 data-URI картинок обложек классов в файлы в R2.
 
 Обложки классов исторически сохранялись как data-URI прямо в БД и уезжали
 в каждый списочный ответ (~100-150 КБ на класс). Здесь они один раз
-декодируются в файл, а в БД остаётся короткий URL.
+декодируются в файл (materials/covers/...), а в БД остаётся короткий URL.
 """
 import base64
 import logging
@@ -37,7 +37,7 @@ def data_uri_to_file_url(data_uri: str) -> str | None:
         return None
 
     storage = get_storage_service()
-    key = storage.build_key("covers", ext)
+    key = storage.build_key("materials/covers", f"cover.{ext}")
     try:
         return storage.upload(raw, key, _MIME_BY_TYPE[m.group(1).lower()])
     except StorageError:
