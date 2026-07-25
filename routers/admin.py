@@ -1,8 +1,7 @@
 import logging
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from utils.time import utcnow
-from models import User, AiUsageLog, TeacherAvatar, AvatarLecture, Class as ClassModel
+from models import User, AiUsageLog
 from crud import classes as crud_classes
 import schemas
 from schemas import UserCreate, UserResponse
@@ -10,9 +9,7 @@ from deps import get_current_admin
 from db import get_db
 from crud import users as crud_users
 from security import hash_password
-from typing import Optional, List
-from services import elevenlabs_client
-from services.avatar_lecture_pipeline import run_lecture_generation
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -233,155 +230,3 @@ def get_ai_usage_summary(
         for r in rows
     ]
 
-
-
-
-@router.get("/avatars", response_model=List[schemas.TeacherAvatarResponse])
-def list_avatars(
-    status_filter: Optional[str] = Query(None, alias="status"),
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_admin),
-):
-    q = db.query(TeacherAvatar).filter(TeacherAvatar.org_type == current_user.org_type)
-    if status_filter:
-        q = q.filter(TeacherAvatar.status == status_filter)
-    return q.order_by(TeacherAvatar.created_at.desc()).all()
-
-
-@router.post("/avatars/{avatar_id}/review", response_model=schemas.TeacherAvatarResponse)
-async def review_avatar(
-    avatar_id: int,
-    body: schemas.AvatarReviewAction,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_admin),
-):
-    avatar = db.query(TeacherAvatar).filter(TeacherAvatar.id == avatar_id).first()
-    if not avatar or avatar.org_type != current_user.org_type:
-        raise HTTPException(status_code=404, detail="Заявка на аватар не найдена")
-    if avatar.status != "pending":
-        raise HTTPException(status_code=409, detail="Заявка уже рассмотрена")
-
-    avatar.reviewed_by = current_user.id
-    avatar.reviewed_at = utcnow()
-
-    if not body.approve:
-        avatar.status = "rejected"
-        avatar.rejection_reason = body.rejection_reason or "Отклонено администратором"
-        db.commit()
-        db.refresh(avatar)
-        return avatar
-
-
-    from services.url_safety import is_safe_fetch_url
-    if not is_safe_fetch_url(avatar.voice_sample_url):
-        raise HTTPException(status_code=400, detail="Недопустимый URL образца голоса")
-
-    voice_warning = None
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            sample_resp = await client.get(avatar.voice_sample_url)
-        if not sample_resp.is_success:
-            voice_warning = "Не удалось скачать образец голоса для клонирования"
-        else:
-            voice_id = await elevenlabs_client.clone_voice_from_sample(
-                voice_name=avatar.display_name or f"teacher_{avatar.teacher_id}",
-                sample_bytes=sample_resp.content,
-                sample_filename="sample.mp3",
-            )
-            avatar.elevenlabs_voice_id = voice_id
-    except elevenlabs_client.VoiceServiceNotConfigured as exc:
-        logger.warning("ElevenLabs не настроен при одобрении аватара %s: %s", avatar_id, exc)
-        voice_warning = "Ключ ElevenLabs не настроен — аватар будет говорить стандартным голосом"
-    except elevenlabs_client.VoiceServiceError as exc:
-        logger.warning("Клонирование голоса недоступно для аватара %s: %s", avatar_id, exc)
-        voice_warning = (
-            "Клонирование голоса недоступно на текущем тарифе ElevenLabs "
-            "(нужен платный план Starter и выше) — аватар будет говорить стандартным голосом"
-        )
-    except Exception as exc:
-        logger.exception("Непредвиденная ошибка клонирования голоса для аватара %s", avatar_id)
-        voice_warning = f"Не удалось клонировать голос ({exc}) — аватар будет говорить стандартным голосом"
-
-    avatar.status = "approved"
-    avatar.rejection_reason = None
-    avatar.voice_clone_warning = voice_warning
-    db.commit()
-    db.refresh(avatar)
-    return avatar
-
-
-@router.delete("/avatars/{avatar_id}")
-def delete_avatar(
-    avatar_id: int,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_admin),
-):
-    avatar = db.query(TeacherAvatar).filter(TeacherAvatar.id == avatar_id).first()
-    if not avatar or avatar.org_type != current_user.org_type:
-        raise HTTPException(status_code=404, detail="Аватар не найден")
-    db.delete(avatar)
-    db.commit()
-    return {"message": "Аватар удалён"}
-
-
-@router.get("/avatar-lectures", response_model=List[schemas.AvatarLectureResponse])
-def list_avatar_lectures(
-    status_filter: Optional[str] = Query(None, alias="status"),
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_admin),
-):
-    q = db.query(AvatarLecture).filter(AvatarLecture.org_type == current_user.org_type)
-    if status_filter:
-        q = q.filter(AvatarLecture.status == status_filter)
-    lectures = q.order_by(AvatarLecture.created_at.desc()).all()
-
-    # Резолвим названия классов одним запросом, чтобы админка показывала
-    # «Физика», а не «Класс 27».
-    class_ids = {l.class_id for l in lectures if l.class_id}
-    names = {}
-    if class_ids:
-        rows = db.query(ClassModel.id, ClassModel.name).filter(ClassModel.id.in_(class_ids)).all()
-        names = dict(rows)
-
-    result = []
-    for lec in lectures:
-        resp = schemas.AvatarLectureResponse.model_validate(lec)
-        resp.class_name = names.get(lec.class_id)
-        result.append(resp)
-    return result
-
-
-@router.post("/avatar-lectures/{lecture_id}/review", response_model=schemas.AvatarLectureResponse)
-def review_avatar_lecture(
-    lecture_id: int,
-    body: schemas.LectureReviewAction,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_admin),
-):
-    lecture = db.query(AvatarLecture).filter(AvatarLecture.id == lecture_id).first()
-    if not lecture or lecture.org_type != current_user.org_type:
-        raise HTTPException(status_code=404, detail="Лекция не найдена")
-    if lecture.status != "pending_approval":
-        raise HTTPException(status_code=409, detail="Лекция уже рассмотрена")
-
-    lecture.reviewed_by = current_user.id
-    lecture.reviewed_at = utcnow()
-
-    if not body.approve:
-        lecture.status = "rejected"
-        lecture.rejection_reason = body.rejection_reason or "Отклонено администратором"
-        db.commit()
-        db.refresh(lecture)
-        return lecture
-
-    lecture.status = "approved"
-    lecture.rejection_reason = None
-    db.commit()
-    db.refresh(lecture)
-
-
-    background_tasks.add_task(run_lecture_generation, lecture.id, current_user.org_type)
-
-    return lecture

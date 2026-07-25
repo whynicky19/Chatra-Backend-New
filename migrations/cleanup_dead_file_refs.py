@@ -7,8 +7,6 @@
   * submissions.file_url / file_urls
   * assignments.reference_solution_url
   * posts: списки files в JSON-теле
-  * avatar_lectures.intro_video_url / source_file_url,
-    avatar_lecture_slides.slide_image_url / audio_url (только /uploads/-ссылки)
 
 Запуск:
   ./venv/bin/python migrations/cleanup_dead_file_refs.py           # сухой прогон
@@ -30,8 +28,6 @@ from db import SessionLocal
 from models import (
     Assignment,
     AssignmentVariant,
-    AvatarLecture,
-    AvatarLectureSlide,
     Posts,
     Submission,
 )
@@ -141,26 +137,6 @@ try:
             body["files"] = alive
             post.body = json.dumps(body, ensure_ascii=False)
             bump("posts.files")
-
-    for lec in db.query(AvatarLecture).all():
-        if is_dead(lec.intro_video_url):
-            print(f"avatar_lecture {lec.id}: intro_video_url мёртв -> NULL")
-            lec.intro_video_url = None
-            bump("avatar_lectures.intro_video_url")
-        if is_dead(lec.source_file_url):
-            print(f"avatar_lecture {lec.id}: source_file_url мёртв -> NULL")
-            lec.source_file_url = None
-            bump("avatar_lectures.source_file_url")
-
-    for slide in db.query(AvatarLectureSlide).all():
-        if is_dead(slide.slide_image_url):
-            print(f"slide {slide.id} (лекция {slide.lecture_id}): картинка мертва -> NULL")
-            slide.slide_image_url = None
-            bump("slides.slide_image_url")
-        if is_dead(slide.audio_url):
-            print(f"slide {slide.id} (лекция {slide.lecture_id}): аудио мертво -> NULL")
-            slide.audio_url = None
-            bump("slides.audio_url")
 
     print("\nИтого изменений:", json.dumps(stats, ensure_ascii=False, indent=2) if stats else "нет")
     if APPLY:

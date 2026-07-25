@@ -13,7 +13,7 @@ from uuid import uuid4
 # Категории верхнего уровня для организации файлов в R2. Внутри категории
 # допустимы дополнительные подпапки (например "lectures/slides/<batch>") —
 # это тоже "автоматически формируемый путь", просто более специфичный.
-CATEGORIES = {"avatars", "lectures", "materials", "assignments", "submissions", "attachments"}
+CATEGORIES = {"materials", "assignments", "submissions", "attachments"}
 
 # Префиксы ключей, которые не содержат ничего приватного (их и так видит
 # любой, кто открыл список классов) — в отличие от сдач/эталонов, им не

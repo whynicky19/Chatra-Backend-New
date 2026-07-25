@@ -116,10 +116,11 @@ nohup ./venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 > uvicorn.log 2>&1 
 | 005 | инвайт-коды классов | `python migrations/005_backfill_invite_codes.py` |
 | 006 | перенос постов-классов в `classes` | `python migrations/006_backfill_posts_to_classes.py` |
 | 007 | `messages.file_url` / `is_read` | `psql … -f migrations/007_messages_file_url_is_read.sql` |
-| 008 | язык лекций аватара | `psql … -f migrations/008_avatar_lecture_language.sql` |
+| 008 | язык лекций аватара (историческая, см. 016) | `psql … -f migrations/008_avatar_lecture_language.sql` |
 | **009** | **учебные потоки (когорты)** | `python migrations/009_backfill_cohorts.py` |
 | 014 | `classes.cover_thumbnail` (миниатюра обложки) | `psql … -f migrations/014_classes_cover_thumbnail.sql` |
 | 015 | пересжатие существующих обложек классов в WebP + генерация миниатюр (опционально, см. раздел "Оптимизация обложек классов" ниже) | `python migrations/015_optimize_existing_covers.py` |
+| 016 | удаление фичи «AI-аватар преподавателя» (`DROP TABLE` для `teacher_avatars`/`avatar_lectures`/`avatar_lecture_slides`) | `psql … -f migrations/016_drop_avatar_tables.sql` |
 
 ### ⚠️ Ловушка: миграционные скрипты не читают `.env`
 
@@ -246,8 +247,6 @@ static const String defaultBaseUrl = 'https://glacier-radiated-wipe.ngrok-free.d
 | `submissions/` | сдачи заданий |
 | `assignments/` | эталонные решения |
 | `materials/`, `materials/covers/` | материалы класса, обложки классов |
-| `avatars/` | фото/образец голоса аватара учителя |
-| `lectures/`, `lectures/audio/`, `lectures/intro/`, `lectures/slides/<batch>/` | материалы, TTS-озвучка, видео-интро и слайды AI-лекций |
 
 `POST /upload/` принимает необязательное поле формы `category` (одно из
 значений выше); без него используется `attachments`. Серверная генерация
@@ -294,29 +293,6 @@ S3-совместимого API, из кода не переключается.
 
 ---
 
-## AI-аватар преподавателя
-
-Учитель один раз создаёт своего аватара (фото + образец голоса), затем по
-материалам, закреплённым за классом, может создавать лекции — аватар
-озвучивает презентацию слайд за слайдом голосом учителя и в конце
-формирует конспект.
-
-**Создание аватара и каждая новая лекция требуют одобрения администратора**
-в разделах `/admin/avatars` и `/admin/avatar-lectures` — это сознательное
-ограничение, так как голос и видео генерируются через платные сторонние API
-(ElevenLabs и D-ID).
-
-Без ключей `ELEVENLABS_API_KEY` / `DID_API_KEY` система продолжает работать:
-заявки на аватар можно одобрять, лекции — создавать, но озвучка/видео не
-генерируются, пока администратор не добавит ключи. Текст лекции и конспект
-всегда генерируются через `OPENAI_API_KEY`.
-
-Видео-аватар генерируется **только для первого слайда лекции** (короткое
-говорящее интро ~15-30 сек). Остальная часть — слайд + статичное фото
-учителя + аудио, синхронно листающиеся в плеере на фронтенде.
-
----
-
 ## AI-оценивание
 
 Задания оцениваются через OpenAI GPT-4o-mini по умолчанию.
@@ -333,7 +309,7 @@ schemas.py       — Pydantic схемы
 db.py            — подключение к БД, get_engine(org) для схем university/school
 deps.py          — зависимости (get_db, get_current_user, get_current_teacher)
 security.py      — JWT утилиты
-routers/         — эндпоинты (auth, users, classes, cohorts, ai, avatars, ...)
+routers/         — эндпоинты (auth, users, classes, cohorts, ai, ...)
 crud/            — операции с БД
 services/        — бизнес-логика (ai_grader, deadline_checker, ...)
 services/storage/ — Cloudflare R2 (хранилище новых файлов), см. раздел выше
