@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from models import Posts, User
-from services.file_cleanup import delete_post_files
+from services.file_cleanup import delete_post_files, delete_replaced_post_cover
 
 def create_new_post(db: Session, title: str, body: str, user_id: int) -> Posts:
     post = Posts(title=title, body=body, user_id=user_id)
@@ -45,8 +45,11 @@ def update_post(db: Session, post_id: int, title: str, body: str) -> Posts:
     post = get_post_by_id(db, post_id)
     if not post:
         return None
+    old_body = post.body
     post.title = title
     post.body = body
     db.commit()
     db.refresh(post)
+    # BE-10: обложку заменили (или убрали) — старый файл больше не нужен.
+    delete_replaced_post_cover(old_body, body)
     return post

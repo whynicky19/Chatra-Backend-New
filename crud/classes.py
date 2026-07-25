@@ -62,11 +62,18 @@ def update_class(db: Session, class_id: int, data: dict) -> Optional[Class]:
     obj = get_class(db, class_id)
     if not obj:
         return None
+    old_cover_image = obj.cover_image
+    old_cover_thumbnail = obj.cover_thumbnail
     for k, v in data.items():
         if v is not None:
             setattr(obj, k, v)
     db.commit()
     db.refresh(obj)
+    # BE-10: обложку заменили — старый файл больше ни на что не ссылается.
+    if "cover_image" in data and old_cover_image and old_cover_image != obj.cover_image:
+        delete_upload_file(old_cover_image)
+    if "cover_thumbnail" in data and old_cover_thumbnail and old_cover_thumbnail != obj.cover_thumbnail:
+        delete_upload_file(old_cover_thumbnail)
     return obj
 
 def delete_class(db: Session, class_id: int) -> bool:

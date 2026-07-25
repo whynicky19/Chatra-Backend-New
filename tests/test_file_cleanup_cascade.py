@@ -23,10 +23,12 @@ def _spy_delete(monkeypatch):
         return True
 
     monkeypatch.setattr(file_cleanup, "delete_upload_file", fake_delete)
-    # crud/classes.py does `from services.file_cleanup import delete_upload_file`,
-    # binding its own local name at import time — patching the module attribute
-    # above doesn't reach it, so it needs patching separately.
+    # crud/classes.py and crud/assignments.py do
+    # `from services.file_cleanup import delete_upload_file`, binding their own
+    # local name at import time — patching the module attribute above doesn't
+    # reach those, so they need patching separately.
     monkeypatch.setattr(crud_classes, "delete_upload_file", fake_delete)
+    monkeypatch.setattr(crud_assignments, "delete_upload_file", fake_delete)
     return calls
 
 
@@ -210,3 +212,86 @@ def test_delete_post_ignores_data_uri_cover(db_session, monkeypatch):
 
     assert crud_posts.delete_post(db, post.id) is True
     assert calls == []
+
+
+def test_update_class_replacing_cover_cleans_old_files(db_session, monkeypatch):
+    calls = _spy_delete(monkeypatch)
+    db = db_session
+    teacher = make_user(db, role="teacher")
+    klass = crud_classes.create_class(db, "Class", None, teacher.id)
+    klass.cover_image = "https://cdn.example/uploads/r2/old-cover.jpg"
+    klass.cover_thumbnail = "https://cdn.example/uploads/r2/old-thumb.jpg"
+    db.commit()
+
+    crud_classes.update_class(db, klass.id, {
+        "cover_image": "https://cdn.example/uploads/r2/new-cover.jpg",
+        "cover_thumbnail": "https://cdn.example/uploads/r2/new-thumb.jpg",
+    })
+
+    assert set(calls) == {
+        "https://cdn.example/uploads/r2/old-cover.jpg",
+        "https://cdn.example/uploads/r2/old-thumb.jpg",
+    }
+
+
+def test_update_class_without_cover_change_does_not_delete(db_session, monkeypatch):
+    calls = _spy_delete(monkeypatch)
+    db = db_session
+    teacher = make_user(db, role="teacher")
+    klass = crud_classes.create_class(db, "Class", None, teacher.id)
+    klass.cover_image = "https://cdn.example/uploads/r2/cover.jpg"
+    db.commit()
+
+    crud_classes.update_class(db, klass.id, {"name": "Renamed"})
+
+    assert calls == []
+
+
+def test_update_assignment_replacing_reference_cleans_old_file(db_session, monkeypatch):
+    calls = _spy_delete(monkeypatch)
+    db = db_session
+    teacher = make_user(db, role="teacher")
+    klass = crud_classes.create_class(db, "Class", None, teacher.id)
+    assignment = crud_assignments.create_assignment(
+        db, klass.id, "HW", None, [{"name": "ok", "weight": 100}], 100, None, teacher.id,
+        reference_solution_url="https://cdn.example/uploads/r2/old-ref.pdf",
+    )
+
+    crud_assignments.update_assignment(db, assignment.id, {
+        "reference_solution_url": "https://cdn.example/uploads/r2/new-ref.pdf",
+    })
+
+    assert calls == ["https://cdn.example/uploads/r2/old-ref.pdf"]
+
+
+def test_update_post_replacing_lecture_cover_cleans_old_file(db_session, monkeypatch):
+    calls = _spy_delete(monkeypatch)
+    db = db_session
+    teacher = make_user(db, role="teacher")
+    post = crud_posts.create_new_post(
+        db, title="[LECTURE][1] L1",
+        body='{"cover_image": "https://cdn.example/uploads/r2/old-lecture-cover.jpg"}',
+        user_id=teacher.id,
+    )
+
+    crud_posts.update_post(
+        db, post.id, title="[LECTURE][1] L1",
+        body='{"cover_image": "https://cdn.example/uploads/r2/new-lecture-cover.jpg"}',
+    )
+
+    assert calls == ["https://cdn.example/uploads/r2/old-lecture-cover.jpg"]
+
+
+def test_update_post_removing_cover_cleans_old_file(db_session, monkeypatch):
+    calls = _spy_delete(monkeypatch)
+    db = db_session
+    teacher = make_user(db, role="teacher")
+    post = crud_posts.create_new_post(
+        db, title="[LECTURE][1] L1",
+        body='{"cover_image": "https://cdn.example/uploads/r2/removed-cover.jpg"}',
+        user_id=teacher.id,
+    )
+
+    crud_posts.update_post(db, post.id, title="[LECTURE][1] L1", body='{"text": "no cover now"}')
+
+    assert calls == ["https://cdn.example/uploads/r2/removed-cover.jpg"]

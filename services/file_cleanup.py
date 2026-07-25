@@ -115,24 +115,37 @@ def delete_assignment_files(assignment) -> int:
     return removed
 
 
+def _post_cover_url(body: str | None) -> str | None:
+    if not body:
+        return None
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    cover = parsed.get("cover_image")
+    if not cover or not isinstance(cover, str) or cover.startswith("data:"):
+        return None
+    return cover
+
+
 def delete_post_files(post) -> int:
     """Удаляет обложку поста/лекции, если она была сконвертирована в файл R2
     (routers/posts.py: _convert_body_cover). Легаси-посты, где cover_image
     ещё остаётся data-URI прямо в body, отдельного файла не имеют — чистить
     нечего."""
-    body = getattr(post, "body", None)
-    if not body:
-        return 0
-    try:
-        parsed = json.loads(body)
-    except (ValueError, TypeError):
-        return 0
-    if not isinstance(parsed, dict):
-        return 0
-    cover = parsed.get("cover_image")
-    if not cover or not isinstance(cover, str) or cover.startswith("data:"):
-        return 0
-    return 1 if delete_upload_file(cover) else 0
+    cover = _post_cover_url(getattr(post, "body", None))
+    return 1 if cover and delete_upload_file(cover) else 0
+
+
+def delete_replaced_post_cover(old_body: str | None, new_body: str | None) -> bool:
+    """При редактировании поста — удаляет старую обложку, если она была
+    файлом в R2/uploads и заменена на другую (или пост остался без обложки)."""
+    old_cover = _post_cover_url(old_body)
+    if old_cover and old_cover != _post_cover_url(new_body):
+        return delete_upload_file(old_cover)
+    return False
 
 
 def delete_user_files(user) -> int:

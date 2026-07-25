@@ -6,7 +6,7 @@ from typing import Optional, List
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from models import Assignment, Submission, Grade, User, Cohort, Deadline, cohort_students
-from services.file_cleanup import delete_assignment_files
+from services.file_cleanup import delete_assignment_files, delete_upload_file
 
 def create_assignment(
     db: Session,
@@ -65,11 +65,19 @@ def update_assignment(db: Session, assignment_id: int, data: dict) -> Optional[A
         return None
     if "criteria" in data and isinstance(data["criteria"], list):
         data["criteria"] = json.dumps(data["criteria"], ensure_ascii=False)
+    old_reference_solution_url = obj.reference_solution_url
     for key, value in data.items():
         if value is not None:
             setattr(obj, key, value)
     db.commit()
     db.refresh(obj)
+    # BE-10: референсное решение заменили — старый файл больше не нужен.
+    if (
+        "reference_solution_url" in data
+        and old_reference_solution_url
+        and old_reference_solution_url != obj.reference_solution_url
+    ):
+        delete_upload_file(old_reference_solution_url)
     return obj
 
 def delete_assignment(db: Session, assignment_id: int) -> bool:
