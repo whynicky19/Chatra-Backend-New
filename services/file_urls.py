@@ -8,7 +8,7 @@
 Модель:
   * ACL проверяется в момент ВЫДАЧИ ссылки (эндпоинт ресурса уже защищён
     правами доступа), а подпись лишь удостоверяет «сервер это авторизовал».
-  * Прокси-эндпоинт /uploads/<file> отдаёт файл только с валидной непросро-
+  * Прокси-эндпоинт /api/uploads/<file> отдаёт файл только с валидной непросро-
     ченной подписью — прямой публичный доступ по угадыванию UUID закрыт.
 
 Подпись: HMAC-SHA256(secret, "<path>:<exp>") в hex. Секрет — SECRET_KEY
@@ -55,20 +55,36 @@ def verify_signature(path: str, exp, sig: str) -> bool:
     return hmac.compare_digest(expected, sig)
 
 
+def _app_base() -> str:
+    return os.getenv("APP_BASE_URL", "http://localhost:8000").rstrip("/")
+
+
 def _uploads_base() -> str:
-    app_base = os.getenv("APP_BASE_URL", "http://localhost:8000").rstrip("/")
-    return f"{app_base}/uploads/"
+    return f"{_app_base()}/api/uploads/"
+
+
+def _legacy_uploads_base() -> str:
+    """Старая (до переноса под /api) база — эндпоинт по этому пути больше не
+    существует, но в БД могли остаться ссылки, записанные до переноса.
+    Распознаём и нормализуем их к новой базе, не трогая данные в БД."""
+    return f"{_app_base()}/uploads/"
 
 
 def sign_upload_url(url: str, ttl: int = _DEFAULT_TTL) -> str:
-    """Подписывает абсолютный URL вида {APP_BASE_URL}/uploads/<path>.
+    """Подписывает абсолютный URL вида {APP_BASE_URL}/api/uploads/<path>
+    (или старый {APP_BASE_URL}/uploads/<path> — нормализуется к новому).
     Идемпотентна: старые exp/sig в query отбрасываются и подпись ставится
     заново от «чистого» пути. URL не из своего хранилища возвращается как есть.
     """
     base = _uploads_base()
-    if not url or not url.startswith(base):
-        return url
-    rest = url[len(base):]
+    if url and url.startswith(base):
+        rest = url[len(base):]
+    else:
+        legacy_base = _legacy_uploads_base()
+        if url and url.startswith(legacy_base):
+            rest = url[len(legacy_base):]
+        else:
+            return url
     path = rest.split("?", 1)[0].split("#", 1)[0]
     if not path:
         return url
@@ -92,19 +108,21 @@ _PATH_CHARS = r"[\w\-./]+(?:[ ]+[\w\-./]+)*"
 
 # Регулярка для поиска uploads-URL в JSON-ответах (см. middleware в main.py).
 # Захватывает базу + путь + необязательный старый query (чтобы переподписать).
+# Матчит и текущую базу (.../api/uploads/), и старую (.../uploads/, из записей
+# в БД, сделанных до переноса под /api) — обе нормализуются к новой при подписи.
 def _uploads_url_regex() -> re.Pattern:
-    base = re.escape(_uploads_base())
+    base = re.escape(_app_base()) + r"(?:/api)?/uploads/"
     return re.compile(base + r"(" + _PATH_CHARS + r")(\?[A-Za-z0-9_\-.=&%]*)?")
 
 
-# Относительная ссылка «/uploads/<файл>»: так вложения сохраняет мобильное
-# приложение (оно намеренно режет хост, чтобы ссылка не привязывалась к
-# конкретному LAN-адресу). Без подписи такой URL отдавал 422 — фото не
-# открывалось ни в приложении, ни на сайте, поэтому подписываем и его.
+# Относительная ссылка «/uploads/<файл>» (и её вариант с /api): так вложения
+# сохраняет мобильное приложение (оно намеренно режет хост, чтобы ссылка не
+# привязывалась к конкретному LAN-адресу). Без подписи такой URL отдавал 422 —
+# фото не открывалось ни в приложении, ни на сайте, поэтому подписываем и его.
 # Ограничение по предшествующему символу (кавычка/пробел/скобка) не даёт
 # зацепить путь внутри уже подписанного абсолютного URL и чужие хосты.
 _RELATIVE_UPLOADS_RE = re.compile(
-    r"(?P<pre>[\"'\s,\[(])/uploads/(?P<path>" + _PATH_CHARS + r")"
+    r"(?P<pre>[\"'\s,\[(])(?:/api)?/uploads/(?P<path>" + _PATH_CHARS + r")"
     r"(?P<query>\?[A-Za-z0-9_\-.=&%]*)?"
 )
 

@@ -17,7 +17,7 @@ def test_signs_absolute_r2_url_with_cyrillic_and_spaces():
 
     out = json.loads(sign_uploads_in_text(body))
     m = re.match(
-        r"http://localhost:8000/uploads/(r2/attachments/Домашнее задание 1\.docx)\?exp=(\d+)&sig=(\w+)$",
+        r"http://localhost:8000/api/uploads/(r2/attachments/Домашнее задание 1\.docx)\?exp=(\d+)&sig=(\w+)$",
         out["file_url"],
     )
     assert m, out["file_url"]
@@ -45,7 +45,7 @@ def test_does_not_consume_trailing_prose_after_quoted_value():
     out = json.loads(sign_uploads_in_text(body))
     assert out["note"] == "не трогать"
     assert out["file_url"].startswith(
-        "http://localhost:8000/uploads/r2/materials/Мой файл.pdf?exp="
+        "http://localhost:8000/api/uploads/r2/materials/Мой файл.pdf?exp="
     )
 
 

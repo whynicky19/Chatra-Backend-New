@@ -38,7 +38,7 @@ def _client_error(status: int) -> botocore.exceptions.ClientError:
 
 def test_get_url_without_public_base_uses_signed_proxy():
     svc = _service()
-    assert svc.get_url("uploads/abc.pdf") == "http://localhost:8000/uploads/r2/uploads/abc.pdf"
+    assert svc.get_url("uploads/abc.pdf") == "http://localhost:8000/api/uploads/r2/uploads/abc.pdf"
 
 
 def test_get_url_with_public_base_is_direct_for_public_category():
@@ -55,8 +55,8 @@ def test_get_url_with_public_base_still_proxies_private_categories():
     # R2_PUBLIC_BASE_URL включён ради обложек — паблик-домен не должен
     # случайно рассекретить чужие сдачи.
     svc = _service(public_base_url="https://cdn.example.com")
-    assert svc.get_url("submissions/x.pdf") == "http://localhost:8000/uploads/r2/submissions/x.pdf"
-    assert svc.get_url("uploads/abc.pdf") == "http://localhost:8000/uploads/r2/uploads/abc.pdf"
+    assert svc.get_url("submissions/x.pdf") == "http://localhost:8000/api/uploads/r2/submissions/x.pdf"
+    assert svc.get_url("uploads/abc.pdf") == "http://localhost:8000/api/uploads/r2/uploads/abc.pdf"
 
 
 def test_upload_calls_put_object_and_returns_url():
@@ -65,7 +65,7 @@ def test_upload_calls_put_object_and_returns_url():
     svc._client.put_object.assert_called_once_with(
         Bucket="test-bucket", Key="uploads/x.txt", Body=b"hello", ContentType="text/plain",
     )
-    assert url == "http://localhost:8000/uploads/r2/uploads/x.txt"
+    assert url == "http://localhost:8000/api/uploads/r2/uploads/x.txt"
 
 
 def test_exists_true_when_head_object_succeeds():

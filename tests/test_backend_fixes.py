@@ -29,13 +29,13 @@ def test_duplicate_submission_returns_409(client, db_session):
     crud_classes.add_member(db_session, cls.id, student.id)
 
     r1 = client.post(
-        f"/assignments/{assignment.id}/submit",
+        f"/api/assignments/{assignment.id}/submit",
         json={"text_content": "answer one"},
         headers=auth_headers(student),
     )
     assert r1.status_code == 201
     r2 = client.post(
-        f"/assignments/{assignment.id}/submit",
+        f"/api/assignments/{assignment.id}/submit",
         json={"text_content": "answer two"},
         headers=auth_headers(student),
     )
@@ -50,14 +50,14 @@ def test_manual_grade_clamped_to_max_score(client, db_session):
     crud_classes.add_member(db_session, cls.id, student.id)
 
     sub = client.post(
-        f"/assignments/{assignment.id}/submit",
+        f"/api/assignments/{assignment.id}/submit",
         json={"text_content": "answer"},
         headers=auth_headers(student),
     ).json()
 
     # Балл выше максимума (50) должен обрезаться до 50.
     r = client.post(
-        f"/submissions/{sub['id']}/grade",
+        f"/api/submissions/{sub['id']}/grade",
         json={"score": 999},
         headers=auth_headers(teacher),
     )
@@ -70,7 +70,7 @@ def test_assignment_rejects_nonpositive_max_score(client, db_session):
     teacher = make_user(db_session, role="teacher")
     cls = crud_classes.create_class(db_session, "Chem", None, created_by=teacher.id)
     r = client.post(
-        "/assignments/",
+        "/api/assignments/",
         json={
             "class_id": cls.id,
             "title": "X",
@@ -89,17 +89,17 @@ def test_cannot_rollback_graded_status(client, db_session):
     cls, assignment = _make_assignment(db_session, teacher)
     crud_classes.add_member(db_session, cls.id, student.id)
     sub = client.post(
-        f"/assignments/{assignment.id}/submit",
+        f"/api/assignments/{assignment.id}/submit",
         json={"text_content": "answer"},
         headers=auth_headers(student),
     ).json()
     client.post(
-        f"/submissions/{sub['id']}/grade",
+        f"/api/submissions/{sub['id']}/grade",
         json={"score": 40},
         headers=auth_headers(teacher),
     )
     r = client.patch(
-        f"/submissions/{sub['id']}/status",
+        f"/api/submissions/{sub['id']}/status",
         params={"new_status": "submitted"},
         headers=auth_headers(teacher),
     )

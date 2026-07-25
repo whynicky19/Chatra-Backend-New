@@ -109,20 +109,23 @@ app.add_middleware(
 # Сжатие JSON-ответов: списки постов/классов с текстами лекций ужимаются в разы.
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
-app.include_router(auth.router)
-app.include_router(admin.router)
-app.include_router(users.router)
-app.include_router(posts.router)
-app.include_router(uploads.router)
-app.include_router(ai.router)
-app.include_router(notifications.router)
-app.include_router(push.router)
-app.include_router(avatars.router)
-app.include_router(assignments_router)
-app.include_router(classes_router)
-app.include_router(cohorts_router)
-app.include_router(rating_router)
-app.include_router(rag_router)
+# Все публичные API-эндпоинты живут под /api: на проде под теми же путями,
+# что и API (например /classes/27), отдаются и страницы веб-фронтенда, из-за
+# чего nginx их путает. /api отделяет бэкенд от фронтенда однозначно.
+app.include_router(auth.router, prefix="/api")
+app.include_router(admin.router, prefix="/api")
+app.include_router(users.router, prefix="/api")
+app.include_router(posts.router, prefix="/api")
+app.include_router(uploads.router, prefix="/api")
+app.include_router(ai.router, prefix="/api")
+app.include_router(notifications.router, prefix="/api")
+app.include_router(push.router, prefix="/api")
+app.include_router(avatars.router, prefix="/api")
+app.include_router(assignments_router, prefix="/api")
+app.include_router(classes_router, prefix="/api")
+app.include_router(cohorts_router, prefix="/api")
+app.include_router(rating_router, prefix="/api")
+app.include_router(rag_router, prefix="/api")
 
 _upload_dir = os.getenv("UPLOAD_DIR", "uploads")
 os.makedirs(_upload_dir, exist_ok=True)
@@ -199,7 +202,7 @@ def _serve_r2_upload(filename: str, name: str | None, request: Request):
     return Response(content=obj.body, media_type=content_type, headers=headers, status_code=status_code)
 
 
-@app.get("/uploads/{filename:path}")
+@app.get("/api/uploads/{filename:path}")
 def serve_upload(
     filename: str,
     request: Request,

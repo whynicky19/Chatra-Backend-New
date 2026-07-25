@@ -119,10 +119,14 @@ async def get_file_text(
     from urllib.parse import urlparse, parse_qs
     from services.file_urls import verify_signature
     parsed = urlparse(url)
-    prefix = "/uploads/"
-    if not parsed.path.startswith(prefix):
+    prefix = "/api/uploads/"
+    legacy_prefix = "/uploads/"
+    if parsed.path.startswith(prefix):
+        file_path = parsed.path[len(prefix):]
+    elif parsed.path.startswith(legacy_prefix):
+        file_path = parsed.path[len(legacy_prefix):]
+    else:
         raise HTTPException(status_code=400, detail="Недопустимый URL файла")
-    file_path = parsed.path[len(prefix):]
     qs = parse_qs(parsed.query)
     exp = (qs.get("exp") or [None])[0]
     sig = (qs.get("sig") or [None])[0]

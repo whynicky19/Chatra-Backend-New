@@ -21,7 +21,7 @@ def test_avatar_request_pushes_to_admins(client, db_session, monkeypatch):
     teacher = make_user(db_session, role="teacher")
 
     resp = client.post(
-        "/avatars/me",
+        "/api/avatars/me",
         json={"display_name": "Проф. Тест", "photo_url": "/uploads/x.jpg", "voice_sample_url": "/uploads/v.mp3"},
         headers=auth_headers(teacher),
     )

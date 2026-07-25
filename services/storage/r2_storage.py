@@ -2,7 +2,7 @@
 
 URL-схема:
   * Приватные категории (submissions, assignments, attachments, ...) — всегда
-    через "{APP_BASE_URL}/uploads/r2/{key}", подписанный HMAC (SEC-1). Так
+    через "{APP_BASE_URL}/api/uploads/r2/{key}", подписанный HMAC (SEC-1). Так
     было с самого начала переезда на R2 и не меняется.
   * Публичные категории (см. services/storage/base.py: PUBLIC_KEY_PREFIXES —
     сейчас только обложки классов, materials/covers/...) — если задан
@@ -12,7 +12,7 @@ URL-схема:
     фолбэк, а не постоянный режим: R2_PUBLIC_BASE_URL нужно включить в
     Cloudflare (R2 → бакет → Settings → Public access, или свой домен) —
     это не часть S3 API, из кода не включается.
-  Раздача приватных и публичных-без-домена URL — через /uploads/{filename:path}
+  Раздача приватных и публичных-без-домена URL — через /api/uploads/{filename:path}
   в main.py: после проверки подписи путь с префиксом "r2/" стримится из R2
   (см. get_object), без него — читается с локального диска, как раньше.
 """
@@ -143,11 +143,11 @@ class R2StorageService(StorageService):
     def get_url(self, key: str) -> str:
         if self._public_base_url and is_public_key(key):
             return f"{self._public_base_url}/{key}"
-        return f"{self._app_base_url}/uploads/r2/{key}"
+        return f"{self._app_base_url}/api/uploads/r2/{key}"
 
     def get_object(self, key: str, range_header: str | None = None) -> "R2Object | None":
         """Читает объект (целиком или по Range) для прокси-эндпоинта
-        /uploads/r2/<key> в main.py. None — объекта нет (404), без ретраев и
+        /api/uploads/r2/<key> в main.py. None — объекта нет (404), без ретраев и
         лишнего логирования как для настоящей ошибки."""
         def _get():
             kwargs = {"Bucket": self._bucket, "Key": key}

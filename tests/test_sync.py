@@ -32,7 +32,7 @@ class _FakeClient:
 
 
 def _mk_thread(client, user):
-    return client.post("/ai/threads", headers=auth_headers(user)).json()["id"]
+    return client.post("/api/ai/threads", headers=auth_headers(user)).json()["id"]
 
 
 def test_ai_chat_persists_and_history_syncs(client, db_session, monkeypatch):
@@ -42,7 +42,7 @@ def test_ai_chat_persists_and_history_syncs(client, db_session, monkeypatch):
     tid = _mk_thread(client, user)
 
     resp = client.post(
-        "/ai/chat",
+        "/api/ai/chat",
         json={"messages": [{"role": "user", "content": "Hello AI"}], "thread_id": tid},
         headers=auth_headers(user),
     )
@@ -51,7 +51,7 @@ def test_ai_chat_persists_and_history_syncs(client, db_session, monkeypatch):
 
     # Дельта сохранена: сообщение пользователя + ответ ассистента.
     hist = client.get(
-        "/ai/history", params={"thread_id": tid}, headers=auth_headers(user)
+        "/api/ai/history", params={"thread_id": tid}, headers=auth_headers(user)
     ).json()
     assert [(m["role"], m["content"]) for m in hist] == [
         ("user", "Hello AI"), ("assistant", "AI reply"),
@@ -59,7 +59,7 @@ def test_ai_chat_persists_and_history_syncs(client, db_session, monkeypatch):
 
     # Второй запрос со всей историей пишет только новую дельту (без дублей).
     client.post(
-        "/ai/chat",
+        "/api/ai/chat",
         json={"messages": [
             {"role": "user", "content": "Hello AI"},
             {"role": "assistant", "content": "AI reply"},
@@ -68,7 +68,7 @@ def test_ai_chat_persists_and_history_syncs(client, db_session, monkeypatch):
         headers=auth_headers(user),
     )
     hist = client.get(
-        "/ai/history", params={"thread_id": tid}, headers=auth_headers(user)
+        "/api/ai/history", params={"thread_id": tid}, headers=auth_headers(user)
     ).json()
     assert [m["content"] for m in hist] == ["Hello AI", "AI reply", "Second", "AI reply"]
 
@@ -79,14 +79,14 @@ def test_ai_history_class_thread_is_separate(client, db_session, monkeypatch):
     user = make_user(db_session, role="student")
     tid = _mk_thread(client, user)
 
-    client.post("/ai/chat",
+    client.post("/api/ai/chat",
                 json={"messages": [{"role": "user", "content": "global"}], "thread_id": tid},
                 headers=auth_headers(user))
-    client.post("/ai/chat", json={"messages": [{"role": "user", "content": "in class"}], "class_id": 7},
+    client.post("/api/ai/chat", json={"messages": [{"role": "user", "content": "in class"}], "class_id": 7},
                 headers=auth_headers(user))
 
-    g = client.get("/ai/history", params={"thread_id": tid}, headers=auth_headers(user)).json()
-    c = client.get("/ai/history", params={"class_id": 7}, headers=auth_headers(user)).json()
+    g = client.get("/api/ai/history", params={"thread_id": tid}, headers=auth_headers(user)).json()
+    c = client.get("/api/ai/history", params={"class_id": 7}, headers=auth_headers(user)).json()
     assert [m["content"] for m in g] == ["global", "AI reply"]
     assert [m["content"] for m in c] == ["in class", "AI reply"]
 
@@ -96,7 +96,7 @@ def test_ai_history_import_only_when_empty_and_clear(client, db_session):
     tid = _mk_thread(client, user)
 
     imported = client.post(
-        "/ai/history/import",
+        "/api/ai/history/import",
         json={"thread_id": tid, "messages": [
             {"role": "user", "content": "old q"},
             {"role": "assistant", "content": "old a"},
@@ -107,16 +107,16 @@ def test_ai_history_import_only_when_empty_and_clear(client, db_session):
 
     # Повторный импорт в непустой тред ничего не добавляет (идемпотентно).
     again = client.post(
-        "/ai/history/import",
+        "/api/ai/history/import",
         json={"thread_id": tid, "messages": [{"role": "user", "content": "should be ignored"}]},
         headers=auth_headers(user),
     ).json()
     assert [m["content"] for m in again] == ["old q", "old a"]
 
     # Очистка треда.
-    client.delete("/ai/history", params={"thread_id": tid}, headers=auth_headers(user))
+    client.delete("/api/ai/history", params={"thread_id": tid}, headers=auth_headers(user))
     assert client.get(
-        "/ai/history", params={"thread_id": tid}, headers=auth_headers(user)
+        "/api/ai/history", params={"thread_id": tid}, headers=auth_headers(user)
     ).json() == []
 
 
@@ -125,11 +125,11 @@ def test_ai_history_isolated_per_user(client, db_session):
     b = make_user(db_session, role="student")
     tid_a = _mk_thread(client, a)
     tid_b = _mk_thread(client, b)
-    client.post("/ai/history/import",
+    client.post("/api/ai/history/import",
                 json={"thread_id": tid_a, "messages": [{"role": "user", "content": "a-secret"}]},
                 headers=auth_headers(a))
     assert client.get(
-        "/ai/history", params={"thread_id": tid_b}, headers=auth_headers(b)
+        "/api/ai/history", params={"thread_id": tid_b}, headers=auth_headers(b)
     ).json() == []
 
 
@@ -139,38 +139,38 @@ def test_notification_state_upsert_and_sync(client, db_session):
     user = make_user(db_session, role="student")
 
     # Изначально пусто.
-    assert client.get("/notifications/state", headers=auth_headers(user)).json() == []
+    assert client.get("/api/notifications/state", headers=auth_headers(user)).json() == []
 
     # Пометить прочитанным.
-    resp = client.post("/notifications/state",
+    resp = client.post("/api/notifications/state",
                        json={"notif_key": "grade:12", "read": True},
                        headers=auth_headers(user))
     assert resp.status_code == 200
     assert resp.json() == {"notif_key": "grade:12", "read": True, "dismissed": False}
 
     # Upsert: добавить dismissed, read не трогаем.
-    resp = client.post("/notifications/state",
+    resp = client.post("/api/notifications/state",
                        json={"notif_key": "grade:12", "dismissed": True},
                        headers=auth_headers(user))
     assert resp.json() == {"notif_key": "grade:12", "read": True, "dismissed": True}
 
-    state = client.get("/notifications/state", headers=auth_headers(user)).json()
+    state = client.get("/api/notifications/state", headers=auth_headers(user)).json()
     assert state == [{"notif_key": "grade:12", "read": True, "dismissed": True}]
 
 
 def test_notification_read_all(client, db_session):
     user = make_user(db_session, role="student")
-    client.post("/notifications/read-all",
+    client.post("/api/notifications/read-all",
                 json={"keys": ["assignment:1", "deadline:1", "grade:3"]},
                 headers=auth_headers(user))
     state = {s["notif_key"]: s["read"] for s in
-             client.get("/notifications/state", headers=auth_headers(user)).json()}
+             client.get("/api/notifications/state", headers=auth_headers(user)).json()}
     assert state == {"assignment:1": True, "deadline:1": True, "grade:3": True}
 
 
 def test_notification_state_isolated_per_user(client, db_session):
     a = make_user(db_session, role="student")
     b = make_user(db_session, role="student")
-    client.post("/notifications/state", json={"notif_key": "grade:1", "read": True},
+    client.post("/api/notifications/state", json={"notif_key": "grade:1", "read": True},
                 headers=auth_headers(a))
-    assert client.get("/notifications/state", headers=auth_headers(b)).json() == []
+    assert client.get("/api/notifications/state", headers=auth_headers(b)).json() == []

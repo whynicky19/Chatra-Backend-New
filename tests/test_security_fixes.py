@@ -14,7 +14,7 @@ from tests.conftest import make_user, auth_headers
 # ── 1) Privilege escalation при регистрации ──────────────────────────────────
 
 def test_register_ignores_role_from_body(client):
-    resp = client.post("/auth/register", json={
+    resp = client.post("/api/auth/register", json={
         "email": "wannabe-admin@example.com",
         "password": "password123",
         "role": "admin",
@@ -25,7 +25,7 @@ def test_register_ignores_role_from_body(client):
 
 
 def test_register_rejects_short_password(client):
-    resp = client.post("/auth/register", json={
+    resp = client.post("/api/auth/register", json={
         "email": "shortpw@example.com",
         "password": "1234567",
     })
@@ -34,7 +34,7 @@ def test_register_rejects_short_password(client):
 
 def test_admin_create_user_rejects_unknown_role(client, db_session):
     admin = make_user(db_session, role="admin")
-    resp = client.post("/admin/users", json={
+    resp = client.post("/api/admin/users", json={
         "email": "x@example.com",
         "password": "password123",
         "role": "superadmin",
@@ -46,7 +46,7 @@ def test_admin_set_role_rejects_unknown_role(client, db_session):
     admin = make_user(db_session, role="admin")
     victim = make_user(db_session)
     resp = client.put(
-        f"/admin/users/{victim.id}/role",
+        f"/api/admin/users/{victim.id}/role",
         params={"new_role": "root"},
         headers=auth_headers(admin),
     )
@@ -75,12 +75,12 @@ def test_student_outside_class_cannot_read_assignment(client, db_session):
     outsider = make_user(db_session)
     cls, assignment = _make_assignment(db_session, teacher)
 
-    resp = client.get(f"/assignments/{assignment.id}", headers=auth_headers(outsider))
+    resp = client.get(f"/api/assignments/{assignment.id}", headers=auth_headers(outsider))
     assert resp.status_code == 403
-    resp = client.get(f"/assignments/{assignment.id}/variants", headers=auth_headers(outsider))
+    resp = client.get(f"/api/assignments/{assignment.id}/variants", headers=auth_headers(outsider))
     assert resp.status_code == 403
     resp = client.post(
-        f"/assignments/{assignment.id}/submit",
+        f"/api/assignments/{assignment.id}/submit",
         json={"text_content": "my answer"},
         headers=auth_headers(outsider),
     )
@@ -93,10 +93,10 @@ def test_class_member_can_read_and_submit_assignment(client, db_session):
     cls, assignment = _make_assignment(db_session, teacher)
     crud_classes.add_member(db_session, cls.id, student.id)
 
-    resp = client.get(f"/assignments/{assignment.id}", headers=auth_headers(student))
+    resp = client.get(f"/api/assignments/{assignment.id}", headers=auth_headers(student))
     assert resp.status_code == 200
     resp = client.post(
-        f"/assignments/{assignment.id}/submit",
+        f"/api/assignments/{assignment.id}/submit",
         json={"text_content": "my answer"},
         headers=auth_headers(student),
     )
@@ -132,7 +132,7 @@ def test_app_base_url_allowed():
 def test_file_text_endpoint_blocks_private_url(client, db_session):
     user = make_user(db_session)
     resp = client.get(
-        "/upload/utils/file-text",
+        "/api/upload/utils/file-text",
         params={"url": "http://169.254.169.254/latest/meta-data/"},
         headers=auth_headers(user),
     )

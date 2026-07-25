@@ -12,9 +12,9 @@ from tests.conftest import make_user, auth_headers
 
 def _setup_class(client, db, teacher, deadline="2025-10-01T23:59:00"):
     """Класс + задание с дедлайном через API (как это делает Flutter)."""
-    cls = client.post("/classes/", json={"name": "Math"}, headers=auth_headers(teacher)).json()
+    cls = client.post("/api/classes/", json={"name": "Math"}, headers=auth_headers(teacher)).json()
     assignment = client.post(
-        "/assignments/",
+        "/api/assignments/",
         json={
             "class_id": cls["id"],
             "title": "HW1",
@@ -28,12 +28,12 @@ def _setup_class(client, db, teacher, deadline="2025-10-01T23:59:00"):
 
 def _rollover(client, teacher, class_id, year="2026/2027", start="2026-09-01"):
     client.patch(
-        f"/classes/{class_id}/rotation-mode",
+        f"/api/classes/{class_id}/rotation-mode",
         json={"rotation_mode": "yearly"},
         headers=auth_headers(teacher),
     )
     resp = client.post(
-        "/rollover",
+        "/api/rollover",
         json={"class_ids": [class_id], "new_academic_year": year, "new_start_date": start},
         headers=auth_headers(teacher),
     )
@@ -55,7 +55,7 @@ def test_join_by_code_lands_in_active_cohort(client, db_session):
     cls, _ = _setup_class(client, db_session, teacher)
 
     resp = client.post(
-        "/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student)
+        "/api/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student)
     )
     assert resp.status_code == 200
 
@@ -81,22 +81,22 @@ def test_rollover_old_student_sees_archive_read_only(client, db_session):
     teacher = make_user(db_session, role="teacher")
     student = make_user(db_session, role="student")
     cls, assignment = _setup_class(client, db_session, teacher)
-    client.post("/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
+    client.post("/api/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
 
     result = _rollover(client, teacher, cls["id"])
     assert result["status"] == "rolled"
 
     # Не активный, но виден как архив
-    my = client.get("/classes/", headers=auth_headers(student)).json()
+    my = client.get("/api/classes/", headers=auth_headers(student)).json()
     assert [(c["id"], c["is_archived_for_user"]) for c in my] == [(cls["id"], True)]
-    one = client.get(f"/classes/{cls['id']}", headers=auth_headers(student)).json()
+    one = client.get(f"/api/classes/{cls['id']}", headers=auth_headers(student)).json()
     assert one["is_archived_for_user"] is True
 
     # Чтение задания работает, сдача — 403 с понятным сообщением
-    resp = client.get(f"/assignments/{assignment['id']}", headers=auth_headers(student))
+    resp = client.get(f"/api/assignments/{assignment['id']}", headers=auth_headers(student))
     assert resp.status_code == 200
     resp = client.post(
-        f"/assignments/{assignment['id']}/submit",
+        f"/api/assignments/{assignment['id']}/submit",
         json={"text_content": "x"},
         headers=auth_headers(student),
     )
@@ -108,9 +108,9 @@ def test_new_student_joins_new_cohort_and_does_not_see_others(client, db_session
     teacher = make_user(db_session, role="teacher")
     old_student = make_user(db_session, role="student")
     cls, assignment = _setup_class(client, db_session, teacher)
-    client.post("/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(old_student))
+    client.post("/api/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(old_student))
     old_sub = client.post(
-        f"/assignments/{assignment['id']}/submit",
+        f"/api/assignments/{assignment['id']}/submit",
         json={"text_content": "old work"},
         headers=auth_headers(old_student),
     ).json()
@@ -120,7 +120,7 @@ def test_new_student_joins_new_cohort_and_does_not_see_others(client, db_session
 
     new_student = make_user(db_session, role="student")
     resp = client.post(
-        "/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(new_student)
+        "/api/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(new_student)
     )
     assert resp.status_code == 200
     assert db_session.execute(
@@ -131,17 +131,17 @@ def test_new_student_joins_new_cohort_and_does_not_see_others(client, db_session
     ).fetchone() is not None
 
     # Новый ученик не видит класс архивным и не видит чужих сдач
-    one = client.get(f"/classes/{cls['id']}", headers=auth_headers(new_student)).json()
+    one = client.get(f"/api/classes/{cls['id']}", headers=auth_headers(new_student)).json()
     assert one["is_archived_for_user"] is False
-    mine = client.get("/assignments/student/my-submissions", headers=auth_headers(new_student)).json()
+    mine = client.get("/api/assignments/student/my-submissions", headers=auth_headers(new_student)).json()
     assert mine == []
-    resp = client.get(f"/submissions/{old_sub['id']}", headers=auth_headers(new_student))
+    resp = client.get(f"/api/submissions/{old_sub['id']}", headers=auth_headers(new_student))
     assert resp.status_code == 403
 
     # Преподаватель по умолчанию видит сдачи активного потока (пусто),
     # старые — только явно через cohort_id архивного потока.
     subs = client.get(
-        f"/assignments/{assignment['id']}/submissions", headers=auth_headers(teacher)
+        f"/api/assignments/{assignment['id']}/submissions", headers=auth_headers(teacher)
     ).json()
     assert subs == []
     old_cohort = (
@@ -150,7 +150,7 @@ def test_new_student_joins_new_cohort_and_does_not_see_others(client, db_session
         .one()
     )
     subs = client.get(
-        f"/assignments/{assignment['id']}/submissions",
+        f"/api/assignments/{assignment['id']}/submissions",
         params={"cohort_id": old_cohort.id},
         headers=auth_headers(teacher),
     ).json()
@@ -164,12 +164,12 @@ def test_archived_student_cannot_self_rejoin(client, db_session):
     teacher = make_user(db_session, role="teacher")
     student = make_user(db_session, role="student")
     cls, _ = _setup_class(client, db_session, teacher)
-    client.post("/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
+    client.post("/api/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
 
     _rollover(client, teacher, cls["id"])
 
     resp = client.post(
-        "/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student)
+        "/api/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student)
     )
     assert resp.status_code == 403
     assert resp.json()["detail"] == "archived_rejoin_blocked"
@@ -189,10 +189,10 @@ def test_active_member_rejoin_is_idempotent(client, db_session):
     teacher = make_user(db_session, role="teacher")
     student = make_user(db_session, role="student")
     cls, _ = _setup_class(client, db_session, teacher)
-    client.post("/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
+    client.post("/api/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
 
     resp = client.post(
-        "/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student)
+        "/api/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student)
     )
     assert resp.status_code == 200
 
@@ -203,12 +203,12 @@ def test_teacher_can_readd_archived_student(client, db_session):
     teacher = make_user(db_session, role="teacher")
     student = make_user(db_session, role="student")
     cls, _ = _setup_class(client, db_session, teacher)
-    client.post("/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
+    client.post("/api/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
 
     _rollover(client, teacher, cls["id"])
 
     resp = client.post(
-        f"/classes/{cls['id']}/members",
+        f"/api/classes/{cls['id']}/members",
         json={"user_id": student.id},
         headers=auth_headers(teacher),
     )
@@ -222,7 +222,7 @@ def test_teacher_can_readd_archived_student(client, db_session):
         )
     ).fetchone() is not None
     # Теперь ученик снова в активном потоке — класс не архивный.
-    one = client.get(f"/classes/{cls['id']}", headers=auth_headers(student)).json()
+    one = client.get(f"/api/classes/{cls['id']}", headers=auth_headers(student)).json()
     assert one["is_archived_for_user"] is False
 
 
@@ -233,26 +233,26 @@ def test_admin_rejoinable_students_and_readd(client, db_session):
     teacher = make_user(db_session, role="teacher")
     student = make_user(db_session, role="student")
     cls, _ = _setup_class(client, db_session, teacher)
-    client.post("/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
+    client.post("/api/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
 
     _rollover(client, teacher, cls["id"])
 
-    resp = client.get(f"/classes/{cls['id']}/rejoinable-students", headers=auth_headers(admin))
+    resp = client.get(f"/api/classes/{cls['id']}/rejoinable-students", headers=auth_headers(admin))
     assert resp.status_code == 200
     assert student.id in [u["id"] for u in resp.json()]
 
     resp = client.post(
-        f"/classes/{cls['id']}/members",
+        f"/api/classes/{cls['id']}/members",
         json={"user_id": student.id},
         headers=auth_headers(admin),
     )
     assert resp.status_code == 201
 
     # Уже в активном потоке — больше не кандидат.
-    resp = client.get(f"/classes/{cls['id']}/rejoinable-students", headers=auth_headers(admin))
+    resp = client.get(f"/api/classes/{cls['id']}/rejoinable-students", headers=auth_headers(admin))
     assert student.id not in [u["id"] for u in resp.json()]
     # И класс для студента больше не архивный.
-    one = client.get(f"/classes/{cls['id']}", headers=auth_headers(student)).json()
+    one = client.get(f"/api/classes/{cls['id']}", headers=auth_headers(student)).json()
     assert one["is_archived_for_user"] is False
 
 
@@ -290,22 +290,22 @@ def test_unpublished_deadlines_hidden_from_students(client, db_session):
     new_cohort_id = result["new_cohort_id"]
 
     student = make_user(db_session, role="student")
-    client.post("/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
+    client.post("/api/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
 
     # Черновик: задание скрыто от студента целиком (404 и нет в списке);
     # преподаватель видит его с датой.
-    resp = client.get(f"/assignments/{assignment['id']}", headers=auth_headers(student))
+    resp = client.get(f"/api/assignments/{assignment['id']}", headers=auth_headers(student))
     assert resp.status_code == 404
     items = client.get(
-        "/assignments/", params={"class_id": cls["id"]}, headers=auth_headers(student)
+        "/api/assignments/", params={"class_id": cls["id"]}, headers=auth_headers(student)
     ).json()
     assert items == []
-    resp = client.get(f"/assignments/{assignment['id']}", headers=auth_headers(teacher)).json()
+    resp = client.get(f"/api/assignments/{assignment['id']}", headers=auth_headers(teacher)).json()
     assert resp["deadline"] is not None
 
     # По скрытому черновику нельзя сдать работу (задание для студента не существует)
     resp = client.post(
-        f"/assignments/{assignment['id']}/submit",
+        f"/api/assignments/{assignment['id']}/submit",
         json={"text_content": "early"},
         headers=auth_headers(student),
     )
@@ -313,13 +313,13 @@ def test_unpublished_deadlines_hidden_from_students(client, db_session):
 
     # Публикация — задание и дедлайн появились у студента
     resp = client.patch(
-        f"/cohorts/{new_cohort_id}/deadlines/publish-all", headers=auth_headers(teacher)
+        f"/api/cohorts/{new_cohort_id}/deadlines/publish-all", headers=auth_headers(teacher)
     )
     assert resp.json() == {"published": 1}
-    resp = client.get(f"/assignments/{assignment['id']}", headers=auth_headers(student))
+    resp = client.get(f"/api/assignments/{assignment['id']}", headers=auth_headers(student))
     assert resp.status_code == 200
     items = client.get(
-        "/assignments/", params={"class_id": cls["id"]}, headers=auth_headers(student)
+        "/api/assignments/", params={"class_id": cls["id"]}, headers=auth_headers(student)
     ).json()
     assert len(items) == 1 and items[0]["deadline"] is not None
 
@@ -341,7 +341,7 @@ def test_repeat_rollover_does_not_break_data(client, db_session):
     teacher = make_user(db_session, role="teacher")
     student = make_user(db_session, role="student")
     cls, assignment = _setup_class(client, db_session, teacher)
-    client.post("/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
+    client.post("/api/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student))
 
     first = _rollover(client, teacher, cls["id"])
     assert first["status"] == "rolled"
@@ -362,12 +362,12 @@ def test_rollover_and_cohort_views_owner_only(client, db_session):
     cls, _ = _setup_class(client, db_session, teacher)
 
     resp = client.post(
-        "/rollover",
+        "/api/rollover",
         json={"class_ids": [cls["id"]], "new_academic_year": "2026/2027",
               "new_start_date": "2026-09-01"},
         headers=auth_headers(stranger),
     )
     assert resp.status_code == 403
-    assert client.get(f"/classes/{cls['id']}/cohorts", headers=auth_headers(stranger)).status_code == 403
+    assert client.get(f"/api/classes/{cls['id']}/cohorts", headers=auth_headers(stranger)).status_code == 403
     # Студенту учительские ручки закрыты ролью
-    assert client.get(f"/classes/{cls['id']}/cohorts", headers=auth_headers(student)).status_code == 403
+    assert client.get(f"/api/classes/{cls['id']}/cohorts", headers=auth_headers(student)).status_code == 403

@@ -5,14 +5,14 @@ from tests.test_sync import _FakeClient
 
 
 def _new_thread(client, user):
-    return client.post("/ai/threads", headers=auth_headers(user)).json()["id"]
+    return client.post("/api/ai/threads", headers=auth_headers(user)).json()["id"]
 
 
 def _send(client, user, thread_id=None):
     if thread_id is None:
         thread_id = _new_thread(client, user)
     return client.post(
-        "/ai/chat",
+        "/api/ai/chat",
         json={"messages": [{"role": "user", "content": "hi"}], "thread_id": thread_id},
         headers=auth_headers(user),
     )
@@ -31,7 +31,7 @@ def test_daily_limit_blocks_after_quota(client, db_session, monkeypatch):
     assert blocked.status_code == 429
     assert "лимит" in blocked.json()["detail"].lower()
 
-    limits = client.get("/ai/limits", headers=auth_headers(user)).json()
+    limits = client.get("/api/ai/limits", headers=auth_headers(user)).json()
     assert limits["limit"] == 3
     assert limits["used"] == 3
     assert limits["remaining"] == 0
@@ -62,7 +62,7 @@ def test_ai_unlimited_user_is_exempt(client, db_session, monkeypatch):
     assert _send(client, user).status_code == 200
     assert _send(client, user).status_code == 200
 
-    limits = client.get("/ai/limits", headers=auth_headers(user)).json()
+    limits = client.get("/api/ai/limits", headers=auth_headers(user)).json()
     assert limits["unlimited"] is True
     assert limits["remaining"] is None
 
