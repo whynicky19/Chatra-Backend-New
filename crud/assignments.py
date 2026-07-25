@@ -6,6 +6,7 @@ from typing import Optional, List
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from models import Assignment, Submission, Grade, User, Cohort, Deadline, cohort_students
+from services.file_cleanup import delete_assignment_files
 
 def create_assignment(
     db: Session,
@@ -75,6 +76,9 @@ def delete_assignment(db: Session, assignment_id: int) -> bool:
     obj = get_assignment(db, assignment_id)
     if not obj:
         return False
+    # BE-10: варианты и сдачи уходят каскадом вместе с заданием (ORM
+    # cascade="all, delete-orphan") — их файлы чистим до удаления записи.
+    delete_assignment_files(obj)
     db.delete(obj)
     db.commit()
     return True

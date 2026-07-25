@@ -89,3 +89,64 @@ def delete_submission_files(submission) -> int:
         if delete_upload_file(u):
             removed += 1
     return removed
+
+
+def delete_class_files(klass) -> int:
+    """Удаляет обложку класса (cover_image/cover_thumbnail). Только файлы
+    самого класса — задания и сдачи класс не удаляет (class_id у Assignment
+    не FK, они переживают удаление класса)."""
+    urls = {u for u in (getattr(klass, "cover_image", None), getattr(klass, "cover_thumbnail", None)) if u}
+    return sum(1 for u in urls if delete_upload_file(u))
+
+
+def delete_assignment_files(assignment) -> int:
+    """Удаляет референсное решение задания и его вариантов + файлы всех сдач
+    (вызывается перед удалением задания, чьи сдачи/варианты каскадно уходят
+    вместе с ним)."""
+    urls: set[str] = set()
+    if getattr(assignment, "reference_solution_url", None):
+        urls.add(assignment.reference_solution_url)
+    for variant in getattr(assignment, "variants", None) or []:
+        if variant.reference_solution_url:
+            urls.add(variant.reference_solution_url)
+    removed = sum(1 for u in urls if delete_upload_file(u))
+    for submission in getattr(assignment, "submissions", None) or []:
+        removed += delete_submission_files(submission)
+    return removed
+
+
+def delete_post_files(post) -> int:
+    """Удаляет обложку поста/лекции, если она была сконвертирована в файл R2
+    (routers/posts.py: _convert_body_cover). Легаси-посты, где cover_image
+    ещё остаётся data-URI прямо в body, отдельного файла не имеют — чистить
+    нечего."""
+    body = getattr(post, "body", None)
+    if not body:
+        return 0
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return 0
+    if not isinstance(parsed, dict):
+        return 0
+    cover = parsed.get("cover_image")
+    if not cover or not isinstance(cover, str) or cover.startswith("data:"):
+        return 0
+    return 1 if delete_upload_file(cover) else 0
+
+
+def delete_user_files(user) -> int:
+    """Удаляет все файлы, привязанные к пользователю: его сдачи, посты
+    (обложки лекций), файлы созданных им заданий (референсы, варианты, сдачи
+    учеников по ним) и обложки созданных им классов — всё это каскадно
+    уходит вместе с аккаунтом (см. models.py: cascade="all, delete-orphan")."""
+    removed = 0
+    for submission in getattr(user, "submissions", None) or []:
+        removed += delete_submission_files(submission)
+    for post in getattr(user, "posts", None) or []:
+        removed += delete_post_files(post)
+    for assignment in getattr(user, "assignments_created", None) or []:
+        removed += delete_assignment_files(assignment)
+    for klass in getattr(user, "classes_created", None) or []:
+        removed += delete_class_files(klass)
+    return removed

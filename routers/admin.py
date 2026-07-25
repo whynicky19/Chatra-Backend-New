@@ -147,6 +147,8 @@ def delete_user(
     if user.org_type != current_user.org_type:
         raise HTTPException(status_code=403, detail="Нет доступа")
 
+    from services.file_cleanup import delete_user_files
+    delete_user_files(user)
     db.delete(user)
     db.commit()
 

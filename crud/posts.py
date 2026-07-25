@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
 from models import Posts, User
+from services.file_cleanup import delete_post_files
 
 def create_new_post(db: Session, title: str, body: str, user_id: int) -> Posts:
     post = Posts(title=title, body=body, user_id=user_id)
@@ -31,9 +32,14 @@ def get_all_posts(db: Session, org_type: str = None, class_id: int = None,
     return q.all()
 
 def delete_post(db: Session, post_id: int) -> bool:
-    deleted = db.query(Posts).filter(Posts.id == post_id).delete()
+    post = get_post_by_id(db, post_id)
+    if not post:
+        return False
+    # BE-10: обложка лекции (cover_image в body) — единственный файл поста.
+    delete_post_files(post)
+    db.delete(post)
     db.commit()
-    return bool(deleted)
+    return True
 
 def update_post(db: Session, post_id: int, title: str, body: str) -> Posts:
     post = get_post_by_id(db, post_id)

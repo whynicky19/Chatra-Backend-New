@@ -253,6 +253,10 @@ def delete_me(
     ORM/БД — та же логика, что при удалении админом."""
     if not verify_password(body.password, current_user.hashed_password):
         raise HTTPException(status_code=400, detail="wrong_current_password")
+    # BE-10: файлы сдач/заданий/обложек классов пользователя не чистятся
+    # каскадом на уровне БД — удаляем их явно до удаления записи.
+    from services.file_cleanup import delete_user_files
+    delete_user_files(current_user)
     db.delete(current_user)
     db.commit()
 

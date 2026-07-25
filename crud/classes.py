@@ -6,6 +6,7 @@ from models import (
 )
 from sqlalchemy import func
 from services.invite_codes import generate_unique_code
+from services.file_cleanup import delete_class_files, delete_upload_file
 from crud import cohorts as crud_cohorts
 
 def create_class(db: Session, name: str, description: Optional[str], created_by: int,
@@ -83,6 +84,9 @@ def delete_class(db: Session, class_id: int) -> bool:
     db.query(Submission).filter(Submission.deadline_id.in_(deadline_ids)).update(
         {Submission.deadline_id: None}, synchronize_session=False
     )
+    # BE-10: обложка класса — единственный файл, принадлежащий самому классу;
+    # задания/сдачи класс не трогает (см. delete_class_files) и их файлы тут не чистим.
+    delete_class_files(obj)
     db.delete(obj)
     db.commit()
     return True
@@ -152,6 +156,8 @@ def add_variant(
         AssignmentVariant.variant_number == variant_number,
     ).first()
     if existing:
+        if existing.reference_solution_url:
+            delete_upload_file(existing.reference_solution_url)
         db.delete(existing)
         db.flush()
 
@@ -178,6 +184,8 @@ def delete_variant(db: Session, variant_id: int) -> bool:
     obj = db.query(AssignmentVariant).filter(AssignmentVariant.id == variant_id).first()
     if not obj:
         return False
+    if obj.reference_solution_url:
+        delete_upload_file(obj.reference_solution_url)
     db.delete(obj)
     db.commit()
     return True
