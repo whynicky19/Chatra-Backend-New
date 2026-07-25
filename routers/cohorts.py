@@ -41,15 +41,17 @@ def rollover_preview(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_teacher),
 ):
-    """Экран подтверждения перехода: классы владельца с rotation_mode='yearly'
-    и активным потоком."""
+    """Экран подтверждения перехода: классы владельца (или, для админа, все
+    классы его организации) с rotation_mode='yearly' и активным потоком."""
+    filters = [
+        Class.rotation_mode == "yearly",
+        Class.org_type == current_user.org_type,
+    ]
+    if current_user.role != "admin":
+        filters.append(Class.created_by == current_user.id)
     classes = (
         db.query(Class)
-        .filter(
-            Class.created_by == current_user.id,
-            Class.rotation_mode == "yearly",
-            Class.org_type == current_user.org_type,
-        )
+        .filter(*filters)
         .order_by(Class.created_at.desc())
         .all()
     )
@@ -135,6 +137,8 @@ def set_rotation_mode(
 ):
     obj = _get_owned_class(db, class_id, current_user)
     obj.rotation_mode = body.rotation_mode
+    if body.rotation_mode == "yearly" and crud_cohorts.get_active_cohort(db, class_id) is None:
+        crud_cohorts.create_initial_cohort(db, class_id)
     db.commit()
     db.refresh(obj)
     return schemas.ClassResponse.model_validate(obj)
