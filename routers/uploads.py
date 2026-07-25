@@ -10,7 +10,7 @@ import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from services.file_service import read_file
-from services.storage import CATEGORIES, StorageError, get_storage_service
+from services.storage import CATEGORIES, PREVIEW_CATEGORY, StorageError, get_storage_service
 
 logger = logging.getLogger(__name__)
 
@@ -104,14 +104,10 @@ _file_text_cache: "OrderedDict[str, str]" = OrderedDict()
 _FILE_TEXT_CACHE_MAX = 256
 
 
-@router.get("/utils/file-text")
-async def get_file_text(
-    url: str,
-    current_user=Depends(get_current_user),
-):
-    # Эндпоинт нужен и студентам (мобильный клиент собирает AI-контекст класса).
-    # Одной SSRF-проверки мало: без подписи любой авторизованный вытащил бы текст
-    # чужой сдачи по угаданному URL (SEC-6).
+def _verify_signed_upload_url(url: str) -> str:
+    """Проверяет подпись файлового URL (SEC-6: без этого любой авторизованный
+    вытащил бы чужой файл по угаданному пути) и возвращает file_path (без базы
+    и query). Бросает HTTPException при недопустимом/просроченном URL."""
     from services.url_safety import is_safe_fetch_url
     if not is_safe_fetch_url(url):
         raise HTTPException(status_code=400, detail="Недопустимый URL файла")
@@ -132,6 +128,16 @@ async def get_file_text(
     sig = (qs.get("sig") or [None])[0]
     if not verify_signature(file_path, exp, sig):
         raise HTTPException(status_code=403, detail="Недействительная или просроченная ссылка")
+    return file_path
+
+
+@router.get("/utils/file-text")
+async def get_file_text(
+    url: str,
+    current_user=Depends(get_current_user),
+):
+    # Эндпоинт нужен и студентам (мобильный клиент собирает AI-контекст класса).
+    file_path = _verify_signed_upload_url(url)
 
     # Кэш по пути файла (подпись меняется от запроса к запросу).
     cached = _file_text_cache.get(file_path)
@@ -145,6 +151,84 @@ async def get_file_text(
         if len(_file_text_cache) > _FILE_TEXT_CACHE_MAX:
             _file_text_cache.popitem(last=False)
     return {"text": text}
+
+
+# .docx уже открывается на клиенте через docx-preview — сюда попадает только
+# старый бинарный .doc (и .rtf заодно, раз конвертер уже есть), для которых
+# в браузере нет разумной клиентской библиотеки.
+_OFFICE_PREVIEW_EXTS = {"ppt", "pptx", "doc", "rtf"}
+
+
+def _convert_office_to_pdf(content: bytes, ext: str) -> bytes:
+    """Конвертирует .ppt/.pptx/.doc/.rtf в PDF через headless LibreOffice
+    (soffice) — блокирующий вызов, вызывать через run_in_threadpool. Каждый
+    вызов — свой временный профиль/каталог (parallel-запросы иначе делят один
+    профиль soffice и падают с блокировкой)."""
+    import subprocess
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = os.path.join(tmpdir, f"src.{ext}")
+        with open(src, "wb") as f:
+            f.write(content)
+        try:
+            result = subprocess.run(
+                [
+                    "soffice", "--headless", "--norestore", "--convert-to", "pdf",
+                    "--outdir", tmpdir, src,
+                ],
+                capture_output=True, timeout=60,
+                env={**os.environ, "HOME": tmpdir},
+            )
+        except FileNotFoundError as e:
+            raise RuntimeError("LibreOffice (soffice) не установлен на сервере") from e
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError("Конвертация в PDF заняла слишком много времени") from e
+        pdf_path = os.path.join(tmpdir, "src.pdf")
+        if result.returncode != 0 or not os.path.isfile(pdf_path):
+            stderr = result.stderr.decode(errors="ignore") if result.stderr else ""
+            raise RuntimeError(f"Не удалось сконвертировать файл в PDF: {stderr[:300]}")
+        with open(pdf_path, "rb") as f:
+            return f.read()
+
+
+@router.get("/utils/preview-pdf")
+async def get_preview_pdf(
+    url: str,
+    current_user=Depends(get_current_user),
+):
+    """PDF-версия .ppt/.pptx/.doc/.rtf для предпросмотра на сайте (родной
+    PDF-вьюер браузера через iframe — без него такие файлы показывались
+    только с кнопкой «скачать», см. FilePreviewModal.vue). Результат
+    кэшируется в R2 под детерминированным ключом от пути исходника:
+    конвертация — не бесплатная операция (LibreOffice), а сам исходник
+    неизменяем."""
+    file_path = _verify_signed_upload_url(url)
+    ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
+    if ext not in _OFFICE_PREVIEW_EXTS:
+        raise HTTPException(status_code=422, detail="Предпросмотр в PDF доступен только для .ppt/.pptx/.doc/.rtf")
+
+    import hashlib
+    cache_key = f"{PREVIEW_CATEGORY}/{hashlib.sha256(file_path.encode()).hexdigest()}.pdf"
+    storage = get_storage_service()
+
+    if not await run_in_threadpool(storage.exists, cache_key):
+        from services.file_urls import sign_upload_url
+        signed_source = sign_upload_url(url)
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(signed_source)
+        if not resp.is_success:
+            raise HTTPException(status_code=502, detail="Не удалось получить исходный файл")
+        try:
+            pdf_bytes = await run_in_threadpool(_convert_office_to_pdf, resp.content, ext)
+        except RuntimeError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        try:
+            await run_in_threadpool(storage.upload, pdf_bytes, cache_key, "application/pdf")
+        except StorageError as e:
+            raise HTTPException(status_code=502, detail=f"Не удалось сохранить предпросмотр: {e}")
+
+    pdf_url = await run_in_threadpool(storage.get_url, cache_key)
+    return {"pdf_url": pdf_url}
 
 
 DEFAULT_CATEGORY = "attachments"

@@ -5,7 +5,7 @@
 должен получать сервис через get_storage_service() и не создавать
 R2StorageService напрямую, кроме тестов.
 """
-from services.storage.base import CATEGORIES, StorageError, StorageService, is_public_key
+from services.storage.base import CATEGORIES, PREVIEW_CATEGORY, StorageError, StorageService, is_public_key
 from services.storage.r2_storage import R2StorageService
 
 _service: StorageService | None = None
@@ -25,6 +25,6 @@ def reset_storage_service() -> None:
 
 
 __all__ = [
-    "CATEGORIES", "StorageError", "StorageService", "R2StorageService",
+    "CATEGORIES", "PREVIEW_CATEGORY", "StorageError", "StorageService", "R2StorageService",
     "get_storage_service", "reset_storage_service", "is_public_key",
 ]

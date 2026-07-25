@@ -20,12 +20,9 @@ def get_all_posts(db: Session, org_type: str = None, class_id: int = None,
     if org_type:
         q = q.filter(User.org_type == org_type)
     if class_id is not None:
-        # Лекции/материалы класса маркируются префиксом заголовка — фильтруем
-        # на сервере, чтобы клиент не скачивал все посты организации целиком.
-        q = q.filter(
-            Posts.title.like(f"[LECTURE][{class_id}]%")
-            | Posts.title.like(f"[HW][{class_id}]%")
-        )
+        # Лекции класса маркируются префиксом заголовка — фильтруем на
+        # сервере, чтобы клиент не скачивал все посты организации целиком.
+        q = q.filter(Posts.title.like(f"[LECTURE][{class_id}]%"))
     q = q.order_by(Posts.id.desc())
     if offset:
         q = q.offset(offset)
