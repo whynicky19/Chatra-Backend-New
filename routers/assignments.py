@@ -563,6 +563,12 @@ def save_grade(
         criteria_scores=body.criteria_scores,
         graded_by="teacher",
     )
+    # Финальную оценку теперь ставит человек — уверенность ИИ от предыдущей
+    # попытки (needs_review/recheck) больше ничего не значит и вводит в
+    # заблуждение, если её не убрать (выглядит как ещё одно число рядом с
+    # баллом, будто как-то с ним связанное). Чистим при любом сохранении
+    # ручной оценки — и с нуля, и подтверждение/правка предложения ИИ.
+    crud.set_submission_ai_confidence(db, submission_id, None, None)
     _notify_grade(sub, assignment, clamped_score, max_score)
     return grade
 
