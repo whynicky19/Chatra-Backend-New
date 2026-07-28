@@ -26,6 +26,12 @@ _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 MAX_GRADING_IMAGES = 6
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
+# Ниже этого порога уверенности (0-100, любой тип сдачи) ИИ-оценка не
+# публикуется — сдача уходит в needs_review на ручную проверку учителя.
+# Общий источник истины для ручной кнопки "Проверить ИИ" (routers/assignments.py)
+# и автопроверки по дедлайну (services/deadline_checker.py).
+AI_CONFIDENCE_THRESHOLD = int(os.getenv("AI_GRADING_CONFIDENCE_THRESHOLD", "80"))
+
 
 def _build_system_prompt() -> str:
     return """Ты преподаватель который проверяет студенческие работы. Твоя задача — оценить насколько хорошо студент раскрыл каждый критерий.
@@ -36,6 +42,22 @@ def _build_system_prompt() -> str:
 50-75% — раскрыт частично, половина темы присутствует
 20-45% — упомянуто но очень поверхностно, без понимания
 0-15% — не раскрыт или полностью неверно
+
+УВЕРЕННОСТЬ В ОЦЕНКЕ (confidence, 0-100):
+Помимо оценки, оцени НАСКОЛЬКО ТЫ УВЕРЕН, что балл объективен, учитывая:
+- прочитался ли текст работы вообще (не пустая ли она, не placeholder ли о нечитаемом файле),
+- относится ли работа к теме задания или это явно не по делу,
+- достаточно ли материала, чтобы честно оценить каждый критерий,
+- нет ли противоречий в самой работе, из-за которых непонятно что имел в виду студент.
+100 — текст полный, по теме, оценка объективна.
+50-79 — есть сомнения (мало текста, частично не по теме, часть критериев трудно оценить).
+0-49 — текст пустой/нечитаемый/полностью не по теме — оценке доверять нельзя.
+Если confidence_reasons непустой — перечисли конкретные причины (например:
+"работа пустая", "файл не удалось прочитать", "текст не по теме задания",
+"недостаточно материала для оценки критерия Х").
+Даже при низкой уверенности всё равно выстави оценку best-effort: решение о том,
+показывать ли её сразу или отправить на ручную проверку, принимает наша система
+на основе confidence — это не твоя задача.
 
 ВАЖНЫЕ ПРАВИЛА:
 1. Оценивай только то что реально написано в работе
@@ -54,6 +76,8 @@ def _build_system_prompt() -> str:
 
 Отвечай ТОЛЬКО валидным JSON без пояснений:
 {
+  "confidence": <int 0-100>,
+  "confidence_reasons": ["..."],
   "score": <итого, целое число>,
   "feedback": "<общий итог работы, 2-3 предложения>",
   "criteria_scores": [
@@ -440,6 +464,19 @@ def _clamp_criteria_and_score(result: dict, max_score: int) -> None:
     result["score"] = max(0, min(int(result.get("score", 0) or 0), max_score))
 
 
+def _parse_confidence(result: dict) -> None:
+    """Нормализует confidence/confidence_reasons в ответе модели (0-100,
+    список строк) — общее для текстового и vision-пути."""
+    try:
+        confidence = int(result.get("confidence", 0) or 0)
+    except (TypeError, ValueError):
+        confidence = 0
+    result["confidence"] = max(0, min(confidence, 100))
+
+    reasons = result.get("confidence_reasons")
+    result["confidence_reasons"] = [str(r) for r in reasons] if isinstance(reasons, list) else []
+
+
 async def grade_handwritten_submission(
     image_urls: list,
     text: str,
@@ -493,15 +530,7 @@ async def grade_handwritten_submission(
     result = await _call_openai_chat(messages)
 
     _clamp_criteria_and_score(result, max_score)
-
-    try:
-        confidence = int(result.get("confidence", 0) or 0)
-    except (TypeError, ValueError):
-        confidence = 0
-    result["confidence"] = max(0, min(confidence, 100))
-
-    reasons = result.get("confidence_reasons")
-    result["confidence_reasons"] = [str(r) for r in reasons] if isinstance(reasons, list) else []
+    _parse_confidence(result)
 
     return result
 
@@ -559,4 +588,5 @@ async def grade_submission(
 
     result = await _call_openai_chat(messages)
     _clamp_criteria_and_score(result, max_score)
+    _parse_confidence(result)
     return result

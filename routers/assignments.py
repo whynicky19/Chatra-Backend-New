@@ -1,5 +1,4 @@
 import json as _json
-import os
 from utils.time import utcnow
 from typing import List, Optional
 
@@ -23,15 +22,12 @@ from permissions import (
 )
 from services.ai_grader import grade_submission as _ai_grade
 from services.ai_grader import grade_handwritten_submission as _ai_grade_handwritten
+from services.ai_grader import AI_CONFIDENCE_THRESHOLD
 from routers.ai import _check_rate_limit
 
 router = APIRouter(tags=["Assignments"])
 
-# Ниже этого порога уверенности распознавания рукописного фото ИИ-оценка не
-# выставляется вообще — сдача уходит в needs_review на ручную проверку
-# учителя. Порог глобальный для платформы (см. план AI-confidence-gate).
 _IMAGE_EXTS = {"png", "jpg", "jpeg", "webp", "bmp", "gif"}
-AI_CONFIDENCE_THRESHOLD = int(os.getenv("AI_GRADING_CONFIDENCE_THRESHOLD", "80"))
 
 
 def _check_assignment_org(db: Session, assignment, current_user):
@@ -92,6 +88,18 @@ def _notify_grade(submission, assignment, score: int, max_score: int) -> None:
         )
     except Exception:  # noqa: BLE001
         pass
+
+
+def _student_submission_view(sub) -> "schemas.SubmissionWithGrade":
+    """Ответ сдачи для студента: confidence/причины самопроверки ИИ не
+    показываем никогда; при needs_review дополнительно скрываем саму оценку
+    (Grade.graded_by == "ai_suggested" — предложение ИИ, не финальная оценка,
+    её видит только учитель до подтверждения)."""
+    resp = schemas.SubmissionWithGrade.model_validate(sub)
+    updates = {"ai_confidence": None, "ai_review_reasons": None}
+    if sub.status == "needs_review":
+        updates["grade"] = None
+    return resp.model_copy(update=updates)
 
 
 def _notify_needs_review(submission, assignment) -> None:
@@ -185,14 +193,7 @@ def my_submissions(
     current_user=Depends(get_current_user),
 ):
     subs = crud.get_submissions_for_student(db, current_user.id, limit=limit, offset=offset)
-    # Уверенность/причины распознавания — только для учителя (см. teacher-
-    # эндпоинты ниже). Студент никогда не должен видеть confidence ИИ.
-    return [
-        schemas.SubmissionWithGrade.model_validate(s).model_copy(
-            update={"ai_confidence": None, "ai_review_reasons": None}
-        )
-        for s in subs
-    ]
+    return [_student_submission_view(s) for s in subs]
 
 
 @router.get("/assignments/student/my-rating")
@@ -485,11 +486,7 @@ def get_submission(
         _check_submission_org(db, obj, current_user)
         if obj.student_id != current_user.id:
             raise HTTPException(status_code=403, detail="Access denied")
-        # Уверенность/причины распознавания — только для учителя, студент их
-        # никогда не должен видеть.
-        return schemas.SubmissionWithGrade.model_validate(obj).model_copy(
-            update={"ai_confidence": None, "ai_review_reasons": None}
-        )
+        return _student_submission_view(obj)
 
     # Преподаватель/админ — только владелец класса задания (SEC-2).
     require_submission_class_owner(db, obj, current_user)
@@ -587,6 +584,10 @@ def get_grade(
         _check_submission_org(db, sub, current_user)
         if sub.student_id != current_user.id:
             raise HTTPException(status_code=403, detail="Access denied")
+        # Предложение ИИ (needs_review) — не финальная оценка, студент видит
+        # её только после подтверждения учителем (graded_by становится "teacher").
+        if grade.graded_by == "ai_suggested":
+            raise HTTPException(status_code=404, detail="Grade not found yet")
     else:
         require_submission_class_owner(db, sub, current_user)  # SEC-2
     return grade
@@ -810,21 +811,34 @@ async def ai_grade_submission(
     except Exception:
         pass
 
-    confidence = result.get("confidence") if is_handwritten else None
-    reasons = result.get("confidence_reasons") if is_handwritten else None
+    # Confidence теперь считает и текстовый путь (пустая/не по теме/нечитаемая
+    # сдача), не только распознавание фото — гейт needs_review общий для всех
+    # типов сдач.
+    confidence = result.get("confidence")
+    reasons = result.get("confidence_reasons")
 
-    if is_handwritten:
-        crud.set_submission_ai_confidence(db, submission_id, confidence, reasons)
+    crud.set_submission_ai_confidence(db, submission_id, confidence, reasons)
 
-    if is_handwritten and (confidence is None or confidence < AI_CONFIDENCE_THRESHOLD):
-        # Уверенность распознавания недостаточна — ИИ-оценку не показываем
-        # никому, сдача ждёт ручной проверки учителем (единый источник
-        # истины для web/Flutter: оба читают статус/поля отсюда).
+    if confidence is None or confidence < AI_CONFIDENCE_THRESHOLD:
+        # Уверенность ИИ в оценке недостаточна — оценку не показываем студенту,
+        # сдача ждёт ручной проверки учителем (единый источник истины для
+        # web/Flutter: оба читают статус/поля отсюда). Предложение ИИ сохраняем
+        # как ai_suggested — учитель видит его в карточке ручной проверки и
+        # может подтвердить как есть или изменить (POST .../grade перезаписывает
+        # на graded_by="teacher").
         crud.set_submission_status(db, submission_id, "needs_review")
+        grade = crud.create_or_update_grade(
+            db=db,
+            submission_id=submission_id,
+            score=result["score"],
+            feedback=result.get("feedback"),
+            criteria_scores=result.get("criteria_scores"),
+            graded_by="ai_suggested",
+        )
         _notify_needs_review(sub, assignment)
         return schemas.AiGradeResult(
             status="needs_review",
-            grade=None,
+            grade=grade,
             ai_confidence=confidence,
             ai_review_reasons=_json.dumps(reasons or [], ensure_ascii=False),
         )

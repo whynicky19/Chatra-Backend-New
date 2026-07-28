@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from db import SessionLocal
 from crud import assignments as crud
 from models import Assignment, Deadline, Submission
-from services.ai_grader import grade_submission as _ai_grade, _fetch_file_text
+from services.ai_grader import grade_submission as _ai_grade, _fetch_file_text, AI_CONFIDENCE_THRESHOLD
 
 logger = logging.getLogger("deadline_checker")
 
@@ -111,6 +111,43 @@ async def _grade_one(db: Session, submission, assignment, org_type: str = "unive
             db.commit()
         except Exception:
             db.rollback()
+
+        # Тот же гейт уверенности, что и у ручной кнопки "Проверить ИИ"
+        # (routers/assignments.py::ai_grade_submission) — иначе автопроверка
+        # по дедлайну публикует низкоуверенные/пустые сдачи без разбора.
+        confidence = result.get("confidence")
+        reasons = result.get("confidence_reasons")
+        crud.set_submission_ai_confidence(db, sub_id, confidence, reasons)
+
+        if confidence is None or confidence < AI_CONFIDENCE_THRESHOLD:
+            crud.set_submission_status(db, sub_id, "needs_review")
+            crud.create_or_update_grade(
+                db=db,
+                submission_id=sub_id,
+                score=result["score"],
+                feedback=result.get("feedback"),
+                criteria_scores=result.get("criteria_scores"),
+                graded_by="ai_suggested",
+            )
+            logger.info("Сдача %s ушла на ручную проверку (confidence=%s)", sub_id, confidence)
+            try:
+                from services.fcm import send_push_bg
+
+                send_push_bg(
+                    [submission.student_id],
+                    "Работа на проверке",
+                    f"«{assignment.title}» — проверяется учителем",
+                    {
+                        "type": "grade",
+                        "notif_key": f"grade:{sub_id}",
+                        "submission_id": sub_id,
+                        "assignment_id": assignment.id,
+                        "class_id": assignment.class_id,
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return
 
         crud.set_submission_status(db, sub_id, "graded")
         crud.create_or_update_grade(

@@ -211,9 +211,10 @@ SubmissionWithGrade.model_rebuild()
 class AiGradeResult(BaseModel):
     """Ответ POST /submissions/{id}/ai-grade.
 
-    status="needs_review" — распознавание фото ненадёжно (ниже порога
-    AI_CONFIDENCE_THRESHOLD): grade всегда None, оценку выставляет учитель
-    вручную через POST /submissions/{id}/grade.
+    status="needs_review" — уверенность ИИ в оценке ниже AI_CONFIDENCE_THRESHOLD
+    (для любого типа сдачи): grade содержит предложение ИИ (graded_by=
+    "ai_suggested", видно только учителю), финальную оценку выставляет учитель
+    через POST /submissions/{id}/grade (подтверждение или правка).
     """
     status: str  # "graded" | "needs_review"
     grade: Optional[GradeResponse] = None
