@@ -1,9 +1,33 @@
+import re
+
 from sqlalchemy.orm import Session
+from sqlalchemy import func
+
 from models import Posts, User
 from services.file_cleanup import delete_post_files, delete_replaced_post_cover
 
+_LECTURE_TITLE_RE = re.compile(r"^\[LECTURE\]\[(\d+)\]")
+
+
+def _next_lecture_position(db: Session, class_id: str, title: str) -> int:
+    """Следующий порядковый номер лекции внутри класса — макс. существующий
+    position среди постов с тем же префиксом заголовка + 1. Нумерация растёт
+    монотонно даже если более ранние лекции были удалены, чтобы уже
+    выданные пользователю номера ("2 лекция") не переехали на другой пост."""
+    max_position = (
+        db.query(func.max(Posts.position))
+        .filter(Posts.title.like(f"[LECTURE][{class_id}]%"))
+        .scalar()
+    )
+    return (max_position or 0) + 1
+
+
 def create_new_post(db: Session, title: str, body: str, user_id: int) -> Posts:
-    post = Posts(title=title, body=body, user_id=user_id)
+    position = None
+    m = _LECTURE_TITLE_RE.match(title or "")
+    if m:
+        position = _next_lecture_position(db, m.group(1), title)
+    post = Posts(title=title, body=body, user_id=user_id, position=position)
     db.add(post)
     db.commit()
     db.refresh(post)
@@ -24,7 +48,13 @@ def get_all_posts(db: Session, org_type: str = None, class_id: int = None,
         # Лекции класса маркируются префиксом заголовка — фильтруем на
         # сервере, чтобы клиент не скачивал все посты организации целиком.
         q = q.filter(Posts.title.like(f"[LECTURE][{class_id}]%"))
-    q = q.order_by(Posts.id.desc())
+        # Лекции нужны в порядке "1, 2, 3..." (position), а не "новые сверху" —
+        # иначе AI-репетитор класса не может связать "объясни 2 лекцию" с
+        # правильным постом. Лекции без position (созданные до migrations/017)
+        # уходят в конец, отсортированные по id как раньше.
+        q = q.order_by(Posts.position.is_(None), Posts.position.asc(), Posts.id.asc())
+    else:
+        q = q.order_by(Posts.id.desc())
     if offset:
         q = q.offset(offset)
     if limit is not None:

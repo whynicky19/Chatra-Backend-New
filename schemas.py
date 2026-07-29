@@ -115,6 +115,7 @@ class PostResponse(BaseModel):
     body: str
     user_id: int
     created_at: Optional[datetime] = None
+    position: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 

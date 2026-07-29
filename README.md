@@ -121,6 +121,7 @@ nohup ./venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 > uvicorn.log 2>&1 
 | 014 | `classes.cover_thumbnail` (миниатюра обложки) | `psql … -f migrations/014_classes_cover_thumbnail.sql` |
 | 015 | пересжатие существующих обложек классов в WebP + генерация миниатюр (опционально, см. раздел "Оптимизация обложек классов" ниже) | `python migrations/015_optimize_existing_covers.py` |
 | 016 | удаление фичи «AI-аватар преподавателя» (`DROP TABLE` для `teacher_avatars`/`avatar_lectures`/`avatar_lecture_slides`) | `psql … -f migrations/016_drop_avatar_tables.sql` |
+| 017 | `posts.position` — порядковый номер лекции внутри класса (для AI-репетитора, см. `routers/ai.py`) | `psql … -f migrations/017_posts_lecture_position.sql` |
 
 ### ⚠️ Ловушка: миграционные скрипты не читают `.env`
 

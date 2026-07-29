@@ -4,6 +4,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime, date
+from typing import Optional
 from db import Base
 from utils.time import utcnow
 
@@ -194,6 +195,10 @@ class Posts(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     user: Mapped["User"] = relationship(back_populates="posts")
+    # Порядковый номер лекции внутри класса (1, 2, 3...), проставляется при
+    # создании поста-лекции — см. crud/posts.py:_next_lecture_position. NULL
+    # для не-лекционных постов и для лекций, созданных до migrations/017.
+    position: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
 class Assignment(Base):
     __tablename__ = "assignments"
