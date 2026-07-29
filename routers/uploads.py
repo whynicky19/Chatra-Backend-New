@@ -9,7 +9,6 @@ from deps import get_current_user
 import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from services.file_service import read_file
 from services.storage import CATEGORIES, PREVIEW_CATEGORY, StorageError, get_storage_service
 
 logger = logging.getLogger(__name__)
@@ -279,26 +278,16 @@ async def upload_file(
     key = storage.build_key(category, file.filename)
     content_type = _CONTENT_TYPE_BY_EXT.get(ext, "application/octet-stream")
 
-    # Парсеры (pdfplumber/python-docx/openpyxl/OCR) читают с диска, поэтому
-    # файл временно пишется во временный файл — он не остаётся на диске
-    # постоянно, содержимое хранится только в R2. Запись, парсинг и загрузка в
-    # R2 — блокирующие операции, выносим в пул потоков, чтобы не заморозить
-    # event loop (BE-10).
-    def _parse_via_tempfile() -> dict:
-        with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=True) as tmp:
-            tmp.write(content)
-            tmp.flush()
-            try:
-                return read_file(tmp.name)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Не удалось распарсить %s: %s", file.filename, e)
-                return {"type": "unparsed", "error": "Не удалось извлечь текст из файла"}
-
-    parsed = await run_in_threadpool(_parse_via_tempfile)
-
+    # Текст файла (pdfplumber/OCR/...) здесь больше НЕ извлекается: ни клиент,
+    # ни бэкенд не читают поле parsed из ответа — извлечение текста нужно
+    # только для ИИ (грейдинг/контекст чата) и делается лениво, по требованию,
+    # через GET /upload/utils/file-text (см. services/ai_grader._fetch_file_text),
+    # с собственным кэшем. Раньше read_file() (в т.ч. тяжёлый EasyOCR/pdfplumber)
+    # гонялся синхронно на каждую загрузку и держал клиента по 10-30+ секунд
+    # на файл — не давая при этом никакого результата, который бы кто-то читал.
     try:
         file_url = await run_in_threadpool(storage.upload, content, key, content_type)
     except StorageError as e:
         raise HTTPException(status_code=502, detail=f"Не удалось загрузить файл в хранилище: {e}")
 
-    return JSONResponse(content={"file_url": file_url, "filename": file.filename, "parsed": parsed})
+    return JSONResponse(content={"file_url": file_url, "filename": file.filename})

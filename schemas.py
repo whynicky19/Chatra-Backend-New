@@ -224,36 +224,6 @@ class AiGradeResult(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-class RagIngestResponse(BaseModel):
-    document_id: int
-    filename: str
-    chunks_created: int
-
-class RagQueryRequest(BaseModel):
-    question: str
-    top_k: Optional[int] = None
-
-class RagChunkSource(BaseModel):
-    document_id: int
-    filename: str
-    chunk_index: int
-    text_preview: str
-
-class RagQueryResponse(BaseModel):
-    answer: str
-    sources: List[RagChunkSource]
-    context_tokens: int
-
-class ProcessedDocumentResponse(BaseModel):
-    id: int
-    rag_document_id: Optional[int]
-    filename: str
-    format: str
-    token_count: int
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
 class ClassCreate(BaseModel):
     name: str = Field(max_length=MAX_NAME_LEN)
     description: Optional[str] = Field(default=None, max_length=MAX_DESCRIPTION_LEN)

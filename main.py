@@ -23,7 +23,6 @@ from routers import auth, admin, users, posts, uploads, ai, notifications, push
 from routers.assignments import router as assignments_router
 from routers.classes import router as classes_router, rating_router
 from routers.cohorts import router as cohorts_router
-from routers.rag import router as rag_router
 from sqlalchemy import text
 from services.deadline_checker import deadline_checker_loop
 from services.deadline_reminder import deadline_reminder_loop
@@ -124,7 +123,6 @@ app.include_router(assignments_router, prefix="/api")
 app.include_router(classes_router, prefix="/api")
 app.include_router(cohorts_router, prefix="/api")
 app.include_router(rating_router, prefix="/api")
-app.include_router(rag_router, prefix="/api")
 
 _upload_dir = os.getenv("UPLOAD_DIR", "uploads")
 os.makedirs(_upload_dir, exist_ok=True)
