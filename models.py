@@ -490,3 +490,63 @@ class PushLog(Base):
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
+class UserBlock(Base):
+    """Блокировка одного пользователя другим (UGC Guideline 1.2).
+
+    До этого блок-лист жил только в SharedPreferences на устройстве и
+    сбрасывался при переустановке. Видимость взаимная: заблокированный не
+    видит контент заблокировавшего и наоборот — см. services/moderation.py.
+    """
+    __tablename__ = "user_blocks"
+    __table_args__ = (
+        UniqueConstraint("user_id", "blocked_user_id", name="ux_user_blocks_pair"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    blocked_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class Report(Base):
+    """Жалоба на UGC-объект (пост, задание, сдача, сообщение ИИ, пользователь).
+
+    Одна жалоба на пару (жалующийся, объект) — повторная подача отдаётся
+    клиенту как 409 report_already, а не как ошибка. resolved закрывается
+    админом из очереди модерации (реакция в течение 24 часов — требование
+    App Store 1.2 / Google Play UGC).
+    """
+    __tablename__ = "reports"
+    __table_args__ = (
+        UniqueConstraint(
+            "reporter_id", "target_type", "target_id", name="ux_reports_reporter_target"
+        ),
+        Index("ix_reports_open", "resolved", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    reporter_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Организация берётся из жалующегося: очередь модерации изолирована по
+    # org_type, как и остальные админские выборки (BE-3).
+    org_type: Mapped[str] = mapped_column(String, nullable=False, default="university")
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(String(32), nullable=False)
+    comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    resolved: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    # dismissed | content_removed | user_blocked — как закрыли жалобу.
+    resolution: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    resolved_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

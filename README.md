@@ -122,6 +122,8 @@ nohup ./venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 > uvicorn.log 2>&1 
 | 015 | пересжатие существующих обложек классов в WebP + генерация миниатюр (опционально, см. раздел "Оптимизация обложек классов" ниже) | `python migrations/015_optimize_existing_covers.py` |
 | 016 | удаление фичи «AI-аватар преподавателя» (`DROP TABLE` для `teacher_avatars`/`avatar_lectures`/`avatar_lecture_slides`) | `psql … -f migrations/016_drop_avatar_tables.sql` |
 | 017 | `posts.position` — порядковый номер лекции внутри класса (для AI-репетитора, см. `routers/ai.py`) | `psql … -f migrations/017_posts_lecture_position.sql` |
+| — | `user_blocks` — блок-лист (модерация UGC) | `python migrations/add_user_blocks.py` |
+| — | `reports` — жалобы на UGC | `python migrations/add_reports.py` |
 
 ### ⚠️ Ловушка: миграционные скрипты не читают `.env`
 
@@ -291,6 +293,48 @@ S3-совместимого API, из кода не переключается.
 Уже существующие (созданные до этой оптимизации) обложки не пересжимаются
 автоматически — прогоните `migrations/015_optimize_existing_covers.py`
 одноразово, чтобы применить сжатие/миниатюры и к ним.
+
+---
+
+## Модерация UGC (обязательно для сторов)
+
+App Store Review Guideline 1.2 и политика Google Play «User Generated Content»
+требуют одновременно: подачу жалобы, блокировку пользователя и реакцию
+модератора в течение 24 часов. Реализация — `routers/moderation.py` +
+`services/moderation.py`, таблицы `user_blocks` и `reports`.
+
+| Метод | Путь | Роль | Ответы |
+|-------|------|------|--------|
+| POST | `/api/reports` | любой | 201 создана · 409 `report_already` · 404 объект не найден · 429 лимит |
+| POST | `/api/users/{id}/block` | любой | 204 (идемпотентно) · 400 сам себя · 404 нет юзера |
+| DELETE | `/api/users/{id}/block` | любой | 204 (идемпотентно) · 400 · 404 |
+| GET | `/api/users/blocked` | любой | список `{id, full_name, email}` |
+| GET | `/api/admin/reports?open=true` | admin | очередь модерации (иначе 403) |
+| POST | `/api/admin/reports/{id}/resolve` | admin | 200, тело `{"action": "dismissed"}` необязательно |
+
+- `target_type`: `post` · `assignment` · `submission` · `ai_message` · `user`;
+  `reason`: `spam` · `abuse` · `inappropriate` · `academic` · `other`;
+  `action`: `dismissed` · `content_removed` · `user_blocked`.
+- Лимит жалоб — 10/час на аккаунт (`services/rate_limit.py`, Redis на проде).
+- При создании жалобы админам уходит push с `data.type = "admin_report"`
+  (`PushService._routeByType` на клиенте открывает вкладку модерации).
+- `created_at` — naive ISO без таймзоны, трактуется как UTC (как и остальные
+  даты API, см. `lib/utils/dates.dart::parseServerDate`).
+
+**Блокировка взаимна по видимости.** Заблокированный не видит контент
+заблокировавшего и наоборот — иначе блокировка не защищает от преследования.
+Фильтрация серверная (клиентского скрытия недостаточно: локальный список
+теряется при переустановке, а пуши через клиентский фильтр не проходят):
+
+- `GET /posts/`, `GET /assignments/`, `GET /assignments/{id}/submissions` —
+  авторы из блок-листа исключаются;
+- `GET /assignments/{id}`, `GET /submissions/{id}` — 404 по прямой ссылке,
+  чтобы фильтр списка нельзя было обойти подстановкой id;
+- push: `send_push`/`send_push_bg` принимают `actor_id` (автор события) и
+  отбрасывают адресатов, между которыми и автором есть блокировка.
+
+Очередь модерации изолирована по `org_type` (university/school), как остальные
+админские выборки. Тесты — `tests/test_moderation.py`.
 
 ---
 

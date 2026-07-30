@@ -162,7 +162,13 @@ def send_to_tokens(
     return invalid
 
 
-def send_push(db, user_ids: Iterable[int], title: str, body: str, data: Optional[dict] = None) -> int:
+def send_push(
+    db,
+    user_ids: Iterable[int],
+    title: str,
+    body: str,
+    data: Optional[dict] = None,
+) -> int:
     """Синхронно: находит FCM-токены пользователей, шлёт уведомление и удаляет
     невалидные токены. Возвращает число токенов, на которые ушла отправка."""
     from models import DeviceToken
@@ -214,7 +220,12 @@ def notify_admins(org_type: str, title: str, body: str, data: Optional[dict] = N
         logger.warning("notify_admins: %s", e)
 
 
-def send_push_bg(user_ids: Iterable[int], title: str, body: str, data: Optional[dict] = None) -> None:
+def send_push_bg(
+    user_ids: Iterable[int],
+    title: str,
+    body: str,
+    data: Optional[dict] = None,
+) -> None:
     """Fire-and-forget отправка в отдельном потоке с собственной сессией БД.
     Безопасно вызывать из sync- и async-обработчиков: не блокирует ответ/event loop
     и не роняет запрос, если FCM недоступен."""

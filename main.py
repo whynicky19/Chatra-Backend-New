@@ -19,7 +19,7 @@ from services.file_urls import sign_uploads_in_text, verify_signature
 from services.storage import StorageError, get_storage_service, is_public_key
 from db import engine
 from models import Base
-from routers import auth, admin, users, posts, uploads, ai, notifications, push
+from routers import auth, admin, users, posts, uploads, ai, notifications, push, moderation
 from routers.assignments import router as assignments_router
 from routers.classes import router as classes_router, rating_router
 from routers.cohorts import router as cohorts_router
@@ -113,6 +113,10 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 # чего nginx их путает. /api отделяет бэкенд от фронтенда однозначно.
 app.include_router(auth.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+# Модерация — до users: GET /users/blocked обязан объявляться раньше любого
+# будущего /users/{id}, иначе "blocked" уедет в path-параметр.
+app.include_router(moderation.router, prefix="/api")
+app.include_router(moderation.admin_router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(posts.router, prefix="/api")
 app.include_router(uploads.router, prefix="/api")

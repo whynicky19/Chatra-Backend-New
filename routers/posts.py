@@ -61,8 +61,13 @@ def get_posts_for_user(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    return crud_posts.get_all_posts(db=db, org_type=current_user.org_type, class_id=class_id,
-                                    limit=limit, offset=offset)
+    return crud_posts.get_all_posts(
+        db=db,
+        org_type=current_user.org_type,
+        class_id=class_id,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)

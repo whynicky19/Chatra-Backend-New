@@ -40,10 +40,15 @@ def get_posts_for_user(db: Session, user_id: int):
     return db.query(Posts).filter(Posts.user_id == user_id).order_by(Posts.id.desc()).all()
 
 def get_all_posts(db: Session, org_type: str = None, class_id: int = None,
-                  limit: int = None, offset: int = 0):
+                  limit: int = None, offset: int = 0,
+                  exclude_author_ids=None):
     q = db.query(Posts).join(User, User.id == Posts.user_id)
     if org_type:
         q = q.filter(User.org_type == org_type)
+    # Модерация UGC: контент из блок-листа не отдаём вообще. Клиентского
+    # скрытия недостаточно — локальный список теряется при переустановке.
+    if exclude_author_ids:
+        q = q.filter(~Posts.user_id.in_(list(exclude_author_ids)))
     if class_id is not None:
         # Лекции класса маркируются префиксом заголовка — фильтруем на
         # сервере, чтобы клиент не скачивал все посты организации целиком.

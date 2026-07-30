@@ -381,3 +381,63 @@ class RolloverResultItem(BaseModel):
     deadlines_created: int = 0
 
 
+# ── Модерация UGC (App Store 1.2 / Google Play UGC) ────────────────────────
+REPORT_TARGET_TYPES = ("post", "assignment", "submission", "ai_message", "user")
+REPORT_REASONS = ("spam", "abuse", "inappropriate", "academic", "other")
+REPORT_RESOLUTIONS = ("dismissed", "content_removed", "user_blocked")
+
+
+class ReportCreate(BaseModel):
+    target_type: str
+    target_id: int
+    reason: str
+    comment: Optional[str] = Field(default=None, max_length=500)
+
+    @field_validator("target_type")
+    @classmethod
+    def _target_type_valid(cls, v: str) -> str:
+        if v not in REPORT_TARGET_TYPES:
+            raise ValueError(f"target_type must be one of {REPORT_TARGET_TYPES}")
+        return v
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_valid(cls, v: str) -> str:
+        if v not in REPORT_REASONS:
+            raise ValueError(f"reason must be one of {REPORT_REASONS}")
+        return v
+
+
+class ReportResponse(BaseModel):
+    id: int
+    target_type: str
+    target_id: int
+    reason: str
+    comment: Optional[str] = None
+    reporter_name: Optional[str] = None
+    reporter_email: Optional[str] = None
+    created_at: Optional[datetime] = None
+    resolved: bool = False
+    # Куда указывает жалоба — заполняется на бэке при list_reports, чтобы
+    # админ видел «Класс X → Лекция Y», а не голый target_type/target_id.
+    class_id: Optional[int] = None
+    class_name: Optional[str] = None
+    target_title: Optional[str] = None
+    author_id: Optional[int] = None
+    author_name: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReportResolve(BaseModel):
+    # Необязательно: клиент может закрыть жалобу без указания причины.
+    action: Optional[str] = None
+
+    @field_validator("action")
+    @classmethod
+    def _action_valid(cls, v):
+        if v is not None and v not in REPORT_RESOLUTIONS:
+            raise ValueError(f"action must be one of {REPORT_RESOLUTIONS}")
+        return v
+
+

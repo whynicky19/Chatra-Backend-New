@@ -39,10 +39,15 @@ def get_assignment(db: Session, assignment_id: int) -> Optional[Assignment]:
 
 def get_all_assignments(db: Session, class_id: Optional[int] = None, active_only: bool = False,
                         org_type: Optional[str] = None,
-                        limit: Optional[int] = None, offset: int = 0) -> List[Assignment]:
+                        limit: Optional[int] = None, offset: int = 0,
+                        exclude_author_ids=None) -> List[Assignment]:
     q = db.query(Assignment)
     if class_id is not None:
         q = q.filter(Assignment.class_id == class_id)
+    # Модерация UGC: задания авторов из блок-листа не отдаём (серверная
+    # фильтрация — см. services/moderation.py).
+    if exclude_author_ids:
+        q = q.filter(~Assignment.created_by.in_(list(exclude_author_ids)))
     if org_type is not None:
         # Организация задания определяется по его создателю: у части заданий
         # class_id исторически ссылается на легаси-посты, поэтому фильтровать
@@ -96,7 +101,8 @@ def get_submission(db: Session, submission_id: int) -> Optional[Submission]:
 
 def get_submissions_for_assignment(db: Session, assignment_id: int,
                                    cohort: Optional[Cohort] = None,
-                                   limit: Optional[int] = None, offset: int = 0) -> List[Submission]:
+                                   limit: Optional[int] = None, offset: int = 0,
+                                   exclude_author_ids=None) -> List[Submission]:
     """Сдачи задания; с cohort — только его учебного года: сдачи учеников
     потока плюс сдачи, заякоренные на дедлайн потока (ученик мог быть
     исключён из потока позже)."""
@@ -114,6 +120,9 @@ def get_submissions_for_assignment(db: Session, assignment_id: int,
                 ),
             )
         )
+    # Модерация UGC: сдачи заблокированных учеников скрываем от учителя.
+    if exclude_author_ids:
+        q = q.filter(~Submission.student_id.in_(list(exclude_author_ids)))
     q = q.order_by(Submission.submitted_at.desc())
     if offset:
         q = q.offset(offset)
