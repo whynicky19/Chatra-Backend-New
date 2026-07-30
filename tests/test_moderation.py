@@ -68,16 +68,16 @@ def test_report_requires_auth(client):
     assert r.status_code == 401
 
 
-def test_ai_message_report_accepted_without_target_check(client, db_session):
-    """Переписка с ИИ приватна, серверного id у сообщения нет — жалоба
-    принимается без проверки существования объекта."""
+def test_ai_message_report_target_type_removed(client, db_session):
+    """Жалоба на ответ ИИ убрана из продукта — target_type=ai_message больше
+    не принимается (422, не входит в REPORT_TARGET_TYPES)."""
     reporter = make_user(db_session)
     r = client.post(
         "/api/reports",
         json={"target_type": "ai_message", "target_id": 12345, "reason": "inappropriate"},
         headers=auth_headers(reporter),
     )
-    assert r.status_code == 201
+    assert r.status_code == 422
 
 
 # ── Очередь модерации (admin) ─────────────────────────────────────────────

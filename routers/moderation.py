@@ -82,7 +82,6 @@ def _report_content_info(db: Session, target_type: str, target_id: int) -> dict 
             "author_id": target_id,
             "author_name": author.full_name if author else None,
         }
-    # ai_message — приватная переписка, у сервера нет её содержимого/автора.
     return None
 
 router = APIRouter(tags=["moderation"])
@@ -96,11 +95,7 @@ _report_limiter = RateLimiter(max_calls=10, window_seconds=3600, namespace="repo
 
 
 def _target_exists(db: Session, target_type: str, target_id: int, org_type: str) -> bool:
-    """Существует ли объект жалобы в организации жалующегося. ai_message —
-    приватная переписка юзера с ИИ, её id серверу неизвестен, поэтому такие
-    жалобы принимаются без проверки существования."""
-    if target_type == "ai_message":
-        return True
+    """Существует ли объект жалобы в организации жалующегося."""
     if target_type == "user":
         return (
             db.query(User.id)

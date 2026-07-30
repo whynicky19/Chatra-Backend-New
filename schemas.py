@@ -100,7 +100,13 @@ class UserAdminUpdate(BaseModel):
 # раздувает БД, а текст сдачи ещё и целиком улетает в GPT (BE-6).
 MAX_TITLE_LEN = 500
 MAX_NAME_LEN = 256
-MAX_DESCRIPTION_LEN = 5000
+# Ссылки на прикреплённые файлы кладутся прямо в текст description (см.
+# lib/screens/classes/class_detail_screen.dart, descWithFiles) — один
+# подписанный R2 URL с exp/sig и кириллическим именем в fragment легко
+# занимает 300-400 символов. При 10 файлах (kMaxFilesPerPost) старого лимита
+# 5000 не хватало: PUT/POST /assignments падал 422, а с точки зрения
+# пользователя выглядело как "файлы не добавляются".
+MAX_DESCRIPTION_LEN = 20000
 MAX_POST_BODY_LEN = 100_000
 MAX_SUBMISSION_TEXT_LEN = 100_000
 
@@ -382,7 +388,7 @@ class RolloverResultItem(BaseModel):
 
 
 # ── Модерация UGC (App Store 1.2 / Google Play UGC) ────────────────────────
-REPORT_TARGET_TYPES = ("post", "assignment", "submission", "ai_message", "user")
+REPORT_TARGET_TYPES = ("post", "assignment", "submission", "user")
 REPORT_REASONS = ("spam", "abuse", "inappropriate", "academic", "other")
 REPORT_RESOLUTIONS = ("dismissed", "content_removed", "user_blocked")
 
