@@ -3,7 +3,7 @@ import os
 import httpx
 from datetime import datetime
 from typing import List, Optional, Union, Any
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 from deps import get_current_user
 from db import get_db
@@ -188,6 +188,7 @@ async def _generate_thread_title(api_key: str, user_text: str) -> tuple[str, dic
 
 @router.post("/chat", response_model=ChatResponse)
 async def ai_chat(
+    request: Request,
     body: ChatRequest,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -288,6 +289,20 @@ async def ai_chat(
         db, current_user, body.class_id,
         "chat_vision" if has_vision else "chat", data.get("usage", {}),
     )
+
+    # Пользователь мог нажать «Стоп», пока мы ждали ответ модели — клиентский
+    # CancelToken рвёт HTTP-соединение, но сам запрос к OpenAI это не
+    # прерывает (см. await client.post выше). Без этой проверки ответ на
+    # отменённый вопрос всё равно уходил в ai_messages и «всплывал» при
+    # следующем открытии чата — синхронизация истории просто подтягивала его
+    # с сервера. Не сохраняем и не генерируем заголовок треда, раз клиента
+    # уже нет на связи.
+    if await request.is_disconnected():
+        return ChatResponse(
+            content=content,
+            quota=ai_quota.quota_status(db, current_user),
+            thread_title=None,
+        )
 
     # Персистим переписку на сервер — история синхронизируется между устройствами.
     thread_id = thread.id if thread is not None else None
