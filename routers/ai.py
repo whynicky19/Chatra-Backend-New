@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 import httpx
 from datetime import datetime
 from typing import List, Optional, Union, Any
@@ -33,6 +34,30 @@ def _check_rate_limit(user_id: int):
     )
 
 
+# Кнопка «Остановить» в клиенте рвёт HTTP-соединение через CancelToken, но
+# это не гарантированно прерывает соединение на сервере (keep-alive сокет
+# может просто повиснуть, не сообщая о разрыве) — request.is_disconnected()
+# в таком случае ничего не замечает. Клиент вдобавок явно шлёт /chat/cancel
+# с тем же request_id отдельным запросом; ai_chat перед сохранением сверяется
+# с этим реестром. Однопроцессный in-memory словарь — как и RateLimiter выше.
+_CANCEL_TTL_SECONDS = 180  # с запасом перекрывает 90s таймаут запроса к OpenAI
+_cancelled_requests: dict[str, float] = {}
+
+
+def _mark_cancelled(request_id: str) -> None:
+    now = time.time()
+    _cancelled_requests[request_id] = now
+    stale = [k for k, ts in _cancelled_requests.items() if now - ts > _CANCEL_TTL_SECONDS]
+    for k in stale:
+        _cancelled_requests.pop(k, None)
+
+
+def _pop_cancelled(request_id: Optional[str]) -> bool:
+    if not request_id:
+        return False
+    return _cancelled_requests.pop(request_id, None) is not None
+
+
 class ChatMessage(BaseModel):
     role: str
     content: Union[str, List[Any]]
@@ -47,6 +72,13 @@ class ChatRequest(BaseModel):
     # класса (class_id задан) полностью игнорируется.
     thread_id: Optional[int] = None
     lecture_context: Optional[str] = None
+    # Клиентский идентификатор запроса — используется только для отмены
+    # (см. /chat/cancel и _pop_cancelled), на сам ответ ИИ не влияет.
+    request_id: Optional[str] = None
+
+
+class CancelChatRequest(BaseModel):
+    request_id: str
 
 
 class ChatResponse(BaseModel):
@@ -186,6 +218,17 @@ async def _generate_thread_title(api_key: str, user_text: str) -> tuple[str, dic
     return title, data.get("usage", {})
 
 
+@router.post("/chat/cancel")
+async def ai_chat_cancel(
+    body: CancelChatRequest,
+    current_user=Depends(get_current_user),
+):
+    """Клиент шлёт это сразу после нажатия «Стоп» — отдельным запросом, не
+    через тот же (уже отменяемый) CancelToken, иначе он тоже не дошёл бы."""
+    _mark_cancelled(body.request_id)
+    return {"ok": True}
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def ai_chat(
     request: Request,
@@ -292,12 +335,14 @@ async def ai_chat(
 
     # Пользователь мог нажать «Стоп», пока мы ждали ответ модели — клиентский
     # CancelToken рвёт HTTP-соединение, но сам запрос к OpenAI это не
-    # прерывает (см. await client.post выше). Без этой проверки ответ на
-    # отменённый вопрос всё равно уходил в ai_messages и «всплывал» при
-    # следующем открытии чата — синхронизация истории просто подтягивала его
-    # с сервера. Не сохраняем и не генерируем заголовок треда, раз клиента
-    # уже нет на связи.
-    if await request.is_disconnected():
+    # прерывает (см. await client.post выше). is_disconnected() ловит явный
+    # разрыв соединения; _pop_cancelled — явный сигнал от клиента (см.
+    # /chat/cancel) на случай, когда соединение просто повисло, а не
+    # закрылось. Без этой проверки ответ на отменённый вопрос всё равно уходил
+    # в ai_messages и «всплывал» при следующем открытии чата (или при
+    # переключении между чатами в истории) — синхронизация истории просто
+    # подтягивала его с сервера.
+    if await request.is_disconnected() or _pop_cancelled(body.request_id):
         return ChatResponse(
             content=content,
             quota=ai_quota.quota_status(db, current_user),
