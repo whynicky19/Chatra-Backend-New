@@ -247,6 +247,25 @@ def _parse_docx(data: bytes) -> str:
             return f"[DOCX — не удалось прочитать: {e}]"
 
 
+def _looks_garbled(text: str) -> bool:
+    """PDF со сломанным font-encoding (нестандартная/подмножественная
+    встроенная таблица глифов — частый случай у инфографик/roadmap,
+    экспортированных из Figma/Canva/PowerPoint) даёт pdfplumber/pypdf текст
+    вида "nnnnnnn nnnnnn" — один и тот же символ-заглушка вместо букв.
+    Настоящий текст ни на одном языке так не выглядит. Ложный "успех"
+    экстракции опаснее пустого результата: пустой текст честно уходит в
+    плейсхолдер "не прочитано" (см. class_detail_screen._recomputeAiContext),
+    а мусорный текст модель воспринимает как реальный материал лекции."""
+    stripped = re.sub(r"\s+", "", text)
+    if len(stripped) < 50:
+        return False
+    counts: dict[str, int] = {}
+    for ch in stripped:
+        counts[ch] = counts.get(ch, 0) + 1
+    most_common_n = max(counts.values())
+    return most_common_n / len(stripped) > 0.4
+
+
 async def _fetch_file_text(url: str) -> str:
     from services.url_safety import is_safe_fetch_url
     if not is_safe_fetch_url(url):
@@ -276,16 +295,29 @@ async def _fetch_file_text(url: str) -> str:
                     with pdfplumber.open(io.BytesIO(resp.content)) as pdf:
                         pages = [p.extract_text(layout=True) or "" for p in pdf.pages[:40]]
                     text = "\n\n".join(p for p in pages if p.strip())
-                    return text[:25000] if text.strip() else ""
+                    if text.strip() and not _looks_garbled(text):
+                        return text[:25000]
                 except Exception:
-                    try:
-                        from pypdf import PdfReader
-                        reader = PdfReader(io.BytesIO(resp.content))
-                        pages = [page.extract_text() or "" for page in reader.pages[:40]]
-                        text = "\n\n".join(p for p in pages if p.strip())
-                        return text[:25000] if text.strip() else ""
-                    except Exception as e:
-                        return f"[PDF — не удалось прочитать: {e}]"
+                    pass
+                # pdfplumber либо не смог прочитать, либо вернул мусор
+                # (сломанный font-encoding) — пробуем pypdf, у него другой
+                # путь разбора шрифтов и иногда он справляется там, где
+                # pdfplumber даёт "nnnnnnn".
+                try:
+                    from pypdf import PdfReader
+                    reader = PdfReader(io.BytesIO(resp.content))
+                    pages = [page.extract_text() or "" for page in reader.pages[:40]]
+                    text = "\n\n".join(p for p in pages if p.strip())
+                    if text.strip() and not _looks_garbled(text):
+                        return text[:25000]
+                except Exception:
+                    pass
+                # Оба парсера либо упали, либо вернули мусор — честно отдаём
+                # пустую строку. Вызывающий код (get_file_text/ai-grade) уже
+                # умеет корректно показать "не удалось прочитать" — а вот
+                # подсунуть модели "nnnnnnn" вместо текста лекции значительно
+                # хуже, чем явно сказать, что текста нет.
+                return ""
 
 
             elif ext in ("pptx", "xlsx"):
