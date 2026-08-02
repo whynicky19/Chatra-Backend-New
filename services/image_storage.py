@@ -8,6 +8,7 @@
 import base64
 import logging
 import re
+from uuid import uuid4
 
 from services.image_processing import process_cover_image
 from services.storage import StorageError, get_storage_service
@@ -53,14 +54,24 @@ def _process_and_upload(raw: bytes) -> tuple[str, str] | None:
         logger.exception("Не удалось обработать картинку обложки (decode/resize/encode)")
         return None
 
+    # Ключ обязан быть уникальным при КАЖДОЙ загрузке (см. _COVER_CACHE_CONTROL
+    # выше — кэш ставится на год как immutable). build_key() без явного UUID
+    # сохранял бы буквальное имя "cover.<ext>" и добивал коллизии числовым
+    # суффиксом (cover_1, cover_2, ...) в ОДНОМ общем пуле на все классы —
+    # а после удаления старой обложки (см. crud/classes.py: update_class)
+    # освободившийся номер тут же подхватывает следующая загрузка ЛЮБОГО
+    # класса. Тот же путь с другим содержимым при immutable-кэше означает,
+    # что клиенты (в т.ч. мобильное приложение, кэширующее по пути без
+    # query) годами отдают чужую/устаревшую картинку по этому URL.
+    unique = uuid4().hex
     storage = get_storage_service()
     try:
-        main_key = storage.build_key("materials/covers", f"cover.{main_ext}")
+        main_key = storage.build_key("materials/covers", f"cover_{unique}.{main_ext}")
         cover_url = storage.upload(
             main_bytes, main_key, _CONTENT_TYPE_BY_EXT.get(main_ext, "application/octet-stream"),
             cache_control=_COVER_CACHE_CONTROL,
         )
-        thumb_key = storage.build_key("materials/covers/thumbnails", f"cover.{thumb_ext}")
+        thumb_key = storage.build_key("materials/covers/thumbnails", f"cover_{unique}.{thumb_ext}")
         thumbnail_url = storage.upload(
             thumb_bytes, thumb_key, _CONTENT_TYPE_BY_EXT.get(thumb_ext, "application/octet-stream"),
             cache_control=_COVER_CACHE_CONTROL,
