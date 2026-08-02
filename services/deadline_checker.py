@@ -10,7 +10,14 @@ from db import SessionLocal
 from crud import assignments as crud
 from crud import posts as crud_posts
 from models import Assignment, Deadline, Submission
-from services.ai_grader import grade_submission as _ai_grade, _fetch_file_text, AI_CONFIDENCE_THRESHOLD
+from services.ai_grader import (
+    grade_submission as _ai_grade,
+    grade_handwritten_submission as _ai_grade_handwritten,
+    _fetch_file_text,
+    _fetch_docx_embedded_images,
+    AI_CONFIDENCE_THRESHOLD,
+    IMAGE_EXTS,
+)
 
 logger = logging.getLogger("deadline_checker")
 
@@ -75,29 +82,59 @@ async def _grade_one(db: Session, submission, assignment, org_type: str = "unive
         if not all_urls and submission.file_url:
             all_urls = [submission.file_url]
 
-        for i, url in enumerate(all_urls):
+        # BUG (найден при аудите): раньше эта функция гоняла ЛЮБОЙ файл,
+        # включая фото рукописной работы, через текстовый _fetch_file_text —
+        # для картинок он отдаёт заглушку "[Изображение — текст недоступен]",
+        # и модель "проверяла" эту заглушку вместо реального содержимого
+        # фото. Ручная кнопка "Проверить ИИ" (routers/assignments.py) всегда
+        # отделяла фото и вела их vision-путём — автопроверка по дедлайну
+        # была единственным местом, где это не работало. Приводим к тому же
+        # разделению: фото → vision, документы → текст + встроенные картинки.
+        image_urls = [u for u in all_urls if u.split("?")[0].rsplit(".", 1)[-1].lower() in IMAGE_EXTS]
+        doc_urls = [u for u in all_urls if u not in image_urls]
+
+        embedded_images: list = []
+        for i, url in enumerate(doc_urls):
             file_text = await _fetch_file_text(url)
             if file_text.strip():
-                label = f"ФАЙЛ {i+1}" if len(all_urls) > 1 else "СОДЕРЖИМОЕ ФАЙЛА"
+                label = f"ФАЙЛ {i+1}" if len(doc_urls) > 1 else "СОДЕРЖИМОЕ ФАЙЛА"
                 full_text = (
                     (full_text + f"\n\n{label}:\n" + file_text).strip()
                     if full_text
                     else f"{label}:\n{file_text}"
                 )
+            embedded_images.extend(await _fetch_docx_embedded_images(url))
 
-        if not full_text:
+        if not full_text and not image_urls and not embedded_images:
             full_text = f"[Студент сдал файл(ы), но прочитать не удалось: {', '.join(all_urls)}]"
 
         lecture_context = crud_posts.get_lecture_context(db, assignment.class_id, limit=5)
 
-        result = await _ai_grade(
-            text=full_text,
-            file_url=None,
-            criteria=criteria,
-            max_score=assignment.max_score,
-            reference_solution_url=assignment.reference_solution_url or None,
-            lecture_context=lecture_context or None,
-        )
+        if image_urls:
+            reference_text = None
+            if assignment.reference_solution_url:
+                ref_content = await _fetch_file_text(assignment.reference_solution_url)
+                if ref_content.strip() and not ref_content.startswith("["):
+                    reference_text = ref_content[:6000]
+            result = await _ai_grade_handwritten(
+                image_urls=image_urls,
+                text=full_text,
+                criteria=criteria,
+                max_score=assignment.max_score,
+                reference_text=reference_text,
+                lecture_context=lecture_context or None,
+                extra_image_urls=embedded_images or None,
+            )
+        else:
+            result = await _ai_grade(
+                text=full_text,
+                file_url=None,
+                criteria=criteria,
+                max_score=assignment.max_score,
+                reference_solution_url=assignment.reference_solution_url or None,
+                lecture_context=lecture_context or None,
+                embedded_image_urls=embedded_images or None,
+            )
 
         # BE-9: учитываем токены (иначе дневной бюджет не видел бы авто-проверки).
         try:

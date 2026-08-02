@@ -23,11 +23,10 @@ from permissions import (
 from services.ai_grader import grade_submission as _ai_grade
 from services.ai_grader import grade_handwritten_submission as _ai_grade_handwritten
 from services.ai_grader import AI_CONFIDENCE_THRESHOLD
+from services.ai_grader import IMAGE_EXTS as _IMAGE_EXTS
 from routers.ai import _check_rate_limit
 
 router = APIRouter(tags=["Assignments"])
-
-_IMAGE_EXTS = {"png", "jpg", "jpeg", "webp", "bmp", "gif"}
 
 
 def _check_assignment_org(db: Session, assignment, current_user):
@@ -681,7 +680,8 @@ async def ai_grade_submission(
     image_urls = [u for u in all_urls if u.split("?")[0].rsplit(".", 1)[-1].lower() in _IMAGE_EXTS]
     doc_urls = [u for u in all_urls if u not in image_urls]
 
-    from services.ai_grader import _fetch_file_text
+    from services.ai_grader import _fetch_file_text, _fetch_docx_embedded_images
+    embedded_images: list = []
     for i, url in enumerate(doc_urls):
         file_text = await _fetch_file_text(url)
         if file_text.strip():
@@ -691,8 +691,12 @@ async def ai_grade_submission(
                 if full_text
                 else f"{label}:\n{file_text}"
             )
+        # .docx может нести ответ КАРТИНКОЙ (скриншот/скан/фото/схема) —
+        # doc.paragraphs/doc.tables выше видят только текстовый слой, без
+        # этого студент терял бы баллы не за содержание, а за способ вставки.
+        embedded_images.extend(await _fetch_docx_embedded_images(url))
 
-    if not full_text and not image_urls:
+    if not full_text and not image_urls and not embedded_images:
         full_text = f"[Студент сдал файл(ы), но прочитать не удалось: {', '.join(all_urls)}]"
 
 
@@ -757,6 +761,7 @@ async def ai_grade_submission(
                 max_score=assignment.max_score,
                 reference_text=reference_text,
                 lecture_context=lecture_context if lecture_context else None,
+                extra_image_urls=embedded_images if embedded_images else None,
             )
         else:
             result = await _ai_grade(
@@ -767,6 +772,7 @@ async def ai_grade_submission(
                 reference_solution_url=None,
                 reference_solution_urls=reference_urls if reference_urls else None,
                 lecture_context=lecture_context if lecture_context else None,
+                embedded_image_urls=embedded_images if embedded_images else None,
             )
     except RuntimeError as e:
         crud.set_submission_status(db, submission_id, "submitted")

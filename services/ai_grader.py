@@ -11,6 +11,12 @@ from typing import Optional
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 OPENAI_MODEL = "gpt-4o"
 
+# Расширения, которые считаются "фото сдачи" (идут vision-путём, а не как
+# текстовый файл) — общий источник истины для routers/assignments.py
+# (ручная кнопка "Проверить ИИ") и services/deadline_checker.py (автопроверка
+# по дедлайну), чтобы оба пути одинаково отличали фото от документов.
+IMAGE_EXTS = {"png", "jpg", "jpeg", "webp", "bmp", "gif"}
+
 # Потолок текста студента в промпте. Заметно ниже лимита схемы (100k): хватает
 # для честной проверки, но ограничивает цену запроса и мусор в промпте.
 MAX_STUDENT_PROMPT_CHARS = 30_000
@@ -229,6 +235,30 @@ def _parse_docx(data: bytes) -> str:
             if rows:
                 parts.append("\n[Таблица]\n" + "\n".join(rows))
 
+        # doc.paragraphs/doc.tables — только тело документа. Колонтитулы
+        # (header/footer) в них НЕ попадают вообще (это отдельные части
+        # docx-пакета) — раньше терялись целиком, если студент писал ответ
+        # или ФИО/номер варианта в колонтитуле. Дедуп по тексту: в
+        # многосекционном документе колонтитул часто физически один и тот
+        # же (is_linked_to_previous) — не повторяем его на каждую секцию.
+        seen_hf: set[str] = set()
+        hf_parts: list[str] = []
+        for section in doc.sections:
+            for hf, label in ((section.header, "Колонтитул (верх)"), (section.footer, "Колонтитул (низ)")):
+                try:
+                    texts = [p.text.strip() for p in hf.paragraphs if p.text.strip()]
+                except Exception:
+                    texts = []
+                if not texts:
+                    continue
+                block = " ".join(texts)
+                if block in seen_hf:
+                    continue
+                seen_hf.add(block)
+                hf_parts.append(f"[{label}] {block}")
+        if hf_parts:
+            parts.append("\n" + "\n".join(hf_parts))
+
         result = "\n".join(parts).strip()
         return result[:25000] if result else ""
 
@@ -248,6 +278,156 @@ def _parse_docx(data: bytes) -> str:
             return result[:20000] if result else ""
         except Exception as e:
             return f"[DOCX — не удалось прочитать: {e}]"
+
+
+# Студенты нередко вставляют ответ КАРТИНКОЙ, а не текстом — скриншот,
+# скан тетради, фото, диаграмму, формулу из другого редактора. doc.paragraphs/
+# doc.tables выше видят только текстовый слой; если ответ — изображение, для
+# _parse_docx его как будто не существует, и студент терял баллы не за
+# содержание, а за способ вставки. Дальше — извлечение этих изображений,
+# чтобы отдать их модели вместе с текстом (vision), а не игнорировать.
+MAX_DOCX_EMBEDDED_IMAGES = 8
+MAX_DOCX_IMAGE_BYTES = MAX_IMAGE_BYTES
+# EMF/WMF — векторные метафайлы Windows (Word иногда хранит вставленные из
+# буфера обмена картинки так), vision-модель их как растровое изображение
+# прочитать не может — пропускаем, а не подсовываем нечитаемые байты.
+_DOCX_IMAGE_MIME = {
+    "png": "png", "jpg": "jpeg", "jpeg": "jpeg", "gif": "gif",
+    "bmp": "bmp", "webp": "webp", "tif": "tiff", "tiff": "tiff",
+}
+
+
+def _extract_docx_images(data: bytes, max_images: int = MAX_DOCX_EMBEDDED_IMAGES) -> list[tuple[bytes, str]]:
+    """Достаёт встроенные изображения .docx: скриншоты, сканы, фото, схемы —
+    из ЛЮБОГО места пакета (инлайн и плавающие картинки в теле, в таблицах,
+    в колонтитулах) — Word хранит все картинки в word/media/*, различие
+    только в том, из какой XML-части (document.xml/headerN.xml/footerN.xml)
+    на них ссылаются по r:embed/r:id.
+
+    Порядок — по первому упоминанию в XML (сперва тело документа, затем
+    колонтитулы), а не по имени файла в media/ (Word не гарантирует, что
+    image3.png физически стоит в документе после image2.png). Если XML не
+    распарсился — фолбэк на сортировку по имени файла, лучше так, чем ничего.
+
+    Дубли (одна и та же картинка вставлена в документ повторно) схлопываются
+    по хэшу содержимого — иначе один скриншот, вклеенный дважды, задвоил бы
+    его вес в промпте модели.
+    """
+    import hashlib
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            names = z.namelist()
+            media_names = sorted(n for n in names if n.startswith("word/media/"))
+            if not media_names:
+                return []
+
+            # rId -> путь в архиве, по .rels документа/колонтитулов.
+            rid_to_path: dict[str, str] = {}
+            for rel_name in (n for n in names if n.startswith("word/_rels/") and n.endswith(".rels")):
+                try:
+                    xml = z.read(rel_name).decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
+                for rid, target in re.findall(r'Id="([^"]+)"[^>]*Target="([^"]+)"', xml):
+                    if "media/" in target:
+                        rid_to_path[rid] = "word/media/" + target.rsplit("media/", 1)[-1]
+
+            # Порядок появления rId: сначала тело документа, потом колонтитулы.
+            xml_parts = [n for n in ("word/document.xml",) if n in names] + sorted(
+                n for n in names if n.startswith("word/header") or n.startswith("word/footer")
+            )
+            ordered_paths: list[str] = []
+            seen_paths: set[str] = set()
+            for part in xml_parts:
+                try:
+                    xml = z.read(part).decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
+                rids = re.findall(r'r:embed="([^"]+)"', xml) + re.findall(r'r:id="([^"]+)"', xml)
+                for rid in rids:
+                    path = rid_to_path.get(rid)
+                    if path and path in media_names and path not in seen_paths:
+                        ordered_paths.append(path)
+                        seen_paths.add(path)
+
+            # Что не разобрали по XML (нестандартная разметка/сбой парсинга) —
+            # добавляем в конце по имени, лучше отдать не по порядку, чем никак.
+            for path in media_names:
+                if path not in seen_paths:
+                    ordered_paths.append(path)
+                    seen_paths.add(path)
+
+            images: list[tuple[bytes, str]] = []
+            seen_hashes: set[str] = set()
+            for path in ordered_paths:
+                if len(images) >= max_images:
+                    break
+                ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+                if ext not in _DOCX_IMAGE_MIME:
+                    continue  # emf/wmf и прочее нерастровое — vision это не прочитает
+                try:
+                    raw = z.read(path)
+                except Exception:
+                    continue
+                if not raw or len(raw) > MAX_DOCX_IMAGE_BYTES:
+                    continue
+                digest = hashlib.sha256(raw).hexdigest()
+                if digest in seen_hashes:
+                    continue
+                seen_hashes.add(digest)
+                images.append((raw, ext))
+            return images
+    except Exception:
+        return []
+
+
+def _image_bytes_to_data_uri(data: bytes, ext: str) -> Optional[str]:
+    mime = _DOCX_IMAGE_MIME.get(ext.lower())
+    if not mime or not data or len(data) > MAX_DOCX_IMAGE_BYTES:
+        return None
+    b64 = base64.b64encode(data).decode("ascii")
+    return f"data:image/{mime};base64,{b64}"
+
+
+async def _fetch_docx_embedded_images(url: str) -> list[str]:
+    """Data URI изображений, встроенных в .docx по этому URL — пусто для
+    любого другого формата или если ничего скачать/извлечь не удалось.
+    Отдельный HTTP-запрос от _fetch_file_text (не переиспользуем скачанные
+    байты): вызывается только для .docx-вложений при проверке ИИ — не на
+    каждый показ материала, поэтому лишний round-trip не критичен.
+    """
+    ext = url.split("?")[0].rsplit(".", 1)[-1].lower() if "." in url.split("?")[0] else ""
+    if ext != "docx":
+        return []
+    from services.url_safety import is_safe_fetch_url
+    if not is_safe_fetch_url(url):
+        return []
+    from services.file_urls import sign_upload_url
+    signed = sign_upload_url(url)
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            resp = await client.get(signed)
+            if not resp.is_success:
+                return []
+            images = _extract_docx_images(resp.content)
+    except Exception:
+        return []
+    uris = []
+    for raw, ext in images:
+        uri = _image_bytes_to_data_uri(raw, ext)
+        if uri:
+            uris.append(uri)
+    return uris
+
+
+_EMBEDDED_IMAGES_INSTRUCTION = (
+    "К работе приложены изображения, встроенные прямо в файл (скриншоты, "
+    "сканы, фото, схемы, формулы). Прочитай их и учти при оценке наравне с "
+    "текстом. Если ответ на какой-то критерий представлен изображением, а не "
+    "напечатанным текстом — это НЕ повод снижать балл за этот критерий: "
+    "оценивай содержание, а не способ подачи."
+)
 
 
 def _looks_garbled(text: str) -> bool:
@@ -574,6 +754,7 @@ async def grade_handwritten_submission(
     max_score: int = 100,
     reference_text: Optional[str] = None,
     lecture_context: Optional[str] = None,
+    extra_image_urls: Optional[list] = None,
 ) -> dict:
     """Проверка фото-сдачи (рукописная работа) через GPT-4o vision.
 
@@ -582,12 +763,20 @@ async def grade_handwritten_submission(
     Порог уверенности применяет вызывающий роутер, а не эта функция: здесь
     только клампы и разбор ответа, все решения о видимости оценки — в
     routers/assignments.py (backend — единственный источник истины).
+
+    extra_image_urls — уже готовые data:-URI (например картинки, встроенные
+    в приложенный .docx, см. _fetch_docx_embedded_images) — в отличие от
+    image_urls это не ссылки на файлы, скачивать их не нужно.
     """
     data_uris = []
     for url in image_urls[:MAX_GRADING_IMAGES]:
         data_uri = await _fetch_image_data_uri(url)
         if data_uri:
             data_uris.append(data_uri)
+    if extra_image_urls:
+        remaining = MAX_GRADING_IMAGES - len(data_uris)
+        if remaining > 0:
+            data_uris.extend(extra_image_urls[:remaining])
 
     user_text = _build_user_prompt(
         student_text=text or "[Текст не распознан отдельно — см. фото]",
@@ -633,7 +822,12 @@ async def grade_submission(
     reference_solution_url: Optional[str] = None,
     reference_solution_urls: Optional[list] = None,
     lecture_context: Optional[str] = None,
+    embedded_image_urls: Optional[list] = None,
 ) -> dict:
+    """embedded_image_urls — data:-URI изображений, встроенных в приложённые
+    .docx (скриншоты/сканы/фото/схемы/формулы вместо печатного текста, см.
+    _fetch_docx_embedded_images). Если они есть, запрос идёт vision-путём —
+    модель видит и текст, и картинки в одном сообщении."""
     parts = []
     if text and text.strip():
         parts.append(text.strip())
@@ -664,16 +858,28 @@ async def grade_submission(
         if ref_parts:
             reference_text = "\n\n---\n\n".join(ref_parts)
 
+    system_prompt = _build_system_prompt()
+    user_text = _build_user_prompt(
+        student_text=student_text,
+        criteria=criteria,
+        max_score=max_score,
+        reference_text=reference_text,
+        lecture_context=lecture_context,
+    )
+
+    images = (embedded_image_urls or [])[:MAX_GRADING_IMAGES]
+    if images:
+        system_prompt = system_prompt + "\n\n" + _EMBEDDED_IMAGES_INSTRUCTION
+        content = [{"type": "text", "text": user_text}]
+        for data_uri in images:
+            content.append({"type": "image_url", "image_url": {"url": data_uri}})
+        user_message = content
+    else:
+        user_message = user_text
 
     messages = [
-        {"role": "system", "content": _build_system_prompt()},
-        {"role": "user", "content": _build_user_prompt(
-            student_text=student_text,
-            criteria=criteria,
-            max_score=max_score,
-            reference_text=reference_text,
-            lecture_context=lecture_context,
-        )},
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message},
     ]
 
     result = await _call_openai_chat(messages)
