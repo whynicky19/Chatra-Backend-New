@@ -283,6 +283,21 @@ async def ai_chat(
         "temperature": body.temperature,
     }
 
+    # Клиент рендерит LaTeX через flutter_math_fork, который регистрирует
+    # только окружения aligned/alignedat/cases — align, align*, gather,
+    # gathered, equation, eqnarray он не разбирает вообще и падает в сырой
+    # LaTeX-текст на экране (см. lib/screens/ai/widgets/ai_message_content.dart).
+    # Модель тянется к align*/equation по привычке из обычного LaTeX, поэтому
+    # формулировка ниже действует всегда, а не только в контексте лекции —
+    # у главного ассистента (без lecture_context) раньше не было вообще
+    # никакого system-сообщения, форматирование формул было непредсказуемым.
+    math_instruction = (
+        "Математические формулы записывай в LaTeX: инлайн — \\(...\\), "
+        "блочные — \\[...\\]. Внутри формул НЕ используй окружения align, "
+        "align*, gather, gathered, equation, eqnarray — клиент их не "
+        "поддерживает. Для нескольких выровненных строк используй aligned: "
+        "\\[\\begin{aligned} ... \\end{aligned}\\]. Код — в блоках ```язык."
+    )
     if body.lecture_context:
         payload["messages"].insert(0, {
             "role": "system",
@@ -293,11 +308,12 @@ async def ai_chat(
                 "\"объясни 2 лекцию\"), найди блок с этим номером и объясняй "
                 "именно его содержание. Объясняй подробно: раскрывай ключевые "
                 "понятия, приводи примеры и логику, а не просто пересказывай "
-                "заголовки. Математические формулы записывай в LaTeX: "
-                "инлайн — \\(...\\), блочные — \\[...\\]. Код — в блоках ```язык.\n\n"
+                f"заголовки. {math_instruction}\n\n"
                 f"{body.lecture_context[:8000]}"
             ),
         })
+    else:
+        payload["messages"].insert(0, {"role": "system", "content": math_instruction})
 
     try:
         async with httpx.AsyncClient(timeout=90.0) as client:
