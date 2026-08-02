@@ -415,7 +415,7 @@ def submit_assignment(
         deadline_id=deadline_row.id if deadline_row else None,
         text_content=body.text_content,
         file_url=all_file_urls[0] if all_file_urls else None,
-        file_urls=json.dumps(all_file_urls) if all_file_urls else None,
+        file_urls=json.dumps(all_file_urls, ensure_ascii=False) if all_file_urls else None,
         variant_number=body.variant_number,
         status="late" if is_late else "submitted",
     )
