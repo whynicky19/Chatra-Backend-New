@@ -12,7 +12,8 @@ from services.rate_limit import RateLimiter
 from services import ai_quota
 from sqlalchemy.orm import Session
 
-from models import AiMessage, AiThread
+from models import AiMessage, AiThread, Class as ClassModel
+from permissions import require_class_access
 from utils.time import utcnow
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,41 @@ DEFAULT_THREAD_TITLE = "Новый чат"
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 OPENAI_MODEL = "gpt-4o-mini"   # supports vision
+
+
+# Потолок текста материалов класса в system-сообщении тьютора. Клиент
+# собирает до 12 лекций (см. class_detail_screen._recomputeAiContext:
+# до 4000 символов контента + до 5000 на каждый прикреплённый файл) — этот
+# блок легко перерастает несколько десятков тысяч символов. Старый лимит
+# 8000 обрезал материалы уже на 1-2-й лекции ПОСЕРЕДИНЕ блока: если студент
+# просил "объясни лекцию 3", а лекции 1-2 суммарно занимали больше 8000
+# символов, лекция 3 полностью выпадала из промпта, и модель либо
+# придумывала ответ, либо отвечала не по контексту — притом без единой
+# ошибки, молча. Резать нужно по границе "### Лекция", а не посимвольно.
+MAX_LECTURE_CONTEXT_CHARS = 60_000
+
+
+def _truncate_lecture_context(text: str, limit: int = MAX_LECTURE_CONTEXT_CHARS) -> str:
+    """Обрезает материалы класса, не разрывая блок лекции посередине.
+
+    Если текст короче лимита — возвращает как есть. Иначе ищет последнюю
+    границу "### " перед лимитом и режет по ней (целиком отбрасывая
+    последнюю неполную лекцию), с явной пометкой для модели, что часть
+    материалов не поместилась — чтобы она не молчала и не выдумывала.
+    """
+    if len(text) <= limit:
+        return text
+    truncated = text[:limit]
+    boundary = truncated.rfind("\n\n### ")
+    if boundary > 0:
+        truncated = truncated[:boundary]
+    return (
+        truncated
+        + "\n\n[Часть материалов класса не поместилась в контекст и здесь "
+        "не показана — если пользователь спрашивает про лекцию, которой "
+        "нет выше, прямо скажи, что не видишь её в текущем контексте, "
+        "вместо того чтобы выдумывать содержание.]"
+    )
 
 
 _ai_limiter = RateLimiter(max_calls=20, window_seconds=60)
@@ -103,6 +139,21 @@ class AiThreadResponse(BaseModel):
 class AiThreadUpdate(BaseModel):
     title: Optional[str] = None
     pinned: Optional[bool] = None
+
+
+def _check_class_access(db: Session, class_id: int, current_user) -> None:
+    """Репетитор класса (class_id задан) раньше не проверял вообще ничего:
+    любой авторизованный пользователь мог слать class_id чужого/несуществующего
+    класса и это тихо писалось в ai_messages/ai_usage_logs с этим class_id —
+    искажая аналитику расхода токенов по классам и подсовывая произвольный
+    class_id в историю чужого (или несуществующего) класса. lecture_context
+    целиком приходит от клиента, поэтому реального утечки чужих материалов
+    тут не было — но доступ на класс всё равно должен подтверждаться, как и
+    во всех остальных class-scoped ручках (см. routers/classes.py)."""
+    cls = db.query(ClassModel).filter(ClassModel.id == class_id).first()
+    if not cls or cls.org_type != current_user.org_type:
+        raise HTTPException(status_code=404, detail="Класс не найден")
+    require_class_access(db, class_id, current_user)
 
 
 def _get_owned_thread(db: Session, user_id: int, thread_id: int) -> AiThread:
@@ -267,6 +318,8 @@ async def ai_chat(
             .first()
             is None
         )
+    else:
+        _check_class_access(db, body.class_id, current_user)
 
     max_tokens = min(body.max_tokens, 4000)
 
@@ -326,7 +379,7 @@ async def ai_chat(
                 "Объясняй подробно: раскрывай ключевые "
                 "понятия, приводи примеры и логику, а не просто пересказывай "
                 f"заголовки. {math_instruction}\n\n"
-                f"{body.lecture_context[:8000]}"
+                f"{_truncate_lecture_context(body.lecture_context)}"
             ),
         })
     else:

@@ -1,3 +1,4 @@
+import json
 import re
 
 from sqlalchemy.orm import Session
@@ -7,6 +8,7 @@ from models import Posts, User
 from services.file_cleanup import delete_post_files, delete_replaced_post_cover
 
 _LECTURE_TITLE_RE = re.compile(r"^\[LECTURE\]\[(\d+)\]")
+_LECTURE_TITLE_STRIP_RE = re.compile(r"^\[LECTURE\]\[\d+\]\s*")
 
 
 def _next_lecture_position(db: Session, class_id: str, title: str) -> int:
@@ -71,6 +73,35 @@ def get_all_posts(db: Session, org_type: str = None, class_id: int = None,
     if limit is not None:
         q = q.limit(limit)
     return q.all()
+
+def get_lecture_context(db: Session, class_id: int, limit: int = 5, max_chars: int = 2000) -> str:
+    """Текст последних лекций класса для промпта ИИ (grading/тьютор).
+
+    Использует ту же маркировку лекций (заголовок '[LECTURE][{class_id}]...'),
+    что create_new_post/get_all_posts. Раньше вызывающий код (ai-grade в
+    routers/assignments.py) искал в body несуществующие поля
+    {"type": "lecture", "class_id": ...} — их не пишет ни один клиент (лекции
+    хранят class_id только в префиксе заголовка, а body — это {"content"|
+    "description", "files"}), поэтому lecture_context для проверки ИИ всегда
+    получался пустым. Ошибки БД/парсинга не должны ломать проверку — просто
+    возвращаем то, что удалось собрать."""
+    try:
+        posts = get_all_posts(db, class_id=class_id, limit=limit)
+    except Exception:
+        return ""
+    parts = []
+    for p in posts:
+        try:
+            body = json.loads(p.body)
+            content = (body.get("content") or body.get("description") or "").strip()
+        except Exception:
+            content = (p.body or "").strip()
+        if not content:
+            continue
+        title = _LECTURE_TITLE_STRIP_RE.sub("", p.title or "").strip()
+        parts.append(f"### {title}\n{content[:max_chars]}")
+    return "\n\n".join(parts)
+
 
 def delete_post(db: Session, post_id: int) -> bool:
     post = get_post_by_id(db, post_id)

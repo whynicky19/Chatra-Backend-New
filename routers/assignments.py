@@ -734,35 +734,8 @@ async def ai_grade_submission(
                 reference_urls.append(assignment.reference_solution_url)
 
 
-    # class_id лежит внутри JSON-поля body: сужаем выборку в SQL по подстроке,
-    # точное совпадение перепроверяем в Python. Посты без class_id не берём.
-    lecture_context = ""
-    try:
-        from models import Posts
-        posts = (
-            db.query(Posts)
-            .filter(Posts.user_id != None)
-            .filter(Posts.body.contains('"class_id"'))
-            .all()
-        )
-        parts = []
-        for p in posts:
-            try:
-                b = _json.loads(p.body)
-                ptype = b.get("type", "")
-                if ptype not in ("lecture", "material"):
-                    continue
-                class_id_in_body = b.get("class_id")
-                if not class_id_in_body or int(class_id_in_body) != assignment.class_id:
-                    continue
-                content = (b.get("content") or b.get("description") or "")[:2000]
-                block = f"### {p.title}\n{content}"
-                parts.append(block)
-            except Exception:
-                continue
-        lecture_context = "\n\n".join(parts[:5])
-    except Exception:
-        pass
+    from crud import posts as crud_posts
+    lecture_context = crud_posts.get_lecture_context(db, assignment.class_id, limit=5)
 
     is_handwritten = bool(image_urls)
     try:

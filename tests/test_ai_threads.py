@@ -174,30 +174,40 @@ def test_title_only_generated_on_first_exchange(client, db_session, monkeypatch)
 
 def test_class_tutor_path_unaffected(client, db_session, monkeypatch):
     _use_fake_openai(monkeypatch)
+    teacher = make_user(db_session, role="teacher")
     user = make_user(db_session, role="student")
+    # /ai/chat с class_id проверяет членство в классе — нужен реальный класс.
+    cls = client.post(
+        "/api/classes/", json={"name": "Tutor class"}, headers=auth_headers(teacher)
+    ).json()
+    client.post(
+        "/api/classes/join-by-code", json={"code": cls["invite_code"]},
+        headers=auth_headers(user),
+    )
+    class_id = cls["id"]
 
     # Без thread_id, с class_id — работает как раньше.
     resp = client.post("/api/ai/chat",
                        json={"messages": [{"role": "user", "content": "в классе"}],
-                             "class_id": 42},
+                             "class_id": class_id},
                        headers=auth_headers(user))
     assert resp.status_code == 200, resp.text
     assert resp.json()["content"] == "AI reply"
     assert resp.json()["thread_title"] is None
 
     # История класса читается по class_id, thread_id не нужен.
-    hist = client.get("/api/ai/history", params={"class_id": 42},
+    hist = client.get("/api/ai/history", params={"class_id": class_id},
                       headers=auth_headers(user)).json()
     assert [m["content"] for m in hist] == ["в классе", "AI reply"]
 
     # Сохранённые сообщения класса имеют thread_id = NULL.
-    rows = db_session.query(AiMessage).filter(AiMessage.class_id == 42).all()
+    rows = db_session.query(AiMessage).filter(AiMessage.class_id == class_id).all()
     assert rows and all(r.thread_id is None for r in rows)
 
     # thread_id, присланный на путь класса, игнорируется (не валидируется).
     resp2 = client.post("/api/ai/chat",
                         json={"messages": [{"role": "user", "content": "again"}],
-                              "class_id": 42, "thread_id": 999999},
+                              "class_id": class_id, "thread_id": 999999},
                         headers=auth_headers(user))
     assert resp2.status_code == 200
     assert resp2.json()["thread_title"] is None

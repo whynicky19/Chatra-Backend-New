@@ -76,19 +76,59 @@ def test_ai_chat_persists_and_history_syncs(client, db_session, monkeypatch):
 def test_ai_history_class_thread_is_separate(client, db_session, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(ai_module.httpx, "AsyncClient", _FakeClient)
+    teacher = make_user(db_session, role="teacher")
     user = make_user(db_session, role="student")
+    # /ai/chat с class_id теперь проверяет членство в классе (см.
+    # routers/ai.py::_check_class_access) — раньше любой class_id проходил
+    # без проверки, здесь регистрируем реальный класс и вступаем в него.
+    cls = client.post(
+        "/api/classes/", json={"name": "Math"}, headers=auth_headers(teacher)
+    ).json()
+    client.post(
+        "/api/classes/join-by-code", json={"code": cls["invite_code"]},
+        headers=auth_headers(user),
+    )
     tid = _mk_thread(client, user)
 
     client.post("/api/ai/chat",
                 json={"messages": [{"role": "user", "content": "global"}], "thread_id": tid},
                 headers=auth_headers(user))
-    client.post("/api/ai/chat", json={"messages": [{"role": "user", "content": "in class"}], "class_id": 7},
+    client.post("/api/ai/chat", json={"messages": [{"role": "user", "content": "in class"}], "class_id": cls["id"]},
                 headers=auth_headers(user))
 
     g = client.get("/api/ai/history", params={"thread_id": tid}, headers=auth_headers(user)).json()
-    c = client.get("/api/ai/history", params={"class_id": 7}, headers=auth_headers(user)).json()
+    c = client.get("/api/ai/history", params={"class_id": cls["id"]}, headers=auth_headers(user)).json()
     assert [m["content"] for m in g] == ["global", "AI reply"]
     assert [m["content"] for m in c] == ["in class", "AI reply"]
+
+
+def test_ai_chat_class_id_requires_membership(client, db_session, monkeypatch):
+    """BUG FIX: /ai/chat раньше принимал произвольный/чужой class_id без
+    проверки членства — писал историю и usage-логи под ним. Теперь и
+    несуществующий класс, и класс без членства должны отбиваться."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(ai_module.httpx, "AsyncClient", _FakeClient)
+    teacher = make_user(db_session, role="teacher")
+    outsider = make_user(db_session, role="student")
+
+    # Несуществующий класс.
+    resp = client.post(
+        "/api/ai/chat",
+        json={"messages": [{"role": "user", "content": "hi"}], "class_id": 999999},
+        headers=auth_headers(outsider),
+    )
+    assert resp.status_code == 404
+
+    # Существующий класс, но пользователь не состоит в нём.
+    cls = client.post(
+        "/api/classes/", json={"name": "Physics"}, headers=auth_headers(teacher)
+    ).json()
+    resp = client.post(
+        "/api/ai/chat",
+        json={"messages": [{"role": "user", "content": "hi"}], "class_id": cls["id"]},
+        headers=auth_headers(outsider),
+    )
+    assert resp.status_code == 403
 
 
 def test_ai_history_import_only_when_empty_and_clear(client, db_session):

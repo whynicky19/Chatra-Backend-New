@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from db import SessionLocal
 from crud import assignments as crud
+from crud import posts as crud_posts
 from models import Assignment, Deadline, Submission
 from services.ai_grader import grade_submission as _ai_grade, _fetch_file_text, AI_CONFIDENCE_THRESHOLD
 
@@ -87,12 +88,15 @@ async def _grade_one(db: Session, submission, assignment, org_type: str = "unive
         if not full_text:
             full_text = f"[Студент сдал файл(ы), но прочитать не удалось: {', '.join(all_urls)}]"
 
+        lecture_context = crud_posts.get_lecture_context(db, assignment.class_id, limit=5)
+
         result = await _ai_grade(
             text=full_text,
             file_url=None,
             criteria=criteria,
             max_score=assignment.max_score,
             reference_solution_url=assignment.reference_solution_url or None,
+            lecture_context=lecture_context or None,
         )
 
         # BE-9: учитываем токены (иначе дневной бюджет не видел бы авто-проверки).

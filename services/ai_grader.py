@@ -170,10 +170,13 @@ def _build_user_prompt(
 
     lecture_block = ""
     if lecture_context and lecture_context.strip():
+        # crud.posts.get_lecture_context отдаёт до 5 лекций по ~2000 символов
+        # каждая (макс. 10000) — лимит здесь должен вмещать их все, иначе
+        # последние лекции курса молча пропадали бы из контекста проверки.
         lecture_block = f"""
 ---
 МАТЕРИАЛЫ КУРСА (что студенты изучали):
-{lecture_context[:4000]}
+{lecture_context[:10000]}
 ---
 """
 
@@ -266,6 +269,38 @@ def _looks_garbled(text: str) -> bool:
     return most_common_n / len(stripped) > 0.4
 
 
+# OCR — последний фолбэк для сканов/фото без текстового слоя. Ограничиваем
+# число страниц: pytesseract — секунды на страницу, без границы скан на
+# 100+ страниц утащил бы запрос на много минут.
+MAX_OCR_PDF_PAGES = 8
+
+
+async def _ocr_pdf_fallback(data: bytes, max_pages: int = MAX_OCR_PDF_PAGES) -> str:
+    """OCR постранично через pytesseract (rus+eng). Блокирующий вызов —
+    выполняется в отдельном потоке, чтобы не держать event loop. Любая
+    ошибка (нет tesseract в системе, битый PDF и т.п.) — тихо возвращает "":
+    вызывающий код это уже умеет корректно показать как "не прочитано"."""
+    def _run() -> str:
+        import pytesseract
+        import pdfplumber
+        texts = []
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            for page in pdf.pages[:max_pages]:
+                try:
+                    image = page.to_image(resolution=200).original
+                    t = pytesseract.image_to_string(image, lang="rus+eng").strip()
+                    if t:
+                        texts.append(t)
+                except Exception:
+                    continue
+        return "\n\n".join(texts)
+
+    try:
+        return await asyncio.to_thread(_run)
+    except Exception:
+        return ""
+
+
 async def _fetch_file_text(url: str) -> str:
     from services.url_safety import is_safe_fetch_url
     if not is_safe_fetch_url(url):
@@ -312,11 +347,25 @@ async def _fetch_file_text(url: str) -> str:
                         return text[:25000]
                 except Exception:
                     pass
-                # Оба парсера либо упали, либо вернули мусор — честно отдаём
-                # пустую строку. Вызывающий код (get_file_text/ai-grade) уже
-                # умеет корректно показать "не удалось прочитать" — а вот
-                # подсунуть модели "nnnnnnn" вместо текста лекции значительно
-                # хуже, чем явно сказать, что текста нет.
+                # pdfplumber/pypdf оба ничего не дали — вероятно скан или
+                # фото-PDF без текстового слоя вообще (частый случай для
+                # рукописных конспектов/фото тетради, сохранённых как PDF).
+                # pytesseract уже тянется как зависимость (requirements.txt),
+                # просто раньше не был подключён сюда — OCR-фолбэк добавляем
+                # именно тут, а не на аплоаде: эндпоинт уже ленивый и
+                # кэшируемый (см. routers/uploads.py:/utils/file-text), а
+                # синхронный OCR на каждой загрузке — ровно то, от чего там
+                # отказались (10-30с на файл без результата, который кто-то
+                # читает). Здесь же цена OCR платится один раз и только если
+                # без него текста не будет вообще.
+                ocr_text = await _ocr_pdf_fallback(resp.content)
+                if ocr_text.strip() and not _looks_garbled(ocr_text):
+                    return ocr_text[:25000]
+                # Всё перепробовано — честно отдаём пустую строку. Вызывающий
+                # код (get_file_text/ai-grade) уже умеет корректно показать
+                # "не удалось прочитать" — а вот подсунуть модели "nnnnnnn"
+                # вместо текста лекции значительно хуже, чем явно сказать,
+                # что текста нет.
                 return ""
 
 
@@ -460,10 +509,19 @@ async def _call_openai_chat(messages: list) -> dict:
     try:
         result = json.loads(raw)
     except json.JSONDecodeError as e:
+        # BUG: json.loads(match.group()) может упасть СВОЕЙ же
+        # JSONDecodeError, если regex зацепил похожий на JSON, но битый
+        # кусок (например незакрытая скобка внутри текста модели). Раньше
+        # эта ошибка не ловилась и улетала мимо `except RuntimeError` в
+        # ai_grade_submission — наружу шёл сырой 500 вместо чистого 502, а
+        # сдача навсегда зависала в статусе "grading" (set_submission_status
+        # не успевал отработать). Оборачиваем весь фолбэк в одну попытку.
         match = re.search(r'\{.*\}', raw, re.DOTALL)
-        if match:
+        try:
+            if not match:
+                raise ValueError("no JSON object found")
             result = json.loads(match.group())
-        else:
+        except (ValueError, json.JSONDecodeError):
             raise RuntimeError(f"ИИ вернул невалидный JSON: {e}\nОтвет: {raw[:400]}")
 
     result["_usage"] = resp.json().get("usage", {})
