@@ -680,7 +680,7 @@ async def ai_grade_submission(
     image_urls = [u for u in all_urls if u.split("?")[0].rsplit(".", 1)[-1].lower() in _IMAGE_EXTS]
     doc_urls = [u for u in all_urls if u not in image_urls]
 
-    from services.ai_grader import _fetch_file_text, _fetch_docx_embedded_images
+    from services.ai_grader import _fetch_file_text, _fetch_embedded_images, _fetch_pdf_page_images
     embedded_images: list = []
     for i, url in enumerate(doc_urls):
         file_text = await _fetch_file_text(url)
@@ -691,51 +691,21 @@ async def ai_grade_submission(
                 if full_text
                 else f"{label}:\n{file_text}"
             )
-        # .docx может нести ответ КАРТИНКОЙ (скриншот/скан/фото/схема) —
+        # .docx/.pptx может нести ответ КАРТИНКОЙ (скриншот/скан/фото/схема) —
         # doc.paragraphs/doc.tables выше видят только текстовый слой, без
         # этого студент терял бы баллы не за содержание, а за способ вставки.
-        embedded_images.extend(await _fetch_docx_embedded_images(url))
+        embedded_images.extend(await _fetch_embedded_images(url))
+        # PDF-скан без текстового слоя (частый случай "сканер в приложении
+        # телефона") раньше уходил только в слабый OCR-текст — рендерим
+        # страницы как изображения, чтобы модель читала их vision'ом, как
+        # уже делает для отдельно загруженных фото рукописных работ.
+        embedded_images.extend(await _fetch_pdf_page_images(url))
 
     if not full_text and not image_urls and not embedded_images:
         full_text = f"[Студент сдал файл(ы), но прочитать не удалось: {', '.join(all_urls)}]"
 
 
-    reference_urls: list = []
-
-    if sub.variant_number:
-        variant = crud_classes.get_variant_by_number(db, sub.assignment_id, sub.variant_number)
-        if variant:
-            try:
-                import json as _json2
-                var_urls = _json2.loads(variant.reference_solution_url) if variant.reference_solution_url.startswith('[') else None
-                if isinstance(var_urls, list):
-                    reference_urls.extend(var_urls)
-                else:
-                    reference_urls.append(variant.reference_solution_url)
-            except Exception:
-                reference_urls.append(variant.reference_solution_url)
-        else:
-            if assignment.reference_solution_url:
-                try:
-                    import json as _json2
-                    urls = _json2.loads(assignment.reference_solution_url) if assignment.reference_solution_url.startswith('[') else None
-                    if isinstance(urls, list):
-                        reference_urls.extend(urls)
-                    else:
-                        reference_urls.append(assignment.reference_solution_url)
-                except Exception:
-                    reference_urls.append(assignment.reference_solution_url)
-    else:
-        if assignment.reference_solution_url:
-            try:
-                import json as _json2
-                urls = _json2.loads(assignment.reference_solution_url) if assignment.reference_solution_url.startswith('[') else None
-                if isinstance(urls, list):
-                    reference_urls.extend(urls)
-                else:
-                    reference_urls.append(assignment.reference_solution_url)
-            except Exception:
-                reference_urls.append(assignment.reference_solution_url)
+    reference_urls: list = crud.resolve_reference_solution_urls(db, assignment, sub)
 
 
     from crud import posts as crud_posts
@@ -744,22 +714,12 @@ async def ai_grade_submission(
     is_handwritten = bool(image_urls)
     try:
         if is_handwritten:
-            reference_text = None
-            if reference_urls:
-                ref_parts = []
-                for ref_url in reference_urls:
-                    ref_content = await _fetch_file_text(ref_url)
-                    if ref_content.strip() and not ref_content.startswith("["):
-                        ref_parts.append(ref_content[:6000])
-                if ref_parts:
-                    reference_text = "\n\n---\n\n".join(ref_parts)
-
             result = await _ai_grade_handwritten(
                 image_urls=image_urls,
                 text=full_text,
                 criteria=criteria,
                 max_score=assignment.max_score,
-                reference_text=reference_text,
+                reference_solution_urls=reference_urls if reference_urls else None,
                 lecture_context=lecture_context if lecture_context else None,
                 extra_image_urls=embedded_images if embedded_images else None,
             )

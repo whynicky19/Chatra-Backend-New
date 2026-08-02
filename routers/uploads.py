@@ -16,10 +16,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/upload", tags=["Upload"])
 
 # zip/rar убраны: архивы не нужны учебному флоу и не читаются парсерами
+# heic/heif: клиент (upload_limits.dart) давно разрешает их в пикере файлов
+# (дефолтный формат камеры iPhone), а бэкенд эти расширения тупо отклонял —
+# студент с iPhone не мог сдать фото домашки, если Settings > Camera >
+# Formats стоит "High Efficiency" (значение по умолчанию), пока сам не
+# сконвертирует файл руками. См. также services/ai_grader.py — HEIC для
+# GPT-4o vision конвертируется в JPEG (OpenAI не принимает image/heic).
 ALLOWED_EXTENSIONS = {
     "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx",
     "txt", "md", "csv", "rtf",
-    "png", "jpg", "jpeg", "gif", "webp",
+    "png", "jpg", "jpeg", "gif", "webp", "heic", "heif",
     "sm",
     "mp3", "wav", "m4a", "webm", "ogg", "mp4",
 }
@@ -35,6 +41,7 @@ _CONTENT_TYPE_BY_EXT = {
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "txt": "text/plain", "md": "text/markdown", "csv": "text/csv", "rtf": "application/rtf",
     "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp",
+    "heic": "image/heic", "heif": "image/heif",
     "sm": "text/plain",
     "mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4", "webm": "video/webm",
     "ogg": "audio/ogg", "mp4": "video/mp4",
@@ -59,6 +66,13 @@ MAGIC_BYTES: dict = {
 TEXT_EXTENSIONS = {"txt", "md", "csv", "rtf", "sm"}
 AUDIO_VIDEO_EXTENSIONS = {"mp3", "wav", "m4a", "webm", "ogg", "mp4"}
 
+# HEIC/HEIF — контейнер ISO base media file format (тот же "скелет", что у
+# MP4): байты 4:8 всегда "ftyp", 8:12 — код бренда. Значения ниже покрывают
+# и фото (heic/heix/mif1...), и live-фото/burst-варианты (heic вариаций
+# достаточно много у разных версий iOS).
+_HEIF_BRANDS = {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis",
+                b"hevm", b"hevs", b"mif1", b"msf1"}
+
 def _validate_file_content(content: bytes, ext: str) -> bool:
 
     if ext in TEXT_EXTENSIONS:
@@ -82,6 +96,8 @@ def _validate_file_content(content: bytes, ext: str) -> bool:
         return content[:4] == b"\x47\x49\x46\x38"
     if ext == "webp":
         return content[:4] == b"\x52\x49\x46\x46"
+    if ext in ("heic", "heif"):
+        return content[4:8] == b"ftyp" and content[8:12] in _HEIF_BRANDS
     if ext == "rar":
         return content[:4] == b"\x52\x61\x72\x21"
     if ext in ("zip",):

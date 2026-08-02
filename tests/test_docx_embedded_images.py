@@ -5,6 +5,7 @@ doc.paragraphs/doc.tables (текстовый слой тела документ
 что ответ вставлен как картинка, а не напечатан."""
 import asyncio
 import io
+import zipfile
 
 import pytest
 from docx import Document
@@ -117,6 +118,68 @@ def test_extract_docx_images_empty_for_docx_without_images():
 
 def test_extract_docx_images_corrupted_bytes_returns_empty_not_raise():
     assert ai_grader._extract_docx_images(b"not a docx at all") == []
+
+
+def test_extract_docx_images_resolves_colliding_rids_across_parts():
+    """Регресс: rId — НЕ глобальный идентификатор, каждая часть пакета
+    (document.xml, header1.xml, footer1.xml...) нумерует свои связи заново
+    со своего собственного _rels-файла. python-docx реально генерирует
+    header1.xml.rels и footer1.xml.rels, ОБА использующие "rId1" для разных
+    картинок — раньше единый общий словарь {rid: путь} на весь пакет тихо
+    схлопывал такие связи в одну (побеждала связь, обработанная последней),
+    и одно из двух изображений либо терялось, либо резолвилось не туда."""
+    image_header = _png_bytes((0, 255, 0))
+    image_footer = _png_bytes((255, 255, 0))
+
+    doc = Document()
+    doc.add_paragraph("Тело без картинок — коллизия только в колонтитулах.")
+    section = doc.sections[0]
+    section.header.is_linked_to_previous = False
+    section.header.paragraphs[0].add_run().add_picture(io.BytesIO(image_header), width=Inches(0.5))
+    section.footer.is_linked_to_previous = False
+    section.footer.paragraphs[0].add_run().add_picture(io.BytesIO(image_footer), width=Inches(0.5))
+    buf = io.BytesIO()
+    doc.save(buf)
+    data = buf.getvalue()
+
+    # Убеждаемся, что тестовый файл действительно воспроизводит коллизию
+    # (иначе тест ничего не проверяет) — оба .rels независимо используют rId1.
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        header_rels = z.read("word/_rels/header1.xml.rels").decode()
+        footer_rels = z.read("word/_rels/footer1.xml.rels").decode()
+    assert 'Id="rId1"' in header_rels and 'Id="rId1"' in footer_rels
+
+    images = ai_grader._extract_docx_images(data)
+    raw_bytes = [d for d, _ in images]
+    assert len(images) == 2
+    assert image_header in raw_bytes
+    assert image_footer in raw_bytes
+    # Правильное разрешение по частям означает и правильный порядок: header
+    # закономерно раньше footer. При схлопывании в общий словарь порядок
+    # ломался (последняя обработанная связь "побеждала" для всех частей).
+    assert raw_bytes.index(image_header) < raw_bytes.index(image_footer)
+
+
+def test_extract_docx_images_headers_ordered_before_footers():
+    """Колонтитулы раньше сортировались одним списком по алфавиту имени
+    файла ("footer1.xml" < "header1.xml"), из-за чего футер попадал в
+    контекст раньше хедера — не соответствует читаемому порядку страницы."""
+    image_header = _png_bytes((10, 20, 30))
+    image_footer = _png_bytes((40, 50, 60))
+
+    doc = Document()
+    doc.add_paragraph("Текст.")
+    section = doc.sections[0]
+    section.header.is_linked_to_previous = False
+    section.header.paragraphs[0].add_run().add_picture(io.BytesIO(image_header), width=Inches(0.3))
+    section.footer.is_linked_to_previous = False
+    section.footer.paragraphs[0].add_run().add_picture(io.BytesIO(image_footer), width=Inches(0.3))
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    images = ai_grader._extract_docx_images(buf.getvalue())
+    raw_bytes = [d for d, _ in images]
+    assert raw_bytes.index(image_header) < raw_bytes.index(image_footer)
 
 
 # ── _image_bytes_to_data_uri ────────────────────────────────────────────────

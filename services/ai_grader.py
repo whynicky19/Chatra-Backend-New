@@ -15,7 +15,18 @@ OPENAI_MODEL = "gpt-4o"
 # текстовый файл) — общий источник истины для routers/assignments.py
 # (ручная кнопка "Проверить ИИ") и services/deadline_checker.py (автопроверка
 # по дедлайну), чтобы оба пути одинаково отличали фото от документов.
-IMAGE_EXTS = {"png", "jpg", "jpeg", "webp", "bmp", "gif"}
+IMAGE_EXTS = {"png", "jpg", "jpeg", "webp", "bmp", "gif", "heic", "heif"}
+
+# HEIC/HEIF — дефолтный формат фото на iPhone (Settings > Camera > Formats >
+# "High Efficiency", включено по умолчанию). Клиент (upload_limits.dart)
+# давно разрешает их выбирать — без plugin-регистрации ниже ни один код на
+# Pillow (в т.ч. OpenAI vision, которому нужен JPEG/PNG/WEBP/GIF — HEIC он
+# не принимает вообще) их не откроет.
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except Exception:  # pillow-heif не установлен — HEIC-фото не прочитается,
+    pass            # остальные форматы продолжат работать как обычно.
 
 # Потолок текста студента в промпте. Заметно ниже лимита схемы (100k): хватает
 # для честной проверки, но ограничивает цену запроса и мусор в промпте.
@@ -322,20 +333,39 @@ def _extract_docx_images(data: bytes, max_images: int = MAX_DOCX_EMBEDDED_IMAGES
             if not media_names:
                 return []
 
-            # rId -> путь в архиве, по .rels документа/колонтитулов.
-            rid_to_path: dict[str, str] = {}
+            # rId -> путь в архиве, ОТДЕЛЬНО на каждую часть пакета (part_name
+            # -> {rid: media_path}). BUG, пойманный при повторном аудите: rId —
+            # это НЕ глобальный идентификатор, каждая часть (document.xml,
+            # header1.xml, footer1.xml...) нумерует свои связи заново со своего
+            # word/_rels/<часть>.xml.rels, независимо от остальных. document.xml
+            # и header1.xml на реальном docx из python-docx ОБА используют
+            # "rId1" для разных вещей — единый общий словарь одной строкой
+            # "rId1" -> path тихо схлопывал их: чья бы связь ни обработалась
+            # последней, побеждала для ВСЕХ частей, из-за чего изображение
+            # могло резолвиться не в ту картинку или вовсе теряться.
+            rels_by_part: dict[str, dict[str, str]] = {}
             for rel_name in (n for n in names if n.startswith("word/_rels/") and n.endswith(".rels")):
+                part_name = "word/" + rel_name[len("word/_rels/"):-len(".rels")]
                 try:
                     xml = z.read(rel_name).decode("utf-8", errors="ignore")
                 except Exception:
                     continue
+                mapping: dict[str, str] = {}
                 for rid, target in re.findall(r'Id="([^"]+)"[^>]*Target="([^"]+)"', xml):
                     if "media/" in target:
-                        rid_to_path[rid] = "word/media/" + target.rsplit("media/", 1)[-1]
+                        mapping[rid] = "word/media/" + target.rsplit("media/", 1)[-1]
+                if mapping:
+                    rels_by_part[part_name] = mapping
 
-            # Порядок появления rId: сначала тело документа, потом колонтитулы.
-            xml_parts = [n for n in ("word/document.xml",) if n in names] + sorted(
-                n for n in names if n.startswith("word/header") or n.startswith("word/footer")
+            # Порядок появления rId: тело документа, затем ВСЕ headerN.xml,
+            # затем ВСЕ footerN.xml — так соответствует читаемому порядку
+            # страницы (верх колонтитула перед низом). Раньше header/footer
+            # сортировались одним списком по алфавиту ("footer1" < "header1"),
+            # из-за чего футер оказывался в контексте раньше хедера.
+            xml_parts = (
+                [n for n in ("word/document.xml",) if n in names]
+                + sorted(n for n in names if n.startswith("word/header"))
+                + sorted(n for n in names if n.startswith("word/footer"))
             )
             ordered_paths: list[str] = []
             seen_paths: set[str] = set()
@@ -344,9 +374,10 @@ def _extract_docx_images(data: bytes, max_images: int = MAX_DOCX_EMBEDDED_IMAGES
                     xml = z.read(part).decode("utf-8", errors="ignore")
                 except Exception:
                     continue
+                part_rels = rels_by_part.get(part, {})
                 rids = re.findall(r'r:embed="([^"]+)"', xml) + re.findall(r'r:id="([^"]+)"', xml)
                 for rid in rids:
-                    path = rid_to_path.get(rid)
+                    path = part_rels.get(rid)
                     if path and path in media_names and path not in seen_paths:
                         ordered_paths.append(path)
                         seen_paths.add(path)
@@ -382,6 +413,94 @@ def _extract_docx_images(data: bytes, max_images: int = MAX_DOCX_EMBEDDED_IMAGES
         return []
 
 
+def _extract_pptx_images(data: bytes, max_images: int = MAX_DOCX_EMBEDDED_IMAGES) -> list[tuple[bytes, str]]:
+    """То же самое, что _extract_docx_images, но для .pptx: студенты сдают
+    презентации со скриншотами/фото/диаграммами на слайдах не реже, чем
+    docx с картинками вместо текста — тот же архитектурный пробел, тот же
+    фикс. PPTX — тот же контейнер OOXML (ZIP + Content Types + rels), только
+    другие пути: картинки в ppt/media/*, слайды — ppt/slides/slideN.xml,
+    связи — ppt/slides/_rels/slideN.xml.rels (та же ловушка с независимой
+    нумерацией rId по частям, что и в docx — see _extract_docx_images).
+    Порядок — по номеру слайда (числовая сортировка: slide2 раньше slide10,
+    а НЕ лексикографическая, где "slide10" < "slide2")."""
+    import hashlib
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            names = z.namelist()
+            media_names = sorted(n for n in names if n.startswith("ppt/media/"))
+            if not media_names:
+                return []
+
+            rels_by_part: dict[str, dict[str, str]] = {}
+            for rel_name in (
+                n for n in names if n.startswith("ppt/slides/_rels/") and n.endswith(".rels")
+            ):
+                part_name = "ppt/slides/" + rel_name[len("ppt/slides/_rels/"):-len(".rels")]
+                try:
+                    xml = z.read(rel_name).decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
+                mapping: dict[str, str] = {}
+                for rid, target in re.findall(r'Id="([^"]+)"[^>]*Target="([^"]+)"', xml):
+                    if "media/" in target:
+                        mapping[rid] = "ppt/media/" + target.rsplit("media/", 1)[-1]
+                if mapping:
+                    rels_by_part[part_name] = mapping
+
+            def _slide_number(path: str) -> int:
+                m = re.search(r"slide(\d+)\.xml$", path)
+                return int(m.group(1)) if m else 10**9
+
+            slide_parts = sorted(
+                (n for n in names if re.match(r"ppt/slides/slide\d+\.xml$", n)),
+                key=_slide_number,
+            )
+
+            ordered_paths: list[str] = []
+            seen_paths: set[str] = set()
+            for part in slide_parts:
+                try:
+                    xml = z.read(part).decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
+                part_rels = rels_by_part.get(part, {})
+                rids = re.findall(r'r:embed="([^"]+)"', xml) + re.findall(r'r:id="([^"]+)"', xml)
+                for rid in rids:
+                    path = part_rels.get(rid)
+                    if path and path in media_names and path not in seen_paths:
+                        ordered_paths.append(path)
+                        seen_paths.add(path)
+
+            for path in media_names:
+                if path not in seen_paths:
+                    ordered_paths.append(path)
+                    seen_paths.add(path)
+
+            images: list[tuple[bytes, str]] = []
+            seen_hashes: set[str] = set()
+            for path in ordered_paths:
+                if len(images) >= max_images:
+                    break
+                ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+                if ext not in _DOCX_IMAGE_MIME:
+                    continue
+                try:
+                    raw = z.read(path)
+                except Exception:
+                    continue
+                if not raw or len(raw) > MAX_DOCX_IMAGE_BYTES:
+                    continue
+                digest = hashlib.sha256(raw).hexdigest()
+                if digest in seen_hashes:
+                    continue
+                seen_hashes.add(digest)
+                images.append((raw, ext))
+            return images
+    except Exception:
+        return []
+
+
 def _image_bytes_to_data_uri(data: bytes, ext: str) -> Optional[str]:
     mime = _DOCX_IMAGE_MIME.get(ext.lower())
     if not mime or not data or len(data) > MAX_DOCX_IMAGE_BYTES:
@@ -390,15 +509,22 @@ def _image_bytes_to_data_uri(data: bytes, ext: str) -> Optional[str]:
     return f"data:image/{mime};base64,{b64}"
 
 
-async def _fetch_docx_embedded_images(url: str) -> list[str]:
-    """Data URI изображений, встроенных в .docx по этому URL — пусто для
-    любого другого формата или если ничего скачать/извлечь не удалось.
+_EMBEDDED_IMAGE_EXTRACTORS = {
+    "docx": _extract_docx_images,
+    "pptx": _extract_pptx_images,
+}
+
+
+async def _fetch_embedded_images(url: str) -> list[str]:
+    """Data URI изображений, встроенных в .docx/.pptx по этому URL — пусто
+    для любого другого формата или если ничего скачать/извлечь не удалось.
     Отдельный HTTP-запрос от _fetch_file_text (не переиспользуем скачанные
-    байты): вызывается только для .docx-вложений при проверке ИИ — не на
+    байты): вызывается только для docx/pptx-вложений при проверке ИИ — не на
     каждый показ материала, поэтому лишний round-trip не критичен.
     """
     ext = url.split("?")[0].rsplit(".", 1)[-1].lower() if "." in url.split("?")[0] else ""
-    if ext != "docx":
+    extractor = _EMBEDDED_IMAGE_EXTRACTORS.get(ext)
+    if extractor is None:
         return []
     from services.url_safety import is_safe_fetch_url
     if not is_safe_fetch_url(url):
@@ -410,15 +536,20 @@ async def _fetch_docx_embedded_images(url: str) -> list[str]:
             resp = await client.get(signed)
             if not resp.is_success:
                 return []
-            images = _extract_docx_images(resp.content)
+            images = extractor(resp.content)
     except Exception:
         return []
     uris = []
-    for raw, ext in images:
-        uri = _image_bytes_to_data_uri(raw, ext)
+    for raw, img_ext in images:
+        uri = _image_bytes_to_data_uri(raw, img_ext)
         if uri:
             uris.append(uri)
     return uris
+
+
+# Имя сохранено для обратной совместимости (используется в существующих
+# вызовах/тестах) — теперь это просто общий диспетчер docx/pptx.
+_fetch_docx_embedded_images = _fetch_embedded_images
 
 
 _EMBEDDED_IMAGES_INSTRUCTION = (
@@ -428,6 +559,33 @@ _EMBEDDED_IMAGES_INSTRUCTION = (
     "напечатанным текстом — это НЕ повод снижать балл за этот критерий: "
     "оценивай содержание, а не способ подачи."
 )
+
+_REFERENCE_IMAGES_CAPTION = (
+    "Ниже — изображения из ЭТАЛОННОГО решения учителя (скриншоты/сканы/фото/"
+    "схемы/формулы из reference-файла). Это НЕ работа студента — используй "
+    "их только чтобы понять, что должно быть в хорошем ответе, как и "
+    "текстовый эталон выше. Не путай их с изображениями работы студента."
+)
+
+
+async def _resolve_reference_material(urls: list) -> tuple:
+    """Текст + встроенные изображения (docx/pptx) эталонного решения учителя
+    — общая логика для текстового и vision-пути грейдинга, единая для ручной
+    кнопки "Проверить ИИ" и автопроверки по дедлайну. Раньше извлекался
+    только текст (_fetch_file_text) — учитель мог вставить в reference-файл
+    скриншот/скан/формулу-картинку, и модель эту часть эталона просто не
+    видела, хотя ровно то же самое для СДАЧИ студента уже умели читать."""
+    if not urls:
+        return None, []
+    ref_parts = []
+    ref_images: list = []
+    for ref_url in urls:
+        ref_content = await _fetch_file_text(ref_url)
+        if ref_content.strip() and not ref_content.startswith("["):
+            ref_parts.append(ref_content[:6000])
+        ref_images.extend(await _fetch_embedded_images(ref_url))
+    reference_text = "\n\n---\n\n".join(ref_parts) if ref_parts else None
+    return reference_text, ref_images[:MAX_GRADING_IMAGES]
 
 
 def _looks_garbled(text: str) -> bool:
@@ -479,6 +637,80 @@ async def _ocr_pdf_fallback(data: bytes, max_pages: int = MAX_OCR_PDF_PAGES) -> 
         return await asyncio.to_thread(_run)
     except Exception:
         return ""
+
+
+# Сканы/фото-конспекты, вставленные в PDF (частый случай экспорта из
+# сканер-приложений), раньше доходили до модели ТОЛЬКО через OCR-текст
+# (_ocr_pdf_fallback) — а tesseract на рукописном тексте и особенно на
+# формулах регулярно даёт мусор или пустоту. Тот же контент, загруженный как
+# отдельный .jpg, уже читается через GPT-4o vision (grade_handwritten_
+# submission) заметно надёжнее. Студент не должен получать разное качество
+# проверки в зависимости от того, сохранил ли телефон скан в .jpg или в
+# .pdf — поэтому рендерим страницы PDF без текстового слоя как изображения и
+# тоже отдаём их vision, а не полагаемся на OCR-текст в одиночку.
+MAX_SCANNED_PDF_PAGES = 4
+
+
+async def _fetch_pdf_page_images(url: str) -> list[str]:
+    """Data URI страниц PDF-файла — но ТОЛЬКО если в нём нет нормального
+    текстового слоя (иначе это обычный печатный PDF, картинки страниц ему не
+    нужны — только раздувают промпт). Пусто для любого другого формата."""
+    ext = url.split("?")[0].rsplit(".", 1)[-1].lower() if "." in url.split("?")[0] else ""
+    if ext != "pdf":
+        return []
+    from services.url_safety import is_safe_fetch_url
+    if not is_safe_fetch_url(url):
+        return []
+    from services.file_urls import sign_upload_url
+    signed = sign_upload_url(url)
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            resp = await client.get(signed)
+            if not resp.is_success:
+                return []
+            data = resp.content
+    except Exception:
+        return []
+
+    def _has_text_layer() -> bool:
+        try:
+            import pdfplumber
+            with pdfplumber.open(io.BytesIO(data)) as pdf:
+                pages_text = [p.extract_text(layout=True) or "" for p in pdf.pages[:5]]
+            combined = "\n".join(pages_text)
+            return bool(combined.strip()) and not _looks_garbled(combined)
+        except Exception:
+            return False
+
+    def _render_pages() -> list[bytes]:
+        import pdfplumber
+        rendered = []
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            for page in pdf.pages[:MAX_SCANNED_PDF_PAGES]:
+                try:
+                    image = page.to_image(resolution=150).original.convert("RGB")
+                    buf = io.BytesIO()
+                    image.save(buf, format="JPEG", quality=70)
+                    rendered.append(buf.getvalue())
+                except Exception:
+                    continue
+        return rendered
+
+    try:
+        has_text = await asyncio.to_thread(_has_text_layer)
+        if has_text:
+            return []
+        pages_bytes = await asyncio.to_thread(_render_pages)
+    except Exception:
+        return []
+
+    uris = []
+    for raw in pages_bytes:
+        if not raw or len(raw) > MAX_DOCX_IMAGE_BYTES:
+            continue
+        b64 = base64.b64encode(raw).decode("ascii")
+        uris.append(f"data:image/jpeg;base64,{b64}")
+    return uris
 
 
 async def _fetch_file_text(url: str) -> str:
@@ -572,7 +804,7 @@ async def _fetch_file_text(url: str) -> str:
                 return resp.content.decode("utf-8", errors="ignore")[:20000]
 
 
-            elif ext in ("png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"):
+            elif ext in ("png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "heic", "heif"):
                 return "[Изображение — текст недоступен]"
 
 
@@ -585,6 +817,35 @@ async def _fetch_file_text(url: str) -> str:
 
     except Exception:
         return ""
+
+
+def _heic_to_jpeg(data: bytes) -> Optional[bytes]:
+    """OpenAI vision принимает только png/jpeg/webp/gif — HEIC(HEIF) не
+    входит в этот список вообще, поэтому недостаточно просто "разрешить"
+    формат на загрузке (см. routers/uploads.py): без конвертации запрос к
+    модели с data:image/heic;... либо отклоняется, либо (в лучшем случае)
+    молча не читается. Требует pillow-heif (register_heif_opener в момент
+    импорта этого модуля) — без него возвращает None, как любая другая
+    ошибка декодирования.
+
+    ImageOps.exif_transpose ОБЯЗАТЕЛЕН: телефон хранит портретное фото как
+    "landscape"-пиксели + EXIF-тег поворота (90/180/270°), а не физически
+    повёрнутую картинку. Простой .save(format="JPEG") эту метаданную не
+    переносит — на выходе получался бы правильный по байтам, но перевёрнутый
+    набок JPEG (проверено: naive-конвертация теряла orientation=6 и молча
+    отдавала неповёрнутые пиксели). exif_transpose впекает поворот В пиксели
+    один раз здесь, чтобы правильная ориентация не зависела от того, умеет
+    ли получатель (OpenAI vision) сам читать EXIF."""
+    try:
+        from PIL import Image, ImageOps
+        img = Image.open(io.BytesIO(data))
+        img = ImageOps.exif_transpose(img)
+        img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=90)
+        return buf.getvalue()
+    except Exception:
+        return None
 
 
 async def _fetch_image_data_uri(url: str) -> Optional[str]:
@@ -606,11 +867,18 @@ async def _fetch_image_data_uri(url: str) -> Optional[str]:
                 return None
             if len(resp.content) > MAX_IMAGE_BYTES:
                 return None
+            content = resp.content
+            ext = url.split("?")[0].rsplit(".", 1)[-1].lower()
             content_type = resp.headers.get("content-type", "").lower()
-            if not content_type.startswith("image/"):
-                ext = url.split("?")[0].rsplit(".", 1)[-1].lower()
+            if ext in ("heic", "heif") or "heic" in content_type or "heif" in content_type:
+                converted = await asyncio.to_thread(_heic_to_jpeg, content)
+                if converted is None:
+                    return None
+                content = converted
+                content_type = "image/jpeg"
+            elif not content_type.startswith("image/"):
                 content_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
-            b64 = base64.b64encode(resp.content).decode("ascii")
+            b64 = base64.b64encode(content).decode("ascii")
             return f"data:{content_type};base64,{b64}"
     except Exception:
         return None
@@ -752,7 +1020,7 @@ async def grade_handwritten_submission(
     text: str,
     criteria: list,
     max_score: int = 100,
-    reference_text: Optional[str] = None,
+    reference_solution_urls: Optional[list] = None,
     lecture_context: Optional[str] = None,
     extra_image_urls: Optional[list] = None,
 ) -> dict:
@@ -765,9 +1033,18 @@ async def grade_handwritten_submission(
     routers/assignments.py (backend — единственный источник истины).
 
     extra_image_urls — уже готовые data:-URI (например картинки, встроенные
-    в приложенный .docx, см. _fetch_docx_embedded_images) — в отличие от
-    image_urls это не ссылки на файлы, скачивать их не нужно.
+    в приложенный .docx/.pptx студента, см. _fetch_embedded_images) — в
+    отличие от image_urls это не ссылки на файлы, скачивать их не нужно.
+
+    reference_solution_urls — сырые URL эталонных файлов учителя: текст и
+    встроенные изображения эталона извлекаются здесь же (_resolve_reference_
+    material), а не пред-фетчатся вызывающим кодом — раньше это дублировалось
+    в routers/assignments.py И services/deadline_checker.py по отдельности
+    (ручная и авто-проверка рисковали разойтись), и картинки эталона не
+    извлекались вовсе.
     """
+    reference_text, reference_images = await _resolve_reference_material(reference_solution_urls or [])
+
     data_uris = []
     for url in image_urls[:MAX_GRADING_IMAGES]:
         data_uri = await _fetch_image_data_uri(url)
@@ -789,6 +1066,10 @@ async def grade_handwritten_submission(
     content = [{"type": "text", "text": user_text}]
     for data_uri in data_uris:
         content.append({"type": "image_url", "image_url": {"url": data_uri}})
+    if reference_images:
+        content.append({"type": "text", "text": _REFERENCE_IMAGES_CAPTION})
+        for data_uri in reference_images:
+            content.append({"type": "image_url", "image_url": {"url": data_uri}})
 
     if not data_uris:
         # Ни одно фото не удалось скачать/декодировать — распознавать нечего,
@@ -825,8 +1106,9 @@ async def grade_submission(
     embedded_image_urls: Optional[list] = None,
 ) -> dict:
     """embedded_image_urls — data:-URI изображений, встроенных в приложённые
-    .docx (скриншоты/сканы/фото/схемы/формулы вместо печатного текста, см.
-    _fetch_docx_embedded_images). Если они есть, запрос идёт vision-путём —
+    .docx/.pptx студента (скриншоты/сканы/фото/схемы/формулы вместо
+    печатного текста, см. _fetch_embedded_images). Если они есть (сами по
+    себе или вместе с картинками эталона учителя), запрос идёт vision-путём —
     модель видит и текст, и картинки в одном сообщении."""
     parts = []
     if text and text.strip():
@@ -848,15 +1130,7 @@ async def grade_submission(
     if reference_solution_url and reference_solution_url not in all_ref_urls:
         all_ref_urls.append(reference_solution_url)
 
-    reference_text: Optional[str] = None
-    if all_ref_urls:
-        ref_parts = []
-        for ref_url in all_ref_urls:
-            ref_content = await _fetch_file_text(ref_url)
-            if ref_content.strip() and not ref_content.startswith("["):
-                ref_parts.append(ref_content[:6000])
-        if ref_parts:
-            reference_text = "\n\n---\n\n".join(ref_parts)
+    reference_text, reference_images = await _resolve_reference_material(all_ref_urls)
 
     system_prompt = _build_system_prompt()
     user_text = _build_user_prompt(
@@ -868,11 +1142,15 @@ async def grade_submission(
     )
 
     images = (embedded_image_urls or [])[:MAX_GRADING_IMAGES]
-    if images:
+    if images or reference_images:
         system_prompt = system_prompt + "\n\n" + _EMBEDDED_IMAGES_INSTRUCTION
         content = [{"type": "text", "text": user_text}]
         for data_uri in images:
             content.append({"type": "image_url", "image_url": {"url": data_uri}})
+        if reference_images:
+            content.append({"type": "text", "text": _REFERENCE_IMAGES_CAPTION})
+            for data_uri in reference_images:
+                content.append({"type": "image_url", "image_url": {"url": data_uri}})
         user_message = content
     else:
         user_message = user_text

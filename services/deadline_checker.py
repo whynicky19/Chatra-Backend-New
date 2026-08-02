@@ -14,7 +14,8 @@ from services.ai_grader import (
     grade_submission as _ai_grade,
     grade_handwritten_submission as _ai_grade_handwritten,
     _fetch_file_text,
-    _fetch_docx_embedded_images,
+    _fetch_embedded_images,
+    _fetch_pdf_page_images,
     AI_CONFIDENCE_THRESHOLD,
     IMAGE_EXTS,
 )
@@ -103,25 +104,34 @@ async def _grade_one(db: Session, submission, assignment, org_type: str = "unive
                     if full_text
                     else f"{label}:\n{file_text}"
                 )
-            embedded_images.extend(await _fetch_docx_embedded_images(url))
+            embedded_images.extend(await _fetch_embedded_images(url))
+            # PDF-скан без текстового слоя — рендерим страницы как картинки
+            # для vision (см. ai_grader._fetch_pdf_page_images), тот же фикс,
+            # что и в ручном пути (routers/assignments.py).
+            embedded_images.extend(await _fetch_pdf_page_images(url))
 
         if not full_text and not image_urls and not embedded_images:
             full_text = f"[Студент сдал файл(ы), но прочитать не удалось: {', '.join(all_urls)}]"
 
         lecture_context = crud_posts.get_lecture_context(db, assignment.class_id, limit=5)
 
+        # BUG (найден при аудите): раньше здесь брался ТОЛЬКО
+        # assignment.reference_solution_url — для сдач по варианту задания
+        # (submission.variant_number) это не тот эталон, а зачастую и вовсе
+        # пусто (у заданий с вариантами общий эталон обычно не заполняют,
+        # эталон живёт в AssignmentVariant). Одна и та же сдача проверялась
+        # с эталоном при ручном "Проверить ИИ" и БЕЗ него при автопроверке
+        # по дедлайну. crud.resolve_reference_solution_urls — общая логика
+        # с ручным путём (routers/assignments.py).
+        reference_urls = crud.resolve_reference_solution_urls(db, assignment, submission)
+
         if image_urls:
-            reference_text = None
-            if assignment.reference_solution_url:
-                ref_content = await _fetch_file_text(assignment.reference_solution_url)
-                if ref_content.strip() and not ref_content.startswith("["):
-                    reference_text = ref_content[:6000]
             result = await _ai_grade_handwritten(
                 image_urls=image_urls,
                 text=full_text,
                 criteria=criteria,
                 max_score=assignment.max_score,
-                reference_text=reference_text,
+                reference_solution_urls=reference_urls if reference_urls else None,
                 lecture_context=lecture_context or None,
                 extra_image_urls=embedded_images or None,
             )
@@ -131,7 +141,7 @@ async def _grade_one(db: Session, submission, assignment, org_type: str = "unive
                 file_url=None,
                 criteria=criteria,
                 max_score=assignment.max_score,
-                reference_solution_url=assignment.reference_solution_url or None,
+                reference_solution_urls=reference_urls if reference_urls else None,
                 lecture_context=lecture_context or None,
                 embedded_image_urls=embedded_images or None,
             )
