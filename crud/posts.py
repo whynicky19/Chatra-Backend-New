@@ -33,6 +33,11 @@ def create_new_post(db: Session, title: str, body: str, user_id: int) -> Posts:
     db.add(post)
     db.commit()
     db.refresh(post)
+    if m:
+        # Инжест в RAG (services/rag_ingest.py) — фоново, не блокирует ответ
+        # на создание поста. Не-лекционные посты (m is None) не индексируем.
+        from services.rag_ingest import ingest_lecture_bg
+        ingest_lecture_bg(post.id)
     return post
 
 def get_post_by_id(db: Session, post_id: int):
@@ -124,4 +129,9 @@ def update_post(db: Session, post_id: int, title: str, body: str) -> Posts:
     db.refresh(post)
     # BE-10: обложку заменили (или убрали) — старый файл больше не нужен.
     delete_replaced_post_cover(old_body, body)
+    if _LECTURE_TITLE_RE.match(title or ""):
+        # Ре-индекс: content_hash в rag_ingest пропустит источники, которые
+        # фактически не изменились, пересчитает только реально новые/правленые.
+        from services.rag_ingest import ingest_lecture_bg
+        ingest_lecture_bg(post.id)
     return post

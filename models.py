@@ -310,7 +310,20 @@ class Grade(Base):
 EMBED_DIM = 1536
 
 class RagDocument(Base):
+    """Один источник материала лекции (текст самой лекции ИЛИ один
+    прикреплённый файл) — единица инжеста в RAG-конвейер класса
+    (services/rag_ingest.py). Раньше эта таблица существовала только в
+    schema.py и нигде не заполнялась — репетитор класса работал через
+    client-side lecture_context (весь текст лекций целиком в промпте).
+    Теперь это реальный источник для векторного поиска (services/rag_search.py)."""
     __tablename__ = "rag_documents"
+    __table_args__ = (
+        # Идемпотентность инжеста: повторный запуск на тот же файл/тот же
+        # "текст лекции" не плодит дублей — апдейтит существующую строку.
+        # file_url синтетический ("lecture-body:{post_id}") для текста самой
+        # лекции, чтобы колонка была NOT NULL и участвовала в уникальности.
+        UniqueConstraint("post_id", "file_url", name="ux_rag_documents_post_file"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
@@ -318,8 +331,23 @@ class RagDocument(Base):
     org_type: Mapped[str] = mapped_column(String, nullable=False, default="university")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
+    # Лекция (Posts с заголовком "[LECTURE][class_id]...") — источник этого
+    # документа. ON DELETE CASCADE: удалили лекцию — её RAG-данные исчезают
+    # вместе с ней (посты/классы/чанки — см. crud/posts.py::delete_post).
+    post_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("posts.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    # Денормализовано для быстрой фильтрации без парсинга Posts.title на
+    # каждый поиск — тот же приём, что у AiUsageLog.class_id/AiMessage.class_id.
+    class_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    file_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # SHA-256 исходных байт/текста — пропускаем повторную генерацию
+    # эмбеддингов, если содержимое не изменилось с прошлого инжеста.
+    content_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+
     chunks: Mapped[list["RagChunk"]] = relationship(
-        back_populates="document", cascade="all, delete-orphan"
+        back_populates="document", cascade="all, delete-orphan",
+        order_by="RagChunk.chunk_index",
     )
 
 class RagChunk(Base):
@@ -332,7 +360,24 @@ class RagChunk(Base):
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     token_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # JSON-массив float — единственный источник истины на SQLite. На
+    # Postgres после миграции 018 параллельно заполняется embedding_vec
+    # (VECTOR(1536), вне ORM-модели — как и было задумано в 002_rag_pgvector.sql)
+    # для ANN-поиска через pgvector; эта колонка остаётся фолбэком/источником
+    # правды для (ре)миграции индекса.
     embedding: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # Денормализовано с RagDocument — поиск идёт по rag_chunks напрямую, без
+    # JOIN на каждый запрос (та же логика денормализации, что и выше).
+    class_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    post_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    org_type: Mapped[str] = mapped_column(String, nullable=False, default="university")
+    # Номер страницы источника (PDF) — NULL, если неприменимо (docx-текст,
+    # подпись картинки и т.п.).
+    page_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # "text" (обычный текст/OCR) | "image_caption" (vision-подпись картинки:
+    # скриншот/скан/диаграмма/формула — см. services/rag_ingest.py).
+    source_type: Mapped[str] = mapped_column(String(16), nullable=False, default="text", server_default="text")
 
     document: Mapped["RagDocument"] = relationship(back_populates="chunks")
 
