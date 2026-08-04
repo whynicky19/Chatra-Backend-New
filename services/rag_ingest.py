@@ -27,6 +27,7 @@ import logging
 import threading
 
 import httpx
+from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -198,6 +199,19 @@ async def _embed_and_store(
             post_id=post_id,
             org_type=org_type,
         ))
+
+    # embedding_vec (VECTOR(1536), вне ORM-модели — см. models.py:RagChunk) не
+    # заполняется через ORM insert выше, поэтому дублируем его отдельным
+    # UPDATE сразу после вставки — иначе services/rag_search.py::_search_pgvector
+    # фильтрует "WHERE embedding_vec IS NOT NULL" и молча не находит ни одного
+    # свежего чанка (а Python-фолбэк не срабатывает, т.к. пустой список — не
+    # сигнал "pgvector недоступен", это валидный ответ "ничего не нашлось").
+    if db.bind is not None and db.bind.dialect.name == "postgresql":
+        db.flush()
+        db.execute(sql_text(
+            "UPDATE rag_chunks SET embedding_vec = embedding::vector "
+            "WHERE document_id = :doc_id AND embedding_vec IS NULL"
+        ), {"doc_id": document_id})
 
 
 async def ingest_lecture(db: Session, post_id: int) -> None:

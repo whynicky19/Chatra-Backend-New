@@ -201,7 +201,15 @@ def assemble_context(db: Session, class_id: int, chunks: list) -> str:
             order.append(c.post_id)
         by_post[c.post_id].append(c)
     for pid in by_post:
-        by_post[pid].sort(key=lambda c: (c.chunk_index, c.page_number or 0))
+        # chunk_index нумеруется ОТДЕЛЬНО в каждом RagDocument (текст лекции
+        # и каждый прикреплённый файл — разные документы, оба начинаются с
+        # 0, см. services/rag_ingest.py::_embed_and_store) — сортировка
+        # только по chunk_index перемешивала бы абзацы текста лекции с
+        # абзацами файла, если у обоих больше одного чанка. document_id
+        # сначала — чанки одного источника идут подряд, в исходном порядке;
+        # порядок источников соответствует порядку инжеста (текст лекции
+        # всегда первым, см. sources в rag_ingest.py::ingest_lecture).
+        by_post[pid].sort(key=lambda c: (c.document_id, c.chunk_index, c.page_number or 0))
 
     from crud.posts import get_all_posts, _LECTURE_TITLE_STRIP_RE
     all_lecture_posts = get_all_posts(db, class_id=class_id)
