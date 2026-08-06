@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 
 import schemas
 from crud import assignments as crud
-from crud import classes as crud_classes
 from crud import cohorts as crud_cohorts
 from db import get_db
 from deps import get_current_user, get_current_teacher
@@ -17,7 +16,6 @@ from permissions import (
     require_class_access,
     require_active_cohort_access,
     require_assignment_owner,
-    require_variant_of_owned_assignment,
     require_submission_class_owner,
 )
 from services.ai_grader import grade_submission as _ai_grade
@@ -45,11 +43,11 @@ def _check_assignment_access(db: Session, assignment, current_user):
         raise HTTPException(status_code=404, detail="Assignment not found")
 
 
-def _with_cohort_deadline(assignment, due_date) -> schemas.AssignmentResponseFull:
+def _with_cohort_deadline(assignment, due_date) -> schemas.AssignmentResponse:
     """Ответ задания с датой дедлайна из потока пользователя (единая логика
     в crud_cohorts.resolve_deadline/deadlines_map). ORM-объект не мутируем —
     случайный commit записал бы чужую дату в deprecated-поле."""
-    resp = schemas.AssignmentResponseFull.model_validate(assignment)
+    resp = schemas.AssignmentResponse.model_validate(assignment)
     resp.deadline = due_date
     return resp
 
@@ -127,7 +125,7 @@ def _notify_needs_review(submission, assignment) -> None:
 
 @router.post(
     "/assignments/",
-    response_model=schemas.AssignmentResponseFull,
+    response_model=schemas.AssignmentResponse,
     status_code=status.HTTP_201_CREATED,
 )
 def create_assignment(
@@ -142,7 +140,8 @@ def create_assignment(
         title=body.title,
         description=body.description,
         criteria=criteria_list,
-        max_score=body.max_score,
+        # Макс. балл больше не настраивается — всегда 100 (см. AssignmentCreate).
+        max_score=100,
         deadline=body.deadline,
         created_by=current_user.id,
         reference_solution_url=body.reference_solution_url,
@@ -157,7 +156,7 @@ def create_assignment(
     return obj
 
 
-@router.get("/assignments/", response_model=List[schemas.AssignmentResponseFull])
+@router.get("/assignments/", response_model=List[schemas.AssignmentResponse])
 def list_assignments(
     class_id: Optional[int] = None,
     active_only: bool = False,
@@ -242,7 +241,7 @@ def my_rating(
         raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
 
 
-@router.get("/assignments/{assignment_id}", response_model=schemas.AssignmentResponseFull)
+@router.get("/assignments/{assignment_id}", response_model=schemas.AssignmentResponse)
 def get_assignment(
     assignment_id: int,
     db: Session = Depends(get_db),
@@ -256,7 +255,7 @@ def get_assignment(
     return _with_cohort_deadline(obj, due_date)
 
 
-@router.put("/assignments/{assignment_id}", response_model=schemas.AssignmentResponseFull)
+@router.put("/assignments/{assignment_id}", response_model=schemas.AssignmentResponse)
 def update_assignment(
     assignment_id: int,
     body: schemas.AssignmentUpdate,
@@ -293,67 +292,6 @@ def delete_assignment(
 
 
 
-
-@router.get(
-    "/assignments/{assignment_id}/variants",
-    response_model=List[schemas.VariantResponse],
-)
-def list_variants(
-    assignment_id: int,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-
-    obj = crud.get_assignment(db, assignment_id)
-    if not obj:
-        raise HTTPException(status_code=404, detail="Assignment not found")
-    _check_assignment_access(db, obj, current_user)
-    return crud_classes.get_variants(db, assignment_id)
-
-
-@router.post(
-    "/assignments/{assignment_id}/variants",
-    response_model=schemas.VariantResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def add_variant(
-    assignment_id: int,
-    body: schemas.VariantCreate,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_teacher),
-):
-    obj = crud.get_assignment(db, assignment_id)
-    if not obj:
-        raise HTTPException(status_code=404, detail="Assignment not found")
-    require_assignment_owner(db, obj, current_user)  # SEC-2
-    return crud_classes.add_variant(
-        db=db,
-        assignment_id=assignment_id,
-        variant_number=body.variant_number,
-        reference_solution_url=body.reference_solution_url,
-        title=body.title,
-    )
-
-
-@router.delete(
-    "/assignments/{assignment_id}/variants/{variant_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
-def delete_variant(
-    assignment_id: int,
-    variant_id: int,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_teacher),
-):
-    # SEC-3: вариант должен принадлежать этому заданию владельца — иначе
-    # любой преподаватель удалял любой вариант по одному variant_id (IDOR).
-    require_variant_of_owned_assignment(db, assignment_id, variant_id, current_user)
-    if not crud_classes.delete_variant(db, variant_id):
-        raise HTTPException(status_code=404, detail="Variant not found")
-
-
-
-
 @router.post(
     "/assignments/{assignment_id}/submit",
     response_model=schemas.SubmissionResponse,
@@ -380,21 +318,6 @@ def submit_assignment(
 
     if not body.text_content and not body.file_url and not body.file_urls:
         raise HTTPException(status_code=422, detail="Provide text_content, file_url or file_urls")
-
-    # Validate variant_number if variants exist
-    variants = crud_classes.get_variants(db, assignment_id)
-    if variants and body.variant_number is None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Это задание имеет варианты ({len(variants)} шт.). Укажите variant_number.",
-        )
-    if body.variant_number and variants:
-        valid_numbers = [v.variant_number for v in variants]
-        if body.variant_number not in valid_numbers:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Вариант {body.variant_number} не найден. Доступные: {valid_numbers}",
-            )
 
     # Просрочка считается по дедлайну потока ученика; сдача якорится к deadline_id.
     deadline_row, due_date = crud_cohorts.resolve_deadline(db, assignment, current_user)

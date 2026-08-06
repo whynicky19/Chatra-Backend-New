@@ -1,7 +1,7 @@
 from typing import Optional, List
 from sqlalchemy.orm import Session
 from models import (
-    Class, User, AssignmentVariant, Assignment, Submission, Grade, Deadline,
+    Class, User, Assignment, Submission, Grade, Deadline,
     Cohort, cohort_students,
 )
 from sqlalchemy import func
@@ -151,57 +151,6 @@ def get_members(db: Session, class_id: int, cohort_id: Optional[int] = None) -> 
         .all()
     )
 
-def add_variant(
-    db: Session,
-    assignment_id: int,
-    variant_number: int,
-    reference_solution_url: str,
-    title: Optional[str] = None,
-) -> AssignmentVariant:
-    existing = db.query(AssignmentVariant).filter(
-        AssignmentVariant.assignment_id == assignment_id,
-        AssignmentVariant.variant_number == variant_number,
-    ).first()
-    if existing:
-        if existing.reference_solution_url:
-            delete_upload_file(existing.reference_solution_url)
-        db.delete(existing)
-        db.flush()
-
-    obj = AssignmentVariant(
-        assignment_id=assignment_id,
-        variant_number=variant_number,
-        title=title or f"Вариант {variant_number}",
-        reference_solution_url=reference_solution_url,
-    )
-    db.add(obj)
-    db.commit()
-    db.refresh(obj)
-    return obj
-
-def get_variants(db: Session, assignment_id: int) -> List[AssignmentVariant]:
-    return (
-        db.query(AssignmentVariant)
-        .filter(AssignmentVariant.assignment_id == assignment_id)
-        .order_by(AssignmentVariant.variant_number)
-        .all()
-    )
-
-def delete_variant(db: Session, variant_id: int) -> bool:
-    obj = db.query(AssignmentVariant).filter(AssignmentVariant.id == variant_id).first()
-    if not obj:
-        return False
-    if obj.reference_solution_url:
-        delete_upload_file(obj.reference_solution_url)
-    db.delete(obj)
-    db.commit()
-    return True
-
-def get_variant_by_number(db: Session, assignment_id: int, variant_number: int) -> Optional[AssignmentVariant]:
-    return db.query(AssignmentVariant).filter(
-        AssignmentVariant.assignment_id == assignment_id,
-        AssignmentVariant.variant_number == variant_number,
-    ).first()
 
 def get_student_rating(db: Session, class_id: Optional[int] = None,
                        org_type: Optional[str] = None,

@@ -27,7 +27,6 @@ load_dotenv(os.path.join(BACKEND, ".env"))
 from db import SessionLocal
 from models import (
     Assignment,
-    AssignmentVariant,
     Posts,
     Submission,
 )
@@ -105,23 +104,6 @@ try:
             print(f"assignment {a.id}: reference_solution_url мёртв -> NULL")
             a.reference_solution_url = None
             bump("assignments.reference_solution_url")
-
-    # Варианты задания несут свой эталон (тоже одиночный URL или JSON-массив).
-    # Колонка NOT NULL, поэтому вместо None пишем "[]" (читатель это переваривает).
-    for v in db.query(AssignmentVariant).all():
-        raw = v.reference_solution_url
-        if raw and isinstance(raw, str) and raw.lstrip().startswith("["):
-            urls = parse_url_list(raw)
-            if urls is not None:
-                alive = [u for u in urls if not is_dead(str(u))]
-                if len(alive) != len(urls):
-                    print(f"variant {v.id}: reference_solution_url {len(urls)} -> {len(alive)}")
-                    v.reference_solution_url = json.dumps(alive, ensure_ascii=False)
-                    bump("assignment_variants.reference_solution_url")
-        elif is_dead(raw):
-            print(f"variant {v.id}: reference_solution_url мёртв -> []")
-            v.reference_solution_url = "[]"
-            bump("assignment_variants.reference_solution_url")
 
     for post in db.query(Posts).filter(Posts.body.like('%"files"%')).all():
         try:

@@ -6,7 +6,7 @@
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from models import Class, Assignment, AssignmentVariant, class_members
+from models import Class, Assignment, class_members
 from crud import cohorts as crud_cohorts
 
 
@@ -28,28 +28,6 @@ def require_class_owner(db: Session, class_id: int, current_user) -> Class:
 def require_assignment_owner(db: Session, assignment, current_user) -> Class:
     """Мутации задания/варианта/оценки — по владению классом задания."""
     return require_class_owner(db, assignment.class_id, current_user)
-
-
-def require_variant_of_owned_assignment(
-    db: Session, assignment_id: int, variant_id: int, current_user
-) -> AssignmentVariant:
-    """SEC-3: удаление/правка варианта. Вариант должен принадлежать именно
-    этому заданию, а задание — владельцу (или админу). Иначе любой
-    преподаватель удалит любой вариант по одному variant_id (IDOR)."""
-    variant = (
-        db.query(AssignmentVariant)
-        .filter(AssignmentVariant.id == variant_id)
-        .first()
-    )
-    if not variant or variant.assignment_id != assignment_id:
-        raise HTTPException(status_code=404, detail="Variant not found")
-    assignment = (
-        db.query(Assignment).filter(Assignment.id == assignment_id).first()
-    )
-    if not assignment:
-        raise HTTPException(status_code=404, detail="Assignment not found")
-    require_assignment_owner(db, assignment, current_user)
-    return variant
 
 
 def require_submission_class_owner(db: Session, submission, current_user):

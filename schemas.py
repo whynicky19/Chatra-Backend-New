@@ -130,16 +130,12 @@ class CriterionIn(BaseModel):
     # BE-5: вес критерия не может быть отрицательным (сумма весов формирует
     # максимум и проценты рейтинга).
     weight: int = Field(ge=0, le=1000)
-    description: Optional[str] = Field(default=None, max_length=MAX_DESCRIPTION_LEN)
 
 class AssignmentCreate(BaseModel):
     class_id: int
     title: str = Field(max_length=MAX_TITLE_LEN)
     description: Optional[str] = Field(default=None, max_length=MAX_DESCRIPTION_LEN)
     criteria: List[CriterionIn]
-    # BE-5: max_score строго положителен — 0/отрицательный ломает деление в
-    # проценты рейтинга (my_rating) и обесмысливает клампинг оценки.
-    max_score: int = Field(default=100, ge=1, le=1000)
     deadline: Optional[datetime] = None
     reference_solution_url: Optional[str] = None
 
@@ -147,7 +143,6 @@ class AssignmentUpdate(BaseModel):
     title: Optional[str] = Field(default=None, max_length=MAX_TITLE_LEN)
     description: Optional[str] = Field(default=None, max_length=MAX_DESCRIPTION_LEN)
     criteria: Optional[List[CriterionIn]] = None
-    max_score: Optional[int] = Field(default=None, ge=1, le=1000)
     deadline: Optional[datetime] = None
     is_active: Optional[bool] = None
     reference_solution_url: Optional[str] = None
@@ -273,26 +268,6 @@ class ClassJoinByCode(BaseModel):
 
 class InviteCodeResponse(BaseModel):
     invite_code: str
-
-class VariantCreate(BaseModel):
-    variant_number: int
-    title: Optional[str] = None
-    reference_solution_url: str
-
-class VariantResponse(BaseModel):
-    id: int
-    assignment_id: int
-    variant_number: int
-    title: Optional[str] = None
-    reference_solution_url: str
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-class AssignmentResponseFull(AssignmentResponse):
-    variants: List[VariantResponse] = []
-
-    model_config = ConfigDict(from_attributes=True)
 
 class SubmissionCreateV2(BaseModel):
     text_content: Optional[str] = Field(default=None, max_length=MAX_SUBMISSION_TEXT_LEN)

@@ -1,5 +1,5 @@
-"""Регрессионные тесты второго аудита безопасности (SEC-1..SEC-6):
-подписанные файлы, владение классом/заданием/вариантом/оценкой,
+"""Регрессионные тесты второго аудита безопасности (SEC-1, SEC-2, SEC-4..SEC-6):
+подписанные файлы, владение классом/заданием/оценкой,
 рейтинг без PII, file-text по подписи."""
 import os
 
@@ -86,23 +86,6 @@ def test_non_owner_teacher_cannot_modify_or_grade_assignment(client, db_session)
     sid = sub.json()["id"]
     assert client.post(f"/api/submissions/{sid}/grade", json={"score": 50}, headers=auth_headers(other)).status_code == 403
     assert client.post(f"/api/submissions/{sid}/grade", json={"score": 50}, headers=auth_headers(owner)).status_code == 201
-
-
-# ── SEC-3: IDOR удаления варианта ─────────────────────────────────────────────
-
-def test_variant_delete_idor(client, db_session):
-    owner = make_user(db_session, role="teacher")
-    other = make_user(db_session, role="teacher")
-    clsA, aA = _assignment(db_session, owner)
-    _, aB = _assignment(db_session, other)
-    var = cc.add_variant(db_session, aA.id, 1, "http://localhost:8000/uploads/ref.pdf")
-
-    # чужой преподаватель не удалит вариант по родному заданию владельца
-    assert client.delete(f"/api/assignments/{aA.id}/variants/{var.id}", headers=auth_headers(other)).status_code == 403
-    # и не удалит, подставив свой assignment_id (вариант не принадлежит ему)
-    assert client.delete(f"/api/assignments/{aB.id}/variants/{var.id}", headers=auth_headers(other)).status_code == 404
-    # владелец удаляет корректно
-    assert client.delete(f"/api/assignments/{aA.id}/variants/{var.id}", headers=auth_headers(owner)).status_code == 204
 
 
 # ── SEC-4: рейтинг без e-mail + проверка членства ────────────────────────────

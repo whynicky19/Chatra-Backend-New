@@ -166,12 +166,7 @@ def _build_user_prompt(
     reference_text: Optional[str] = None,
     lecture_context: Optional[str] = None,
 ) -> str:
-    criteria_lines = []
-    for c in criteria:
-        line = f"• {c['name']} — максимум {c['weight']} баллов"
-        if c.get("description"):
-            line += f"\n  ({c['description']})"
-        criteria_lines.append(line)
+    criteria_lines = [f"• {c['name']} — максимум {c['weight']} баллов" for c in criteria]
     criteria_block = "\n".join(criteria_lines)
 
     ref_block = ""

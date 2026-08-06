@@ -39,8 +39,8 @@ def get_assignment(db: Session, assignment_id: int) -> Optional[Assignment]:
 
 
 def _parse_reference_urls(raw: Optional[str]) -> List[str]:
-    """Поле reference_solution_url (Assignment или AssignmentVariant) хранит
-    либо один URL, либо JSON-массив URL (несколько файлов эталона)."""
+    """Поле reference_solution_url хранит либо один URL, либо JSON-массив
+    URL (несколько файлов эталона)."""
     if not raw:
         return []
     if raw.startswith('['):
@@ -56,27 +56,7 @@ def _parse_reference_urls(raw: Optional[str]) -> List[str]:
 def resolve_reference_solution_urls(
     db: Session, assignment: Assignment, submission: Submission,
 ) -> List[str]:
-    """Эталонные файлы для проверки ИИ конкретной сдачи.
-
-    Если сдача привязана к варианту задания (submission.variant_number) —
-    берём эталон ЭТОГО варианта (AssignmentVariant.reference_solution_url
-    обязателен на уровне модели), иначе — общий эталон задания. Оба поля
-    могут быть как одиночным URL, так и JSON-массивом URL.
-
-    Единый источник истины для ручной кнопки "Проверить ИИ"
-    (routers/assignments.py) и автопроверки по дедлайну
-    (services/deadline_checker.py) — раньше эту логику знал только ручной
-    путь: автопроверка эталон вариантов вообще не резолвила и либо проверяла
-    БЕЗ эталона задание с вариантами (assignment.reference_solution_url
-    обычно пуст, когда используются варианты — у AssignmentVariant свой
-    обязательный эталон), либо путала вариант с чужим эталоном. Один и тот
-    же студенческий ответ получал разные результаты в зависимости от того,
-    кто и как запустил проверку."""
-    if submission.variant_number:
-        from crud.classes import get_variant_by_number
-        variant = get_variant_by_number(db, submission.assignment_id, submission.variant_number)
-        if variant:
-            return _parse_reference_urls(variant.reference_solution_url)
+    """Эталонные файлы для проверки ИИ конкретной сдачи (общий эталон задания)."""
     return _parse_reference_urls(assignment.reference_solution_url)
 
 def get_all_assignments(db: Session, class_id: Optional[int] = None, active_only: bool = False,

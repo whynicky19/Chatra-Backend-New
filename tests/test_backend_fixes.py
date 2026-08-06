@@ -65,8 +65,8 @@ def test_manual_grade_clamped_to_max_score(client, db_session):
     assert r.json()["score"] == 50
 
 
-# ── BE-5: max_score <= 0 отбивается валидацией схемы ──────────────────────────
-def test_assignment_rejects_nonpositive_max_score(client, db_session):
+# ── max_score больше не настраивается клиентом — всегда 100 ───────────────────
+def test_assignment_max_score_always_100_ignores_client_value(client, db_session):
     teacher = make_user(db_session, role="teacher")
     cls = crud_classes.create_class(db_session, "Chem", None, created_by=teacher.id)
     r = client.post(
@@ -79,7 +79,8 @@ def test_assignment_rejects_nonpositive_max_score(client, db_session):
         },
         headers=auth_headers(teacher),
     )
-    assert r.status_code == 422
+    assert r.status_code == 201
+    assert r.json()["max_score"] == 100
 
 
 # ── BE-10: нельзя откатить проверенную сдачу через PATCH status ────────────────

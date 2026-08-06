@@ -223,25 +223,6 @@ class Assignment(Base):
         back_populates="assignment",
         cascade="all, delete-orphan",
     )
-    variants: Mapped[list["AssignmentVariant"]] = relationship(
-        back_populates="assignment",
-        cascade="all, delete-orphan",
-        order_by="AssignmentVariant.variant_number",
-    )
-
-class AssignmentVariant(Base):
-    __tablename__ = "assignment_variants"
-
-    id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    assignment_id: Mapped[int] = mapped_column(
-        ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    variant_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    title: Mapped[str] = mapped_column(String(256), nullable=True)
-    reference_solution_url: Mapped[str] = mapped_column(String, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-
-    assignment: Mapped["Assignment"] = relationship(back_populates="variants")
 
 class Submission(Base):
     __tablename__ = "submissions"
@@ -267,6 +248,8 @@ class Submission(Base):
     file_url: Mapped[str] = mapped_column(String, nullable=True)
     file_urls: Mapped[str] = mapped_column(Text, nullable=True)
     text_content: Mapped[str] = mapped_column(Text, nullable=True)
+    # LEGACY: фича "варианты задания" убрана целиком — колонка остаётся
+    # только чтобы не терять исторические данные старых сдач, новые всегда NULL.
     variant_number: Mapped[int] = mapped_column(Integer, nullable=True)
 
     submitted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

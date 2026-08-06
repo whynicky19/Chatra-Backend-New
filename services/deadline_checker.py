@@ -115,14 +115,9 @@ async def _grade_one(db: Session, submission, assignment, org_type: str = "unive
 
         lecture_context = crud_posts.get_lecture_context(db, assignment.class_id, limit=5)
 
-        # BUG (найден при аудите): раньше здесь брался ТОЛЬКО
-        # assignment.reference_solution_url — для сдач по варианту задания
-        # (submission.variant_number) это не тот эталон, а зачастую и вовсе
-        # пусто (у заданий с вариантами общий эталон обычно не заполняют,
-        # эталон живёт в AssignmentVariant). Одна и та же сдача проверялась
-        # с эталоном при ручном "Проверить ИИ" и БЕЗ него при автопроверке
-        # по дедлайну. crud.resolve_reference_solution_urls — общая логика
-        # с ручным путём (routers/assignments.py).
+        # crud.resolve_reference_solution_urls — общая логика с ручным путём
+        # (routers/assignments.py), чтобы эталон резолвился одинаково для
+        # автопроверки по дедлайну и ручной кнопки "Проверить ИИ".
         reference_urls = crud.resolve_reference_solution_urls(db, assignment, submission)
 
         if image_urls:

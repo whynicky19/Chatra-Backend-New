@@ -100,15 +100,11 @@ def delete_class_files(klass) -> int:
 
 
 def delete_assignment_files(assignment) -> int:
-    """Удаляет референсное решение задания и его вариантов + файлы всех сдач
-    (вызывается перед удалением задания, чьи сдачи/варианты каскадно уходят
-    вместе с ним)."""
+    """Удаляет референсное решение задания + файлы всех сдач (вызывается
+    перед удалением задания, чьи сдачи каскадно уходят вместе с ним)."""
     urls: set[str] = set()
     if getattr(assignment, "reference_solution_url", None):
         urls.add(assignment.reference_solution_url)
-    for variant in getattr(assignment, "variants", None) or []:
-        if variant.reference_solution_url:
-            urls.add(variant.reference_solution_url)
     removed = sum(1 for u in urls if delete_upload_file(u))
     for submission in getattr(assignment, "submissions", None) or []:
         removed += delete_submission_files(submission)

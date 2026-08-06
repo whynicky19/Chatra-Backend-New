@@ -1,5 +1,5 @@
-"""BE-10: очистка облачных/локальных файлов при удалении класса, задания,
-варианта и аккаунта. Проверяем два свойства:
+"""BE-10: очистка облачных/локальных файлов при удалении класса, задания
+и аккаунта. Проверяем два свойства:
 1) файлы, реально принадлежащие удаляемой сущности, чистятся;
 2) удаление класса не задевает данные (в т.ч. файлы) других сущностей —
    assignments/submissions не привязаны к Class внешним ключом и переживают
@@ -11,7 +11,7 @@ import services.file_cleanup as file_cleanup
 from crud import classes as crud_classes
 from crud import assignments as crud_assignments
 from crud import posts as crud_posts
-from models import Class, Assignment, AssignmentVariant, Submission, Posts
+from models import Class, Assignment, Submission, Posts
 from tests.conftest import make_user
 
 
@@ -74,7 +74,7 @@ def test_delete_class_removes_only_its_cover_and_leaves_other_data(db_session, m
     assert db.query(Submission).filter(Submission.id == sub.id).first() is not None
 
 
-def test_delete_assignment_removes_reference_variant_and_submission_files(db_session, monkeypatch):
+def test_delete_assignment_removes_reference_and_submission_files(db_session, monkeypatch):
     calls = _spy_delete(monkeypatch)
     db = db_session
     teacher = make_user(db, role="teacher")
@@ -83,9 +83,6 @@ def test_delete_assignment_removes_reference_variant_and_submission_files(db_ses
     assignment = crud_assignments.create_assignment(
         db, klass.id, "HW", None, [{"name": "ok", "weight": 100}], 100, None, teacher.id,
         reference_solution_url="https://cdn.example/uploads/r2/ref.pdf",
-    )
-    variant = crud_classes.add_variant(
-        db, assignment.id, 1, "https://cdn.example/uploads/r2/variant1.pdf",
     )
     student = make_user(db, role="student")
     sub = Submission(
@@ -99,26 +96,10 @@ def test_delete_assignment_removes_reference_variant_and_submission_files(db_ses
 
     assert set(calls) == {
         "https://cdn.example/uploads/r2/ref.pdf",
-        "https://cdn.example/uploads/r2/variant1.pdf",
         "https://cdn.example/uploads/r2/sub1.pdf",
         "https://cdn.example/uploads/r2/sub2.pdf",
     }
-    assert db.query(AssignmentVariant).filter(AssignmentVariant.id == variant.id).first() is None
     assert db.query(Submission).filter(Submission.id == sub.id).first() is None
-
-
-def test_add_variant_replacing_existing_cleans_old_file(db_session, monkeypatch):
-    calls = _spy_delete(monkeypatch)
-    db = db_session
-    teacher = make_user(db, role="teacher")
-    klass = crud_classes.create_class(db, "Class", None, teacher.id)
-    assignment = crud_assignments.create_assignment(
-        db, klass.id, "HW", None, [{"name": "ok", "weight": 100}], 100, None, teacher.id,
-    )
-    crud_classes.add_variant(db, assignment.id, 1, "https://cdn.example/uploads/r2/v1-old.pdf")
-    crud_classes.add_variant(db, assignment.id, 1, "https://cdn.example/uploads/r2/v1-new.pdf")
-
-    assert calls == ["https://cdn.example/uploads/r2/v1-old.pdf"]
 
 
 def test_delete_user_cleans_own_submission_created_assignment_and_class_cover(db_session, monkeypatch):

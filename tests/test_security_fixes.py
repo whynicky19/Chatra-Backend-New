@@ -77,8 +77,6 @@ def test_student_outside_class_cannot_read_assignment(client, db_session):
 
     resp = client.get(f"/api/assignments/{assignment.id}", headers=auth_headers(outsider))
     assert resp.status_code == 403
-    resp = client.get(f"/api/assignments/{assignment.id}/variants", headers=auth_headers(outsider))
-    assert resp.status_code == 403
     resp = client.post(
         f"/api/assignments/{assignment.id}/submit",
         json={"text_content": "my answer"},
