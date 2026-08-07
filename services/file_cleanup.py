@@ -126,13 +126,31 @@ def _post_cover_url(body: str | None) -> str | None:
     return cover
 
 
+def _post_attachment_urls(body: str | None) -> list[str]:
+    """Файлы, прикреплённые к лекции (body["files"]) — те же источники, что
+    инжестит services/rag_ingest.py::_parse_lecture_files."""
+    if not body:
+        return []
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    files = parsed.get("files")
+    if not isinstance(files, list):
+        return []
+    return [f for f in files if isinstance(f, str) and f.strip() and not f.startswith("data:")]
+
+
 def delete_post_files(post) -> int:
-    """Удаляет обложку поста/лекции, если она была сконвертирована в файл R2
-    (routers/posts.py: _convert_body_cover). Легаси-посты, где cover_image
-    ещё остаётся data-URI прямо в body, отдельного файла не имеют — чистить
-    нечего."""
-    cover = _post_cover_url(getattr(post, "body", None))
-    return 1 if cover and delete_upload_file(cover) else 0
+    """Удаляет обложку поста/лекции (если она была сконвертирована в файл R2,
+    см. routers/posts.py: _convert_body_cover — легаси data-URI обложки
+    отдельного файла не имеют, чистить нечего) и все прикреплённые файлы
+    лекции (body["files"])."""
+    body = getattr(post, "body", None)
+    urls = {u for u in ([_post_cover_url(body)] + _post_attachment_urls(body)) if u}
+    return sum(1 for u in urls if delete_upload_file(u))
 
 
 def delete_replaced_post_cover(old_body: str | None, new_body: str | None) -> bool:

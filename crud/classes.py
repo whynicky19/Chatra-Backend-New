@@ -2,11 +2,11 @@ from typing import Optional, List
 from sqlalchemy.orm import Session
 from models import (
     Class, User, Assignment, Submission, Grade, Deadline,
-    Cohort, cohort_students,
+    Cohort, cohort_students, Posts, RagDocument, RagChunk, AiUsageLog, AiMessage,
 )
 from sqlalchemy import func
 from services.invite_codes import generate_unique_code
-from services.file_cleanup import delete_class_files, delete_upload_file
+from services.file_cleanup import delete_class_files, delete_post_files, delete_upload_file
 from crud import cohorts as crud_cohorts
 
 def create_class(db: Session, name: str, description: Optional[str], created_by: int,
@@ -77,6 +77,12 @@ def update_class(db: Session, class_id: int, data: dict) -> Optional[Class]:
     return obj
 
 def delete_class(db: Session, class_id: int) -> bool:
+    """Удаляет класс и всё, что принадлежит только ему: лекции (посты,
+    их обложки/файлы, RAG-индекс), логи и сообщения ИИ-репетитора класса.
+    Задания/сдачи/оценки НЕ трогает — Assignment.class_id намеренно не FK,
+    это история ученика, переживает удаление класса (см. delete_class_files).
+    Вся операция — одна транзакция: файлы удаляются до записей, единственный
+    commit в конце."""
     obj = get_class(db, class_id)
     if not obj:
         return False
@@ -91,8 +97,35 @@ def delete_class(db: Session, class_id: int) -> bool:
     db.query(Submission).filter(Submission.deadline_id.in_(deadline_ids)).update(
         {Submission.deadline_id: None}, synchronize_session=False
     )
-    # BE-10: обложка класса — единственный файл, принадлежащий самому классу;
-    # задания/сдачи класс не трогает (см. delete_class_files) и их файлы тут не чистим.
+
+    # Лекции класса — посты с заголовком "[LECTURE][{class_id}]...". Файлы
+    # (обложка + прикреплённые) удаляем до записи, как и везде в этом модуле;
+    # не зовём crud.posts.delete_post — она коммитит на каждый пост, а нам
+    # нужен один commit на всю операцию.
+    lecture_posts = (
+        db.query(Posts)
+        .filter(Posts.title.like(f"[LECTURE][{class_id}]%"))
+        .all()
+    )
+    for post in lecture_posts:
+        delete_post_files(post)
+        db.delete(post)
+
+    # RAG-индекс класса — единый снос по денормализованному class_id (чанки
+    # раньше документов): покрывает и лекционные записи (иначе ушли бы вместе
+    # с постом через ON DELETE CASCADE на post_id/document_id), и class-level
+    # записи без post_id, если такие когда-нибудь появятся.
+    db.query(RagChunk).filter(RagChunk.class_id == class_id).delete(synchronize_session=False)
+    db.query(RagDocument).filter(RagDocument.class_id == class_id).delete(synchronize_session=False)
+
+    # ИИ-репетитор класса: логи использования и переписка. У AiMessage нет
+    # вложений (обычный текст) — чистить, кроме самих строк, нечего.
+    db.query(AiUsageLog).filter(AiUsageLog.class_id == class_id).delete(synchronize_session=False)
+    db.query(AiMessage).filter(AiMessage.class_id == class_id).delete(synchronize_session=False)
+
+    # BE-10: обложка класса — единственный файл, принадлежащий самому классу
+    # напрямую; задания/сдачи класс не трогает (см. delete_class_files) и их
+    # файлы тут не чистим — это осознанно, они переживают удаление класса.
     delete_class_files(obj)
     db.delete(obj)
     db.commit()
