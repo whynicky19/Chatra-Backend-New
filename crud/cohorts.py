@@ -295,3 +295,18 @@ def upsert_deadline(
     db.add(row)
     db.flush()
     return row
+
+
+def delete_deadline(db: Session, cohort_id: int, assignment_id: int) -> bool:
+    """Убирает дедлайн задания из потока (Deadline.due_date NOT NULL — значит
+    "без дедлайна" это отсутствие строки, а не due_date=None). commit на
+    вызывающей стороне. True, если строка была и её удалили."""
+    row = (
+        db.query(Deadline)
+        .filter(Deadline.cohort_id == cohort_id, Deadline.assignment_id == assignment_id)
+        .first()
+    )
+    if not row:
+        return False
+    db.delete(row)
+    return True

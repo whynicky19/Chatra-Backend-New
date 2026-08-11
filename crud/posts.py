@@ -48,7 +48,7 @@ def get_posts_for_user(db: Session, user_id: int):
 
 def get_all_posts(db: Session, org_type: str = None, class_id: int = None,
                   limit: int = None, offset: int = 0,
-                  exclude_author_ids=None):
+                  exclude_author_ids=None, allowed_class_ids=None):
     q = db.query(Posts).join(User, User.id == Posts.user_id)
     if org_type:
         q = q.filter(User.org_type == org_type)
@@ -56,6 +56,17 @@ def get_all_posts(db: Session, org_type: str = None, class_id: int = None,
     # скрытия недостаточно — локальный список теряется при переустановке.
     if exclude_author_ids:
         q = q.filter(~Posts.user_id.in_(list(exclude_author_ids)))
+    # SEC: без явного class_id студент раньше получал лекции ВСЕХ классов
+    # организации (маркировка класса — это только текст в title, SQL-фильтра
+    # по членству тут нет по умолчанию) — allowed_class_ids сужает список до
+    # классов, где он реально состоит (см. permissions.student_class_ids).
+    # None = не сужать (teacher/admin видят все посты организации, как и
+    # список классов в list_classes).
+    if allowed_class_ids is not None:
+        from sqlalchemy import or_
+        if not allowed_class_ids:
+            return []
+        q = q.filter(or_(*[Posts.title.like(f"[LECTURE][{cid}]%") for cid in allowed_class_ids]))
     if class_id is not None:
         # Лекции класса маркируются префиксом заголовка — фильтруем на
         # сервере, чтобы клиент не скачивал все посты организации целиком.

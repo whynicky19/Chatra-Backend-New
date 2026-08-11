@@ -6,7 +6,7 @@ from typing import Optional, List
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from models import Assignment, Submission, Grade, User, Cohort, Deadline, cohort_students
-from services.file_cleanup import delete_assignment_files, delete_upload_file
+from services.file_cleanup import delete_assignment_files, delete_upload_file, description_file_urls
 
 def create_assignment(
     db: Session,
@@ -62,10 +62,18 @@ def resolve_reference_solution_urls(
 def get_all_assignments(db: Session, class_id: Optional[int] = None, active_only: bool = False,
                         org_type: Optional[str] = None,
                         limit: Optional[int] = None, offset: int = 0,
-                        exclude_author_ids=None) -> List[Assignment]:
+                        exclude_author_ids=None, allowed_class_ids=None) -> List[Assignment]:
     q = db.query(Assignment)
     if class_id is not None:
         q = q.filter(Assignment.class_id == class_id)
+    # SEC: без class_id студент раньше получал задания ВСЕХ классов
+    # организации — allowed_class_ids сужает список до классов, где он
+    # реально состоит (см. permissions.student_class_ids). None = не сужать
+    # (teacher/admin видят всё в организации).
+    if allowed_class_ids is not None:
+        if not allowed_class_ids:
+            return []
+        q = q.filter(Assignment.class_id.in_(allowed_class_ids))
     # Модерация UGC: задания авторов из блок-листа не отдаём (серверная
     # фильтрация — см. services/moderation.py).
     if exclude_author_ids:
@@ -93,18 +101,31 @@ def update_assignment(db: Session, assignment_id: int, data: dict) -> Optional[A
     if "criteria" in data and isinstance(data["criteria"], list):
         data["criteria"] = json.dumps(data["criteria"], ensure_ascii=False)
     old_reference_solution_url = obj.reference_solution_url
+    old_description = obj.description
     for key, value in data.items():
         if value is not None:
             setattr(obj, key, value)
     db.commit()
     db.refresh(obj)
-    # BE-10: референсное решение заменили — старый файл больше не нужен.
-    if (
-        "reference_solution_url" in data
-        and old_reference_solution_url
-        and old_reference_solution_url != obj.reference_solution_url
-    ):
-        delete_upload_file(old_reference_solution_url)
+    # BE-10: референсное решение заменили — старые файлы, которых больше нет
+    # в новом значении, больше не нужны. reference_solution_url может хранить
+    # как один URL, так и JSON-массив (несколько файлов эталона) — раньше
+    # сюда передавалась сырая строка (в т.ч. целиком JSON-массив), которую
+    # _r2_key_from_url резал как один путь, получая мусорный ключ, который
+    # никогда не существовал в хранилище: старые файлы эталона фактически
+    # никогда не удалялись. Сравниваем распарсенные списки URL, а не строки.
+    if "reference_solution_url" in data and old_reference_solution_url:
+        old_ref_urls = set(_parse_reference_urls(old_reference_solution_url))
+        new_ref_urls = set(_parse_reference_urls(obj.reference_solution_url))
+        for url in old_ref_urls - new_ref_urls:
+            delete_upload_file(url)
+    # Файлы задания (встроены в description, см. description_file_urls) —
+    # та же логика: удаляем только те, что пропали из нового текста.
+    if "description" in data and old_description:
+        old_files = description_file_urls(old_description)
+        new_files = description_file_urls(obj.description)
+        for url in old_files - new_files:
+            delete_upload_file(url)
     return obj
 
 def delete_assignment(db: Session, assignment_id: int) -> bool:

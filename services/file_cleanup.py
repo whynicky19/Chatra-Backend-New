@@ -9,6 +9,7 @@ StorageService для новых файлов в R2 (см. services/storage/); �
 import json
 import logging
 import os
+import re
 
 from services.storage import StorageError, get_storage_service
 
@@ -18,6 +19,27 @@ _UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
 _UPLOADS_ROOT = os.path.realpath(_UPLOAD_DIR)
 
 _R2_MARKER = "/uploads/r2/"
+
+# Файлы задания (в отличие от лекций, у которых свой JSON-массив body["files"])
+# живут прямо ВНУТРИ текста description как ссылки вида "<url>#<имя>" —
+# зеркалит fileUrlRe из lib/screens/classes/class_detail_utils.dart (Flutter)
+# и SIGNED_UPLOAD_URL_RE из composables/useAttachments.ts (Nuxt), которыми
+# клиенты вставляют и парсят эти ссылки. Нужен свой парсер здесь, иначе при
+# удалении/редактировании задания эти файлы никогда не подчищаются в
+# хранилище (BE-10 их просто не видел).
+_DESCRIPTION_FILE_URL_RE = re.compile(
+    r'https?://[^\s/]+/[^\s"<>]*?\.'
+    r'(?:pdf|docx?|pptx?|xlsx?|txt|md|csv|rtf|png|jpe?g|gif|webp|mp3|wav|m4a|webm|ogg|mp4)'
+    r'(?:\?[^\s"<>]*)?(?:#[^\s"<>]*)?',
+    re.IGNORECASE,
+)
+
+
+def description_file_urls(description: str | None) -> set[str]:
+    """Все ссылки на файлы, встроенные в текст description задания."""
+    if not description:
+        return set()
+    return {m.group(0) for m in _DESCRIPTION_FILE_URL_RE.finditer(description)}
 
 
 def _filename_from_url(url: str) -> str | None:
@@ -100,15 +122,32 @@ def delete_class_files(klass) -> int:
 
 
 def delete_assignment_files(assignment) -> int:
-    """Удаляет референсное решение задания + файлы всех сдач (вызывается
+    """Удаляет референсное решение задания + файлы самого задания (встроены
+    в description, см. description_file_urls) + файлы всех сдач (вызывается
     перед удалением задания, чьи сдачи каскадно уходят вместе с ним)."""
-    urls: set[str] = set()
-    if getattr(assignment, "reference_solution_url", None):
-        urls.add(assignment.reference_solution_url)
+    urls: set[str] = set(_parse_reference_urls_local(getattr(assignment, "reference_solution_url", None)))
+    urls |= description_file_urls(getattr(assignment, "description", None))
     removed = sum(1 for u in urls if delete_upload_file(u))
     for submission in getattr(assignment, "submissions", None) or []:
         removed += delete_submission_files(submission)
     return removed
+
+
+def _parse_reference_urls_local(raw: str | None) -> list[str]:
+    """Копия crud.assignments._parse_reference_urls — reference_solution_url
+    хранит либо один URL, либо JSON-массив URL. Своя копия здесь, а не
+    импорт: crud/assignments.py импортирует ИЗ этого модуля (delete_upload_file
+    и т.д.), обратный импорт дал бы циклическую зависимость."""
+    if not raw:
+        return []
+    if raw.startswith('['):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [u for u in parsed if u]
+        except Exception:
+            pass
+    return [raw]
 
 
 def _post_cover_url(body: str | None) -> str | None:

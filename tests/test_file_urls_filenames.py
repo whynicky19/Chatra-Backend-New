@@ -49,6 +49,30 @@ def test_does_not_consume_trailing_prose_after_quoted_value():
     )
 
 
+def test_signs_percent_encoded_path_with_fragment_name():
+    # Регрессия: клиенты (Nuxt encodeURI(), Flutter Uri.encodeComponent())
+    # percent-кодируют путь ДО того, как вставить ссылку в description —
+    # значит путь в самом JSON уже содержит "%20" и т.п. Раньше regex
+    # обрывался на первом "%" (path матчился только как "card"), и хвост
+    # ("%202.jpg?exp=...&sig=...#card%202.jpg") оставался в тексте как
+    # видимый пользователю мусор вместо переподписанной ссылки.
+    body = json.dumps({
+        "description": (
+            "http://localhost:8000/api/uploads/r2/attachments/card%202.jpg"
+            "?exp=1786559225&sig=aeba31b1e066483db2a93934a1c6078d4e0c4d4df1cca2322352b1574a228d38"
+            "#card%202.jpg"
+        ),
+    }, ensure_ascii=False)
+
+    out = json.loads(sign_uploads_in_text(body))
+    m = re.match(
+        r"http://localhost:8000/api/uploads/(r2/attachments/card%202\.jpg)\?exp=(\d+)&sig=(\w+)#card%202\.jpg$",
+        out["description"],
+    )
+    assert m, out["description"]
+    assert verify_signature(m.group(1), m.group(2), m.group(3))
+
+
 def test_does_not_cross_json_string_boundary_in_free_text():
     # Гипотетический случай: относительная ссылка встречается посреди
     # свободного текста без скобок/кавычек вокруг. Подпись не должна вылезти

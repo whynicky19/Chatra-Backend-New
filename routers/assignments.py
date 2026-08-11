@@ -17,6 +17,7 @@ from permissions import (
     require_active_cohort_access,
     require_assignment_owner,
     require_submission_class_owner,
+    student_class_ids,
 )
 from services.ai_grader import grade_submission as _ai_grade
 from services.ai_grader import grade_handwritten_submission as _ai_grade_handwritten
@@ -43,12 +44,18 @@ def _check_assignment_access(db: Session, assignment, current_user):
         raise HTTPException(status_code=404, detail="Assignment not found")
 
 
-def _with_cohort_deadline(assignment, due_date) -> schemas.AssignmentResponse:
+def _with_cohort_deadline(assignment, due_date, current_user=None) -> schemas.AssignmentResponse:
     """Ответ задания с датой дедлайна из потока пользователя (единая логика
     в crud_cohorts.resolve_deadline/deadlines_map). ORM-объект не мутируем —
-    случайный commit записал бы чужую дату в deprecated-поле."""
+    случайный commit записал бы чужую дату в deprecated-поле.
+
+    Эталонное решение (reference_solution_url) студенту не отдаём вообще —
+    раньше это скрывалось только на UI, а сырой ответ API его всё равно
+    содержал (утечка через devtools/логирование трафика)."""
     resp = schemas.AssignmentResponse.model_validate(assignment)
     resp.deadline = due_date
+    if current_user is not None and current_user.role == "student":
+        resp.reference_solution_url = None
     return resp
 
 
@@ -165,18 +172,22 @@ def list_assignments(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    allowed_class_ids = None
     if class_id is not None:
         cls = db.query(ClassModel).filter(ClassModel.id == class_id).first()
         if cls and cls.org_type != current_user.org_type:
             raise HTTPException(status_code=404, detail="Assignment not found")
         require_class_access(db, class_id, current_user)
+    elif current_user.role == "student":
+        allowed_class_ids = student_class_ids(db, current_user.id, current_user.org_type)
     items = crud.get_all_assignments(db, class_id=class_id, active_only=active_only,
                                      org_type=current_user.org_type,
-                                     limit=limit, offset=offset)
+                                     limit=limit, offset=offset,
+                                     allowed_class_ids=allowed_class_ids)
     # Задания-черновики (неопубликованный дедлайн потока) не показываем ученикам.
     dmap, hidden = crud_cohorts.deadlines_map(db, items, current_user)
     return [
-        _with_cohort_deadline(a, dmap.get(a.id, a.deadline))
+        _with_cohort_deadline(a, dmap.get(a.id, a.deadline), current_user)
         for a in items
         if a.id not in hidden
     ]
@@ -252,7 +263,7 @@ def get_assignment(
         raise HTTPException(status_code=404, detail="Assignment not found")
     _check_assignment_access(db, obj, current_user)
     _, due_date = crud_cohorts.resolve_deadline(db, obj, current_user)
-    return _with_cohort_deadline(obj, due_date)
+    return _with_cohort_deadline(obj, due_date, current_user)
 
 
 @router.put("/assignments/{assignment_id}", response_model=schemas.AssignmentResponse)
@@ -266,15 +277,21 @@ def update_assignment(
     if not obj:
         raise HTTPException(status_code=404, detail="Assignment not found")
     require_assignment_owner(db, obj, current_user)  # SEC-2
-    data = body.model_dump(exclude_none=True)
+    clear_deadline = body.clear_deadline
+    data = body.model_dump(exclude_none=True, exclude={"clear_deadline"})
     obj = crud.update_assignment(db, assignment_id, data)
     # Правка дедлайна задания = правка дедлайна АКТИВНОГО потока (архивные
     # годы не трогаем). Точечная правка по потокам — PATCH дедлайнов потока.
-    if "deadline" in data:
-        cohort = crud_cohorts.get_active_cohort(db, obj.class_id)
+    cohort = crud_cohorts.get_active_cohort(db, obj.class_id) if (clear_deadline or "deadline" in data) else None
+    if clear_deadline:
+        obj.deadline = None
         if cohort:
-            crud_cohorts.upsert_deadline(db, cohort.id, obj.id, data["deadline"], is_published=True)
-            db.commit()
+            crud_cohorts.delete_deadline(db, cohort.id, obj.id)
+        db.commit()
+        db.refresh(obj)
+    elif "deadline" in data and cohort:
+        crud_cohorts.upsert_deadline(db, cohort.id, obj.id, data["deadline"], is_published=True)
+        db.commit()
     return obj
 
 

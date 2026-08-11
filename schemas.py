@@ -146,6 +146,11 @@ class AssignmentUpdate(BaseModel):
     deadline: Optional[datetime] = None
     is_active: Optional[bool] = None
     reference_solution_url: Optional[str] = None
+    # body.model_dump(exclude_none=True) в роуте отбрасывает deadline=None —
+    # значит просто прислать null нельзя было отличить от "не менять".
+    # Явный флаг — как пустая строка для reference_solution_url (см. коммент
+    # там же), но датам пустую строку не передать (не парсится в datetime).
+    clear_deadline: bool = False
 
 class AssignmentResponse(BaseModel):
     id: int

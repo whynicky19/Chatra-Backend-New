@@ -6,8 +6,10 @@ from sqlalchemy.orm import Session
 import schemas
 from db import get_db
 from crud import posts as crud_posts
+from crud import classes as crud_classes
 from deps import get_current_user
 from models import Posts, User, post_enrollments
+from permissions import require_class_access, student_class_ids
 
 router = APIRouter(prefix="/posts", tags=["posts"])
 
@@ -61,12 +63,27 @@ def get_posts_for_user(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    # SEC: раньше тут не было никакой проверки членства — любой
+    # авторизованный пользователь организации мог запросить лекции ЛЮБОГО
+    # класса (по известному/подобранному class_id) или вообще все посты
+    # организации без class_id. Модель прав та же, что у /assignments/ и
+    # /classes/: teacher/admin видят всё в организации, студент — только
+    # свои классы.
+    allowed_class_ids = None
+    if class_id is not None:
+        cls = crud_classes.get_class(db, class_id)
+        if cls and cls.org_type != current_user.org_type:
+            raise HTTPException(status_code=404, detail="Class not found")
+        require_class_access(db, class_id, current_user)
+    elif current_user.role == "student":
+        allowed_class_ids = student_class_ids(db, current_user.id, current_user.org_type)
     return crud_posts.get_all_posts(
         db=db,
         org_type=current_user.org_type,
         class_id=class_id,
         limit=limit,
         offset=offset,
+        allowed_class_ids=allowed_class_ids,
     )
 
 

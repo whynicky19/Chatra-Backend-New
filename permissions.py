@@ -6,7 +6,7 @@
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from models import Class, Assignment, class_members
+from models import Class, Assignment, class_members, Cohort, cohort_students
 from crud import cohorts as crud_cohorts
 
 
@@ -63,6 +63,30 @@ def require_class_access(db: Session, class_id: int, current_user) -> None:
         return
     if not is_class_member(db, class_id, current_user.id):
         raise HTTPException(status_code=403, detail="Вы не состоите в этом классе")
+
+
+def student_class_ids(db: Session, user_id: int, org_type: str) -> set:
+    """ID классов, в которых студент состоит (любой поток + легаси
+    class_members) — та же логика членства, что list_classes (routers/
+    classes.py) строит для студенческой ветки. Используется там, где нужно
+    отфильтровать список по классам БЕЗ явного class_id в запросе (иначе
+    студент получил бы данные всех классов организации, не только своих —
+    см. GET /posts/ без class_id)."""
+    cohort_ids = {
+        row[0]
+        for row in db.query(Cohort.class_id)
+        .join(cohort_students, cohort_students.c.cohort_id == Cohort.id)
+        .join(Class, Class.id == Cohort.class_id)
+        .filter(cohort_students.c.student_id == user_id, Class.org_type == org_type)
+        .all()
+    }
+    legacy_ids = {
+        row[0]
+        for row in db.query(Class.id)
+        .filter(Class.members.any(id=user_id), Class.org_type == org_type)
+        .all()
+    }
+    return cohort_ids | legacy_ids
 
 
 def require_active_cohort_access(db: Session, class_id: int, current_user) -> None:

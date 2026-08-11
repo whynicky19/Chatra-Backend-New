@@ -24,18 +24,29 @@ def _make_lecture(db, class_id, teacher, topic="Тема"):
 _chunk_counter = {"n": 0}
 
 
-def _add_chunk(db, class_id, post_id, org_type, text, embedding, chunk_index=0, source_type="text"):
-    _chunk_counter["n"] += 1
-    unique = _chunk_counter["n"]
-    doc = RagDocument(
-        filename="f", mime_type="text/plain", org_type=org_type,
-        post_id=post_id, class_id=class_id, file_url=f"lecture-body:{post_id}:{chunk_index}:{unique}",
-        content_hash=f"hash-{post_id}-{chunk_index}-{unique}",
-    )
-    db.add(doc)
-    db.flush()
+def _add_chunk(db, class_id, post_id, org_type, text, embedding, chunk_index=0, source_type="text",
+               document_id=None):
+    """document_id=None создаёт СВОЙ RagDocument под каждый вызов — годится,
+    когда чанки имитируют разные источники (текст лекции + разные файлы).
+    Для чанков ОДНОГО источника (несколько абзацев одного текста/файла)
+    нужно передавать один и тот же document_id — так же, как реальный
+    инжест (rag_ingest.ingest_lecture) кладёт все чанки источника в один
+    RagDocument с последовательным chunk_index; иначе сортировка в
+    assemble_context (document_id, затем chunk_index) не отражает порядок
+    чанков внутри источника."""
+    if document_id is None:
+        _chunk_counter["n"] += 1
+        unique = _chunk_counter["n"]
+        doc = RagDocument(
+            filename="f", mime_type="text/plain", org_type=org_type,
+            post_id=post_id, class_id=class_id, file_url=f"lecture-body:{post_id}:{chunk_index}:{unique}",
+            content_hash=f"hash-{post_id}-{chunk_index}-{unique}",
+        )
+        db.add(doc)
+        db.flush()
+        document_id = doc.id
     chunk = RagChunk(
-        document_id=doc.id, chunk_index=chunk_index, text=text, token_count=len(text.split()),
+        document_id=document_id, chunk_index=chunk_index, text=text, token_count=len(text.split()),
         embedding=json.dumps(embedding), class_id=class_id, post_id=post_id, org_type=org_type,
         source_type=source_type,
     )
@@ -216,9 +227,23 @@ def test_assemble_context_preserves_chunk_order_within_lecture(db_session):
     teacher = make_user(db_session, role="teacher")
     cls = crud_classes.create_class(db_session, "Order", None, created_by=teacher.id)
     post = _make_lecture(db_session, cls.id, teacher, "Тема")
-    c2 = _add_chunk(db_session, cls.id, post.id, "university", "Второй фрагмент", [1.0, 0.0], chunk_index=2)
-    c0 = _add_chunk(db_session, cls.id, post.id, "university", "Первый фрагмент", [1.0, 0.0], chunk_index=0)
-    c1 = _add_chunk(db_session, cls.id, post.id, "university", "Средний фрагмент", [1.0, 0.0], chunk_index=1)
+    # Все три чанка — из ОДНОГО источника (текст лекции), поэтому у них общий
+    # document_id, как при реальном инжесте (rag_ingest.ingest_lecture кладёт
+    # все чанки текста лекции в один RagDocument); порядок внутри источника
+    # держится только на chunk_index.
+    doc = RagDocument(
+        filename="f", mime_type="text/plain", org_type="university",
+        post_id=post.id, class_id=cls.id, file_url=f"lecture-body:{post.id}",
+        content_hash="hash-order-test",
+    )
+    db_session.add(doc)
+    db_session.flush()
+    c2 = _add_chunk(db_session, cls.id, post.id, "university", "Второй фрагмент", [1.0, 0.0],
+                     chunk_index=2, document_id=doc.id)
+    c0 = _add_chunk(db_session, cls.id, post.id, "university", "Первый фрагмент", [1.0, 0.0],
+                     chunk_index=0, document_id=doc.id)
+    c1 = _add_chunk(db_session, cls.id, post.id, "university", "Средний фрагмент", [1.0, 0.0],
+                     chunk_index=1, document_id=doc.id)
 
     # Передаём чанки НЕ по порядку (как если бы поиск вернул их по релевантности)
     ctx = rag_search.assemble_context(db_session, cls.id, [c2, c0, c1])
