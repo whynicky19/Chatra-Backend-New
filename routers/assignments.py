@@ -462,12 +462,16 @@ def delete_submission(
 
     from models import Grade
     db.query(Grade).filter(Grade.submission_id == submission_id).delete()
-    # BE-10: убираем и файлы сдачи с диска до удаления записи (после delete
-    # объект уже не отдаст file_urls). Очистка best-effort, ошибки не роняют запрос.
-    from services.file_cleanup import delete_submission_files
-    delete_submission_files(obj)
+    # BE-10: собираем file_urls до удаления записи (после delete объект уже
+    # не отдаст их), но физически чистим хранилище только ПОСЛЕ успешного
+    # commit() — если бы это стёрлось раньше, а commit() затем упал, откат
+    # вернул бы запись сдачи в БД, но её файлы были бы уже стёрты насовсем.
+    # Сама очистка — best-effort, её ошибки не роняют запрос.
+    from services.file_cleanup import delete_urls, submission_file_urls
+    urls = submission_file_urls(obj)
     db.delete(obj)
     db.commit()
+    delete_urls(urls)
 
 
 @router.post(

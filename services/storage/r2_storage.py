@@ -118,6 +118,31 @@ class R2StorageService(StorageService):
                 cache_control: str | None = None) -> str:
         return self.upload(content, key, content_type, cache_control)
 
+    def put_if_absent(self, content: bytes, key: str, content_type: str = "application/octet-stream",
+                       cache_control: str | None = None) -> bool:
+        # IfNoneMatch="*" — condition write, поддерживается R2 (S3-совместимый
+        # API): PUT проходит, только если объекта с таким key ещё нет.
+        # Precondition Failed (412) — ключ уже занят, это ожидаемый исход
+        # гонки/коллизии имён, а не ошибка хранилища.
+        kwargs = {
+            "Bucket": self._bucket, "Key": key, "Body": content,
+            "ContentType": content_type, "IfNoneMatch": "*",
+        }
+        if cache_control:
+            kwargs["CacheControl"] = cache_control
+
+        def _put() -> bool:
+            try:
+                self._client.put_object(**kwargs)
+                return True
+            except botocore.exceptions.ClientError as exc:
+                status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
+                if status == 412:
+                    return False
+                raise
+
+        return _with_retries(_put, op=f"put_if_absent({key})")
+
     def delete(self, key: str) -> bool:
         if not self.exists(key):
             return False

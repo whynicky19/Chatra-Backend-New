@@ -48,8 +48,18 @@ def _sanitize_filename(original_filename: str) -> tuple[str, str]:
     Content-Disposition: без разделителей пути, управляющих символов и т.п.
     Юникод (кириллица) сохраняется — файл должен остаться понятным юзеру."""
     base = os.path.basename((original_filename or "").strip())
-    stem, ext = os.path.splitext(base)
-    ext = re.sub(r"[^A-Za-z0-9]", "", ext.lstrip(".")).lower()
+    # Не os.path.splitext(): она считает ведущую точку частью unix hidden-file
+    # имени, а не разделителем — для original_filename вида ".pdf" отдавала бы
+    # stem=".pdf", ext="" (после нашей санитизации — stem="pdf", ext="" —
+    # ключ строился бы вообще БЕЗ расширения). Здесь просто имя файла из
+    # формы загрузки, а не путь к скрытому файлу — берём последнюю точку в
+    # любой позиции.
+    dot = base.rfind(".")
+    if dot != -1:
+        stem, ext = base[:dot], base[dot + 1:]
+    else:
+        stem, ext = base, ""
+    ext = re.sub(r"[^A-Za-z0-9]", "", ext).lower()
     stem = _UNSAFE_CHARS_RE.sub("_", stem)
     stem = _WHITESPACE_RE.sub(" ", stem).strip(" ._")
     stem = stem[:_MAX_STEM_LENGTH] or "file"
@@ -80,12 +90,26 @@ class StorageService(ABC):
     def get_url(self, key: str) -> str:
         """Возвращает URL для отдачи файла клиенту (см. docstring в r2_storage.py)."""
 
+    @abstractmethod
+    def put_if_absent(self, content: bytes, key: str, content_type: str,
+                       cache_control: str | None) -> bool:
+        """Атомарно записывает content под key, только если key ещё свободен
+        (condition write). True — записано, False — key уже занят (запись не
+        произошла, содержимое существующего объекта не тронуто)."""
+
     def build_key(self, category: str, original_filename: str) -> str:
         """Строит ключ '<category>/<имя>[.<ext>]', сохраняя оригинальное имя
         файла (а не случайный UUID), чтобы Content-Disposition при скачивании
         показывал юзеру понятное имя. При конфликте имени внутри категории
         добавляет числовой суффикс (_1, _2, ...), а после 20 неудачных попыток —
-        короткий UUID-хвост, чтобы загрузка никогда не падала из-за коллизии."""
+        короткий UUID-хвост, чтобы загрузка никогда не падала из-за коллизии.
+
+        ВНИМАНИЕ: сам по себе (без немедленной атомарной записи по этому же
+        ключу) подвержен TOCTOU — см. upload_unique(), который и нужно
+        использовать для новых загрузок от клиента. build_key() оставлен
+        только для мест, где ключ и так гарантированно уникален (UUID уже
+        в original_filename, см. services/image_storage.py) или где гонка
+        невозможна по конструкции (одноразовые миграции)."""
         category = category.strip("/")
         stem, ext = _sanitize_filename(original_filename)
         suffix = f".{ext}" if ext else ""
@@ -98,3 +122,37 @@ class StorageService(ABC):
             if not self.exists(candidate):
                 return candidate
         return f"{category}/{stem}_{uuid4().hex[:8]}{suffix}"
+
+    def upload_unique(self, content: bytes, category: str, original_filename: str,
+                       content_type: str = "application/octet-stream",
+                       cache_control: str | None = None) -> str:
+        """Как build_key()+upload(), но без TOCTOU-гонки между ними: раньше
+        exists()-проверка и запись были раздельными вызовами, и два
+        параллельных запроса с одинаковым (после санитайза) именем файла в
+        одной категории — например, два студента, назвавших сдачу от одного
+        шаблона задания одинаково, — могли оба увидеть "ключ свободен" и оба
+        записать по нему; второй PUT молча перезаписывал байты первого без
+        единой ошибки или лога, и файл первого студента терялся насовсем, а
+        оба запроса возвращали 200 с одним и тем же file_url. Здесь каждая
+        попытка — один атомарный condition write (put_if_absent); коллизия
+        просто переходит к следующему кандидату вместо перезаписи чужого
+        файла."""
+        category = category.strip("/")
+        stem, ext = _sanitize_filename(original_filename)
+        suffix = f".{ext}" if ext else ""
+
+        candidate = f"{category}/{stem}{suffix}"
+        if self.put_if_absent(content, candidate, content_type, cache_control):
+            return self.get_url(candidate)
+        for i in range(1, _MAX_COLLISION_ATTEMPTS + 1):
+            candidate = f"{category}/{stem}_{i}{suffix}"
+            if self.put_if_absent(content, candidate, content_type, cache_control):
+                return self.get_url(candidate)
+        # UUID-хвост занят с исчезающе малой вероятностью, но всё равно пишем
+        # условно — иначе именно в этом (невероятном) случае гонка вернулась
+        # бы обратно.
+        for _ in range(_MAX_COLLISION_ATTEMPTS):
+            candidate = f"{category}/{stem}_{uuid4().hex[:8]}{suffix}"
+            if self.put_if_absent(content, candidate, content_type, cache_control):
+                return self.get_url(candidate)
+        raise StorageError(f"Не удалось подобрать свободный ключ для {category}/{stem}{suffix}")

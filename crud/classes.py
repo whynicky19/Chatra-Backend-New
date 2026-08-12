@@ -6,7 +6,7 @@ from models import (
 )
 from sqlalchemy import func
 from services.invite_codes import generate_unique_code
-from services.file_cleanup import delete_class_files, delete_post_files, delete_upload_file
+from services.file_cleanup import class_file_urls, delete_urls, post_file_urls, delete_upload_file
 from crud import cohorts as crud_cohorts
 
 def create_class(db: Session, name: str, description: Optional[str], created_by: int,
@@ -80,12 +80,14 @@ def delete_class(db: Session, class_id: int) -> bool:
     """Удаляет класс и всё, что принадлежит только ему: лекции (посты,
     их обложки/файлы, RAG-индекс), логи и сообщения ИИ-репетитора класса.
     Задания/сдачи/оценки НЕ трогает — Assignment.class_id намеренно не FK,
-    это история ученика, переживает удаление класса (см. delete_class_files).
-    Вся операция — одна транзакция: файлы удаляются до записей, единственный
-    commit в конце."""
+    это история ученика, переживает удаление класса (см. class_file_urls).
+    Вся операция — одна транзакция с единственным commit в конце; файлы из
+    хранилища удаляются ТОЛЬКО ПОСЛЕ его успеха (см. delete_assignment для
+    объяснения, почему не до)."""
     obj = get_class(db, class_id)
     if not obj:
         return False
+    file_urls: set[str] = set()
     # submissions.deadline_id ссылается на дедлайны без ON DELETE — обнуляем
     # заранее, иначе ForeignKeyViolation. Сами сдачи не трогаем: это история ученика.
     deadline_ids = (
@@ -108,7 +110,7 @@ def delete_class(db: Session, class_id: int) -> bool:
         .all()
     )
     for post in lecture_posts:
-        delete_post_files(post)
+        file_urls |= post_file_urls(post)
         db.delete(post)
 
     # RAG-индекс класса — единый снос по денормализованному class_id (чанки
@@ -124,11 +126,12 @@ def delete_class(db: Session, class_id: int) -> bool:
     db.query(AiMessage).filter(AiMessage.class_id == class_id).delete(synchronize_session=False)
 
     # BE-10: обложка класса — единственный файл, принадлежащий самому классу
-    # напрямую; задания/сдачи класс не трогает (см. delete_class_files) и их
+    # напрямую; задания/сдачи класс не трогает (см. class_file_urls) и их
     # файлы тут не чистим — это осознанно, они переживают удаление класса.
-    delete_class_files(obj)
+    file_urls |= class_file_urls(obj)
     db.delete(obj)
     db.commit()
+    delete_urls(file_urls)
     return True
 
 def add_member(db: Session, class_id: int, user_id: int) -> bool:

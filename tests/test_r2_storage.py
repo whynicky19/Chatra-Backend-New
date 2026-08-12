@@ -170,6 +170,16 @@ def test_build_key_no_extension_when_none_present():
     assert key == "attachments/README"
 
 
+def test_build_key_keeps_extension_for_dotfile_style_name():
+    # Регрессия: os.path.splitext(".pdf") трактует ведущую точку как unix
+    # hidden-file имя (stem=".pdf", ext="") — итоговый ключ терял расширение
+    # целиком ("attachments/pdf" вместо "attachments/file.pdf").
+    svc = _service()
+    svc._client.head_object.side_effect = _client_error(404)
+    key = svc.build_key("attachments", ".pdf")
+    assert key == "attachments/file.pdf"
+
+
 def test_upload_passes_cache_control_when_given():
     svc = _service()
     svc.upload(b"data", "materials/covers/x.webp", "image/webp", cache_control="public, max-age=31536000, immutable")
@@ -224,3 +234,48 @@ def test_get_object_returns_none_on_404():
     svc = _service()
     svc._client.get_object.side_effect = _client_error(404)
     assert svc.get_object("materials/covers/missing.webp") is None
+
+
+def test_put_if_absent_writes_when_key_free():
+    svc = _service()
+    assert svc.put_if_absent(b"data", "uploads/x.txt", "text/plain") is True
+    kwargs = svc._client.put_object.call_args.kwargs
+    assert kwargs["IfNoneMatch"] == "*"
+    assert kwargs["Key"] == "uploads/x.txt"
+
+
+def test_put_if_absent_returns_false_on_precondition_failed():
+    svc = _service()
+    svc._client.put_object.side_effect = _client_error(412)
+    assert svc.put_if_absent(b"data", "uploads/x.txt", "text/plain") is False
+
+
+def test_upload_unique_atomically_avoids_toctou_collision():
+    # Регрессия: раньше build_key() (exists()-проверка) и upload() были
+    # раздельными вызовами — два параллельных запроса с одинаковым именем
+    # файла могли оба увидеть "ключ свободен" и один PUT молча перезаписывал
+    # файл другого. upload_unique() пишет условно (IfNoneMatch=*) и просто
+    # переходит к следующему кандидату при коллизии — второй файл никогда не
+    # перезаписывает первый.
+    svc = _service()
+    # Первый кандидат уже занят (гонка/коллизия) -> 412, второй свободен.
+    svc._client.put_object.side_effect = [_client_error(412), {}]
+    url = svc.upload_unique(b"data", "submissions", "report.pdf", "application/pdf")
+    assert url == "http://localhost:8000/api/uploads/r2/submissions/report_1.pdf"
+    assert svc._client.put_object.call_count == 2
+    first_key = svc._client.put_object.call_args_list[0].kwargs["Key"]
+    second_key = svc._client.put_object.call_args_list[1].kwargs["Key"]
+    assert first_key == "submissions/report.pdf"
+    assert second_key == "submissions/report_1.pdf"
+
+
+def test_upload_unique_falls_back_to_uuid_after_exhausting_suffixes():
+    svc = _service()
+    svc._client.put_object.side_effect = [_client_error(412)] * 21 + [{}]
+    url = svc.upload_unique(b"data", "materials", "report.pdf", "application/pdf")
+    assert svc._client.put_object.call_count == 22
+    last_key = svc._client.put_object.call_args_list[-1].kwargs["Key"]
+    assert last_key.startswith("materials/report_") and last_key.endswith(".pdf")
+    tail = last_key[len("materials/report_"):-len(".pdf")]
+    assert tail not in {str(i) for i in range(1, 21)}
+    assert url.endswith(last_key)

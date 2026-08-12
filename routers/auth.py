@@ -254,11 +254,15 @@ def delete_me(
     if not verify_password(body.password, current_user.hashed_password):
         raise HTTPException(status_code=400, detail="wrong_current_password")
     # BE-10: файлы сдач/заданий/обложек классов пользователя не чистятся
-    # каскадом на уровне БД — удаляем их явно до удаления записи.
-    from services.file_cleanup import delete_user_files
-    delete_user_files(current_user)
+    # каскадом на уровне БД — собираем их явно, но физически удаляем из
+    # хранилища только ПОСЛЕ успешного commit() (см. crud/assignments.py::
+    # delete_assignment — если бы удаление шло раньше и commit() затем упал,
+    # откат вернул бы записи в БД, но их файлы были бы уже стёрты насовсем).
+    from services.file_cleanup import delete_urls, user_file_urls
+    urls = user_file_urls(current_user)
     db.delete(current_user)
     db.commit()
+    delete_urls(urls)
 
 
 def admin_required(current_user=Depends(get_current_user)):

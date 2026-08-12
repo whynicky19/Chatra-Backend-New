@@ -95,6 +95,21 @@ class UploadUrlSignerMiddleware(BaseHTTPMiddleware):
         )
 
 
+class _UploadsSkippingGZipMiddleware(GZipMiddleware):
+    """GZip не должен трогать /api/uploads: Content-Encoding: gzip несовместим
+    с Range/206 (Content-Range описывает офсеты в НЕсжатом теле — многие
+    мобильные HTTP-стеки/плееры не умеют это сопоставлять и не могут
+    перематывать видео/аудио, вплоть до отказа воспроизводить файл вовсе), а
+    бинарные файлы (jpg/mp4/pdf/...) и так уже сжаты — gzip на них только жжёт
+    CPU без выигрыша в размере."""
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["path"].startswith("/api/uploads/"):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
 # Порядок важен: signer первый = самый внутренний, видит несжатый JSON.
 # GZip добавляется после и сжимает уже подписанное тело.
 app.add_middleware(UploadUrlSignerMiddleware)
@@ -106,7 +121,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 # Сжатие JSON-ответов: списки постов/классов с текстами лекций ужимаются в разы.
-app.add_middleware(GZipMiddleware, minimum_size=1024)
+app.add_middleware(_UploadsSkippingGZipMiddleware, minimum_size=1024)
 
 # Все публичные API-эндпоинты живут под /api: на проде под теми же путями,
 # что и API (например /classes/27), отдаются и страницы веб-фронтенда, из-за
@@ -182,7 +197,11 @@ def _serve_r2_upload(filename: str, name: str | None, request: Request):
         cleaned = name.replace("\r", "").replace("\n", "").strip()
         if cleaned:
             download_name = cleaned[:255]
-    content_type = mimetypes.guess_type(download_name)[0] or obj.content_type
+    # Content-Type — по РЕАЛЬНОМУ ключу файла, не по download_name: `name` не
+    # входит в подпись и полностью подконтролен клиенту (см. комментарий у
+    # serve_upload про polyglot-файл + "&name=x.html" → inline HTML → XSS в
+    # origin бэкенда, если бы Content-Type зависел от него).
+    content_type = mimetypes.guess_type(key)[0] or obj.content_type
 
     headers = {
         "X-Content-Type-Options": "nosniff",
@@ -240,6 +259,17 @@ def serve_upload(
         cleaned = name.replace("\r", "").replace("\n", "").strip()
         if cleaned:
             download_name = cleaned[:255]
+    # media_type считаем от РЕАЛЬНОГО файла на диске, а не от download_name:
+    # `name` не входит в подпись (см. докстринг выше) и полностью подконтролен
+    # клиенту — если бы Content-Type определялся по нему (как делает Starlette
+    # по умолчанию, когда filename= передан без явного media_type), достаточно
+    # было бы приписать "&name=x.html" к любой валидной подписанной ссылке на
+    # файл с inline-расширением, чтобы браузер отрендерил его как HTML при
+    # X-Content-Type-Options: nosniff (который не защищает от ЯВНО неверного
+    # Content-Type, только от угадывания) — polyglot-файл (JPEG/PNG с валидными
+    # первыми байтами и HTML-payload дальше, magic-byte проверка на загрузке
+    # смотрит только на сигнатуру) исполнялся бы как скрипт в origin бэкенда.
+    media_type = mimetypes.guess_type(full)[0]
     # filename обязателен: без него Starlette вообще не шлёт Content-Disposition,
     # и content_disposition_type ни на что не влияет.
     return FileResponse(
@@ -247,6 +277,7 @@ def serve_upload(
         headers={"X-Content-Type-Options": "nosniff"},
         content_disposition_type=disposition,
         filename=download_name,
+        media_type=media_type,
     )
 
 

@@ -6,7 +6,9 @@ from typing import Optional, List
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from models import Assignment, Submission, Grade, User, Cohort, Deadline, cohort_students
-from services.file_cleanup import delete_assignment_files, delete_upload_file, description_file_urls
+from services.file_cleanup import (
+    assignment_file_urls, delete_upload_file, delete_urls, description_file_urls,
+)
 
 def create_assignment(
     db: Session,
@@ -133,10 +135,16 @@ def delete_assignment(db: Session, assignment_id: int) -> bool:
     if not obj:
         return False
     # BE-10: варианты и сдачи уходят каскадом вместе с заданием (ORM
-    # cascade="all, delete-orphan") — их файлы чистим до удаления записи.
-    delete_assignment_files(obj)
+    # cascade="all, delete-orphan"). Файлы собираем ДО удаления, но физически
+    # чистим хранилище ТОЛЬКО ПОСЛЕ успешного commit(): если бы это было
+    # наоборот и db.commit() затем упал (например, гонка — студент прислал
+    # новую сдачу в момент удаления задания, её ORM-каскад не увидел, и
+    # DELETE упирается в FK), транзакция откатилась бы и все сдачи вернулись
+    # бы в БД, но их файлы были бы уже безвозвратно стёрты.
+    urls = assignment_file_urls(obj)
     db.delete(obj)
     db.commit()
+    delete_urls(urls)
     return True
 
 def get_submission(db: Session, submission_id: int) -> Optional[Submission]:

@@ -65,15 +65,36 @@ def _r2_key_from_url(url: str) -> str | None:
     return key or None
 
 
+def _invalidate_file_text_cache(file_path: str) -> None:
+    """Чистит кэш распарсенного текста файла (routers/uploads.py:
+    _file_text_cache) при удалении файла из хранилища.
+
+    R2-ключи строятся из человекочитаемого имени (services/storage/base.py:
+    build_key), а не UUID — после удаления файла его ключ снова свободен, и
+    следующая загрузка с тем же (после санитайза) именем в ту же категорию
+    может получить ТОТ ЖЕ ключ. Кэш в routers/uploads.py хранится без TTL по
+    file_path — без инвалидации здесь GET /upload/utils/file-text отдал бы
+    текст СТАРОГО удалённого файла новому файлу, оказавшемуся под тем же
+    путём (кормит AI-грейдинг/контекст чата чужим/устаревшим содержимым)."""
+    try:
+        from routers.uploads import _file_text_cache
+    except ImportError:
+        return
+    _file_text_cache.pop(file_path, None)
+
+
 def delete_upload_file(url: str) -> bool:
     """Удаляет один файл по его URL/пути. True — файл удалён."""
     r2_key = _r2_key_from_url(url)
     if r2_key is not None:
         try:
-            return get_storage_service().delete(r2_key)
+            deleted = get_storage_service().delete(r2_key)
         except StorageError as e:
             logger.warning("file_cleanup: не удалось удалить из R2 %s (%s)", r2_key, e)
             return False
+        if deleted:
+            _invalidate_file_text_cache(f"r2/{r2_key}")
+        return deleted
 
     name = _filename_from_url(url)
     if not name:
@@ -93,9 +114,22 @@ def delete_upload_file(url: str) -> bool:
         return False
 
 
-def delete_submission_files(submission) -> int:
-    """Удаляет все файлы сдачи (file_url + file_urls JSON). Возвращает число
-    фактически удалённых файлов."""
+def delete_urls(urls) -> int:
+    """Удаляет набор файлов по URL. Возвращает число фактически удалённых."""
+    return sum(1 for u in set(urls) if delete_upload_file(u))
+
+
+def submission_file_urls(submission) -> set[str]:
+    """Собирает URL файлов сдачи (file_url + file_urls JSON), ничего не удаляя.
+
+    ВАЖНО: используется, чтобы собрать список ДО удаления родительской записи
+    из БД (см. delete_assignment/delete_class/delete_user в crud/*.py и
+    routers/*.py) — физическое удаление из хранилища должно происходить
+    ПОСЛЕ успешного db.commit(), а не до него. Если бы файлы стирались до
+    commit(), а commit() затем упал (гонка с параллельной вставкой строки,
+    ссылающейся на удаляемую запись; разрыв соединения; дедлок) — транзакция
+    откатилась бы и строки в БД остались бы на месте, но файлы, на которые
+    они ссылаются, были бы уже безвозвратно стёрты из R2/диска."""
     urls: list[str] = []
     if getattr(submission, "file_url", None):
         urls.append(submission.file_url)
@@ -106,31 +140,44 @@ def delete_submission_files(submission) -> int:
                 urls.extend(u for u in parsed if u)
         except (ValueError, TypeError):
             pass
-    removed = 0
-    for u in set(urls):
-        if delete_upload_file(u):
-            removed += 1
-    return removed
+    return set(urls)
+
+
+def delete_submission_files(submission) -> int:
+    """Удаляет все файлы сдачи (file_url + file_urls JSON). Возвращает число
+    фактически удалённых файлов."""
+    return delete_urls(submission_file_urls(submission))
+
+
+def class_file_urls(klass) -> set[str]:
+    """URL обложки класса (cover_image/cover_thumbnail), без удаления. Только
+    файлы самого класса — задания и сдачи класс не удаляет (class_id у
+    Assignment не FK, они переживают удаление класса)."""
+    return {u for u in (getattr(klass, "cover_image", None), getattr(klass, "cover_thumbnail", None)) if u}
 
 
 def delete_class_files(klass) -> int:
     """Удаляет обложку класса (cover_image/cover_thumbnail). Только файлы
     самого класса — задания и сдачи класс не удаляет (class_id у Assignment
     не FK, они переживают удаление класса)."""
-    urls = {u for u in (getattr(klass, "cover_image", None), getattr(klass, "cover_thumbnail", None)) if u}
-    return sum(1 for u in urls if delete_upload_file(u))
+    return delete_urls(class_file_urls(klass))
+
+
+def assignment_file_urls(assignment) -> set[str]:
+    """URL референсного решения + файлов самого задания (встроены в
+    description, см. description_file_urls) + файлов всех сдач, без удаления."""
+    urls: set[str] = set(_parse_reference_urls_local(getattr(assignment, "reference_solution_url", None)))
+    urls |= description_file_urls(getattr(assignment, "description", None))
+    for submission in getattr(assignment, "submissions", None) or []:
+        urls |= submission_file_urls(submission)
+    return urls
 
 
 def delete_assignment_files(assignment) -> int:
     """Удаляет референсное решение задания + файлы самого задания (встроены
     в description, см. description_file_urls) + файлы всех сдач (вызывается
     перед удалением задания, чьи сдачи каскадно уходят вместе с ним)."""
-    urls: set[str] = set(_parse_reference_urls_local(getattr(assignment, "reference_solution_url", None)))
-    urls |= description_file_urls(getattr(assignment, "description", None))
-    removed = sum(1 for u in urls if delete_upload_file(u))
-    for submission in getattr(assignment, "submissions", None) or []:
-        removed += delete_submission_files(submission)
-    return removed
+    return delete_urls(assignment_file_urls(assignment))
 
 
 def _parse_reference_urls_local(raw: str | None) -> list[str]:
@@ -182,14 +229,21 @@ def _post_attachment_urls(body: str | None) -> list[str]:
     return [f for f in files if isinstance(f, str) and f.strip() and not f.startswith("data:")]
 
 
+def post_file_urls(post) -> set[str]:
+    """URL обложки поста/лекции (если она была сконвертирована в файл R2, см.
+    routers/posts.py: _convert_body_cover — легаси data-URI обложки отдельного
+    файла не имеют, чистить нечего) и всех прикреплённых файлов лекции
+    (body["files"]), без удаления."""
+    body = getattr(post, "body", None)
+    return {u for u in ([_post_cover_url(body)] + _post_attachment_urls(body)) if u}
+
+
 def delete_post_files(post) -> int:
     """Удаляет обложку поста/лекции (если она была сконвертирована в файл R2,
     см. routers/posts.py: _convert_body_cover — легаси data-URI обложки
     отдельного файла не имеют, чистить нечего) и все прикреплённые файлы
     лекции (body["files"])."""
-    body = getattr(post, "body", None)
-    urls = {u for u in ([_post_cover_url(body)] + _post_attachment_urls(body)) if u}
-    return sum(1 for u in urls if delete_upload_file(u))
+    return delete_urls(post_file_urls(post))
 
 
 def delete_replaced_post_cover(old_body: str | None, new_body: str | None) -> bool:
@@ -201,18 +255,27 @@ def delete_replaced_post_cover(old_body: str | None, new_body: str | None) -> bo
     return False
 
 
+def user_file_urls(user) -> set[str]:
+    """URL всех файлов, привязанных к пользователю: его сдачи, посты
+    (обложки лекций), файлы созданных им заданий (референсы, варианты, сдачи
+    учеников по ним) и обложки созданных им классов — всё это каскадно
+    уходит вместе с аккаунтом (см. models.py: cascade="all, delete-orphan"),
+    без удаления."""
+    urls: set[str] = set()
+    for submission in getattr(user, "submissions", None) or []:
+        urls |= submission_file_urls(submission)
+    for post in getattr(user, "posts", None) or []:
+        urls |= post_file_urls(post)
+    for assignment in getattr(user, "assignments_created", None) or []:
+        urls |= assignment_file_urls(assignment)
+    for klass in getattr(user, "classes_created", None) or []:
+        urls |= class_file_urls(klass)
+    return urls
+
+
 def delete_user_files(user) -> int:
     """Удаляет все файлы, привязанные к пользователю: его сдачи, посты
     (обложки лекций), файлы созданных им заданий (референсы, варианты, сдачи
     учеников по ним) и обложки созданных им классов — всё это каскадно
     уходит вместе с аккаунтом (см. models.py: cascade="all, delete-orphan")."""
-    removed = 0
-    for submission in getattr(user, "submissions", None) or []:
-        removed += delete_submission_files(submission)
-    for post in getattr(user, "posts", None) or []:
-        removed += delete_post_files(post)
-    for assignment in getattr(user, "assignments_created", None) or []:
-        removed += delete_assignment_files(assignment)
-    for klass in getattr(user, "classes_created", None) or []:
-        removed += delete_class_files(klass)
-    return removed
+    return delete_urls(user_file_urls(user))

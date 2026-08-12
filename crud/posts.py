@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from models import Posts, User
-from services.file_cleanup import delete_post_files, delete_replaced_post_cover
+from services.file_cleanup import delete_replaced_post_cover, delete_urls, post_file_urls
 
 _LECTURE_TITLE_RE = re.compile(r"^\[LECTURE\]\[(\d+)\]")
 _LECTURE_TITLE_STRIP_RE = re.compile(r"^\[LECTURE\]\[\d+\]\s*")
@@ -124,9 +124,12 @@ def delete_post(db: Session, post_id: int) -> bool:
     if not post:
         return False
     # BE-10: обложка лекции (cover_image в body) — единственный файл поста.
-    delete_post_files(post)
+    # URL собираем до удаления, но чистим хранилище только после успешного
+    # commit() — см. crud/assignments.py::delete_assignment для объяснения.
+    urls = post_file_urls(post)
     db.delete(post)
     db.commit()
+    delete_urls(urls)
     return True
 
 def update_post(db: Session, post_id: int, title: str, body: str) -> Posts:

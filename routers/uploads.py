@@ -48,23 +48,7 @@ _CONTENT_TYPE_BY_EXT = {
 }
 
 
-MAGIC_BYTES: dict = {
-    b"\x25\x50\x44\x46": "pdf",
-    b"\x50\x4b\x03\x04": "zip/docx/xlsx/pptx",
-    b"\xd0\xcf\x11\xe0": "doc/xls/ppt",
-    b"\x89\x50\x4e\x47": "png",
-    b"\xff\xd8\xff":     "jpg",
-    b"\x47\x49\x46\x38": "gif",
-    b"\x52\x49\x46\x46": "webp/wav",
-    b"\x52\x61\x72\x21": "rar",
-    b"\x1f\x8b":         "gz",
-    b"\x49\x44\x33":     "mp3",
-    b"\x1a\x45\xdf\xa3": "webm",
-}
-
-
 TEXT_EXTENSIONS = {"txt", "md", "csv", "rtf", "sm"}
-AUDIO_VIDEO_EXTENSIONS = {"mp3", "wav", "m4a", "webm", "ogg", "mp4"}
 
 # HEIC/HEIF — контейнер ISO base media file format (тот же "скелет", что у
 # MP4): байты 4:8 всегда "ftyp", 8:12 — код бренда. Значения ниже покрывают
@@ -95,7 +79,10 @@ def _validate_file_content(content: bytes, ext: str) -> bool:
     if ext == "gif":
         return content[:4] == b"\x47\x49\x46\x38"
     if ext == "webp":
-        return content[:4] == b"\x52\x49\x46\x46"
+        # RIFF — общий контейнер (тот же заголовок и у wav); без проверки
+        # тега формата в байтах 8:12 любой RIFF-файл (например, .wav) молча
+        # принимался бы как webp.
+        return content[:4] == b"\x52\x49\x46\x46" and content[8:12] == b"WEBP"
     if ext in ("heic", "heif"):
         return content[4:8] == b"ftyp" and content[8:12] in _HEIF_BRANDS
     if ext == "rar":
@@ -106,9 +93,24 @@ def _validate_file_content(content: bytes, ext: str) -> bool:
         return content[:4] == b"\x50\x4b\x03\x04"
     if ext in ("doc", "xls", "ppt"):
         return content[:4] == b"\xd0\xcf\x11\xe0"
-    if ext in AUDIO_VIDEO_EXTENSIONS:
-
-        return True
+    if ext == "wav":
+        return content[:4] == b"\x52\x49\x46\x46" and content[8:12] == b"WAVE"
+    if ext == "ogg":
+        return content[:4] == b"OggS"
+    if ext == "webm":
+        return content[:4] == b"\x1a\x45\xdf\xa3"
+    if ext in ("mp4", "m4a"):
+        # ISO base media file format (тот же "скелет", что у heic выше) — брендов
+        # у mp4/m4a контейнеров слишком много (isom/mp42/M4A ...), достаточно
+        # убедиться, что это действительно ISO-BMF, а не что-то ещё под чужим
+        # расширением.
+        return content[4:8] == b"ftyp"
+    if ext == "mp3":
+        if content[:3] == b"ID3":
+            return True
+        # Без ID3-тега mp3 начинается прямо с frame sync: 11 единичных бит
+        # (0xFF + верхние 3 бита следующего байта).
+        return len(content) >= 2 and content[0] == 0xFF and (content[1] & 0xE0) == 0xE0
 
     return True
 
@@ -295,7 +297,6 @@ async def upload_file(
         )
 
     storage = get_storage_service()
-    key = storage.build_key(category, file.filename)
     content_type = _CONTENT_TYPE_BY_EXT.get(ext, "application/octet-stream")
 
     # Текст файла (pdfplumber/OCR/...) здесь больше НЕ извлекается: ни клиент,
@@ -306,7 +307,14 @@ async def upload_file(
     # гонялся синхронно на каждую загрузку и держал клиента по 10-30+ секунд
     # на файл — не давая при этом никакого результата, который бы кто-то читал.
     try:
-        file_url = await run_in_threadpool(storage.upload, content, key, content_type)
+        # upload_unique — не build_key()+upload(): та пара делала exists()-
+        # проверку и запись отдельными вызовами, и два параллельных запроса
+        # с одинаковым именем файла в одной категории могли получить один и
+        # тот же "свободный" ключ, после чего второй PUT молча перезаписывал
+        # файл первого без единой ошибки. upload_unique пишет атомарно.
+        file_url = await run_in_threadpool(
+            storage.upload_unique, content, category, file.filename, content_type,
+        )
     except StorageError as e:
         raise HTTPException(status_code=502, detail=f"Не удалось загрузить файл в хранилище: {e}")
 

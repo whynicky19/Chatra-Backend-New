@@ -12,6 +12,8 @@ no-op'иться.
    встроены прямо в текст description. delete_assignment_files раньше их
    вообще не видел, поэтому файлы задания переживали удаление/правку
    задания как osиротевший мусор в хранилище."""
+import pytest
+
 import services.file_cleanup as file_cleanup
 from crud import assignments as crud_assignments
 from tests.conftest import make_user
@@ -114,3 +116,29 @@ def test_delete_assignment_files_removes_files_embedded_in_description():
         "attachments/task1.pdf",
         "attachments/task2.docx",
     }
+
+
+def test_delete_assignment_does_not_touch_storage_when_commit_fails(db_session, monkeypatch):
+    # Регрессия: раньше delete_assignment() удаляло файлы ИЗ ХРАНИЛИЩА до
+    # db.commit(). Если бы commit() затем упал (гонка с новой сдачей, разрыв
+    # соединения, дедлок), транзакция откатилась бы и запись задания/сдач
+    # осталась в БД — но файлы были бы уже безвозвратно стёрты. Теперь
+    # сборка URL и физическое удаление разнесены по разные стороны commit():
+    # если commit() падает, до storage дело вообще не должно доходить.
+    calls = _spy_delete(monkeypatch)
+    db = db_session
+    teacher = make_user(db, role="teacher")
+    assignment = crud_assignments.create_assignment(
+        db, 1, "HW1", None, [{"name": "ok", "weight": 100}], 100, None, teacher.id,
+        reference_solution_url="https://cdn.example/api/uploads/r2/assignments/ref.pdf",
+    )
+
+    def _boom():
+        raise RuntimeError("simulated commit failure (e.g. FK race)")
+
+    monkeypatch.setattr(db, "commit", _boom)
+
+    with pytest.raises(RuntimeError):
+        crud_assignments.delete_assignment(db, assignment.id)
+
+    assert calls == []
