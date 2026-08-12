@@ -19,7 +19,7 @@ import hmac
 import os
 import re
 import time
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode
 
 from security import SECRET_KEY
 
@@ -88,6 +88,11 @@ def sign_upload_url(url: str, ttl: int = _DEFAULT_TTL) -> str:
     path = rest.split("?", 1)[0].split("#", 1)[0]
     if not path:
         return url
+    # Подписываем декодированный путь — это то, что увидит verify_signature на
+    # проксирующем эндпоинте (ASGI/Starlette раскодирует %XX в пути запроса ещё
+    # до роутинга), независимо от того, был ли переданный сюда путь уже
+    # percent-encoded.
+    path = unquote(path)
     exp, sig = make_signature(path, ttl)
     return f"{base}{path}?{urlencode({'exp': exp, 'sig': sig})}"
 
@@ -143,6 +148,14 @@ def sign_uploads_in_text(text: str) -> str:
     base = _uploads_base()
 
     def _signed(path: str) -> str:
+        # См. sign_upload_url: подпись всегда считаем от декодированного пути.
+        # Клиенты (Nuxt encodeURI(), Flutter Uri.encodeComponent()) percent-
+        # кодируют путь ДО вставки ссылки в текст, и без unquote() здесь
+        # подпись считалась бы от "%20", а verify_signature на проксирующем
+        # эндпоинте всегда получает уже раскодированный пробел (ASGI/Starlette
+        # декодируют путь запроса до роутинга) — подписи расходились, и сервер
+        # сам себе отдавал 403 на только что подписанную ссылку.
+        path = unquote(path)
         exp, sig = make_signature(path)
         return f"{base}{path}?{urlencode({'exp': exp, 'sig': sig})}"
 

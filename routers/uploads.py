@@ -127,15 +127,19 @@ def _verify_signed_upload_url(url: str) -> str:
     if not is_safe_fetch_url(url):
         raise HTTPException(status_code=400, detail="Недопустимый URL файла")
 
-    from urllib.parse import urlparse, parse_qs
+    from urllib.parse import urlparse, parse_qs, unquote
     from services.file_urls import verify_signature
     parsed = urlparse(url)
     prefix = "/api/uploads/"
     legacy_prefix = "/uploads/"
+    # urlparse() не раскодирует %XX в пути (в отличие от Starlette-роута
+    # /api/uploads/{filename:path}, который отдаёт filename уже декодированным) —
+    # без unquote() здесь подпись, посчитанная от декодированного пути, не
+    # проходила бы проверку, если исходный url пришёл с percent-encoded путём.
     if parsed.path.startswith(prefix):
-        file_path = parsed.path[len(prefix):]
+        file_path = unquote(parsed.path[len(prefix):])
     elif parsed.path.startswith(legacy_prefix):
-        file_path = parsed.path[len(legacy_prefix):]
+        file_path = unquote(parsed.path[len(legacy_prefix):])
     else:
         raise HTTPException(status_code=400, detail="Недопустимый URL файла")
     qs = parse_qs(parsed.query)

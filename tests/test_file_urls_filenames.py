@@ -56,6 +56,12 @@ def test_signs_percent_encoded_path_with_fragment_name():
     # обрывался на первом "%" (path матчился только как "card"), и хвост
     # ("%202.jpg?exp=...&sig=...#card%202.jpg") оставался в тексте как
     # видимый пользователю мусор вместо переподписанной ссылки.
+    #
+    # Путь должен подписываться в ДЕКОДИРОВАННОМ виде: именно его отдаёт
+    # Starlette в {filename:path} на GET /api/uploads/... (ASGI раскодирует
+    # %XX в пути запроса до роутинга), поэтому именно от него и должна
+    # совпасть подпись — иначе только что подписанная ссылка сама не
+    # проходила бы verify_signature (см. баг: 403 сразу после подписи).
     body = json.dumps({
         "description": (
             "http://localhost:8000/api/uploads/r2/attachments/card%202.jpg"
@@ -66,7 +72,7 @@ def test_signs_percent_encoded_path_with_fragment_name():
 
     out = json.loads(sign_uploads_in_text(body))
     m = re.match(
-        r"http://localhost:8000/api/uploads/(r2/attachments/card%202\.jpg)\?exp=(\d+)&sig=(\w+)#card%202\.jpg$",
+        r"http://localhost:8000/api/uploads/(r2/attachments/card 2\.jpg)\?exp=(\d+)&sig=(\w+)#card%202\.jpg$",
         out["description"],
     )
     assert m, out["description"]
