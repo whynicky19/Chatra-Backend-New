@@ -349,6 +349,16 @@ class CoverColorOption(BaseModel):
 class CoverIconOption(BaseModel):
     id: str
     subject: str
+    # Секция пикера: символов больше сорока, плоским списком их не листают.
+    # Порядок в ответе уже сгруппирован — клиент, который про группы не знает,
+    # просто выведет всё подряд и ничего не сломает.
+    group: str = ""
+    group_label: str = ""
+
+
+class CoverIconGroup(BaseModel):
+    id: str
+    label: str
 
 
 class CoverOptionsResponse(BaseModel):
@@ -357,6 +367,9 @@ class CoverOptionsResponse(BaseModel):
     бэкенд."""
     colors: List[CoverColorOption]
     icons: List[CoverIconOption]
+    # Порядок секций пикера. Пустой список у старого клиента — обычный плоский
+    # список символов, как было раньше.
+    groups: List[CoverIconGroup] = []
     default_color: str
     default_icon: str
     # False — OPENAI_API_KEY на сервере не задан: генерация недоступна, все

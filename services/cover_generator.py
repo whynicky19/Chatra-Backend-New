@@ -150,7 +150,11 @@ def _compose_and_store(background: bytes | None, color: str, icon: str, seed: in
                 bg.load()
                 # API отдаёт 3:2, обложка живёт в 16:9 — кроп симметричный,
                 # центр с символом не трогается (cover_art.fit_cover_frame).
-                image = cover_art.fit_cover_frame(bg.convert("RGB"))
+                # Экспозицию доводим арифметикой: промпт просит тусклый ровный
+                # свет, но соблюдает его модель через раз, а рядом в каталоге
+                # обложки должны выглядеть одинаково (cover_art.normalize_exposure).
+                image = cover_art.normalize_exposure(
+                    cover_art.fit_cover_frame(bg.convert("RGB")))
             source = SOURCE_AI
         except Exception:
             # Модель ответила, но байты не открылись — это не повод оставить

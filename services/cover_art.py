@@ -114,77 +114,316 @@ PALETTE: dict[str, dict[str, str]] = {
         "prompt": "deep indigo — near-black ink blue in the corners, rich indigo "
                   "in the field, with only a faint periwinkle halo and a hint of pale cornflower",
     },
+    # Дальше — расширение набора: в вузе и школе направлений много, восьми
+    # цветов на каталог не хватало. Цвета клиентам ничего не стоят (это
+    # чистые данные из /cover/options), в отличие от символов, каждому из
+    # которых нужен глиф в обоих клиентах.
+    "gold": {
+        "hex": "#EAB308", "base": "#B38C22", "ink": "#854D0E",
+        "prompt": "deep antique gold — near-black bistre in the corners, rich ochre "
+                  "in the field, with only a faint amber halo and a hint of pale straw",
+    },
+    "lime": {
+        "hex": "#84CC16", "base": "#6FA81B", "ink": "#3F6212",
+        "prompt": "deep olive lime — near-black moss in the corners, rich olive green "
+                  "in the field, with only a faint lime halo and a hint of pale chartreuse",
+    },
+    "bronze": {
+        "hex": "#C2763A", "base": "#B4703C", "ink": "#7C2D12",
+        "prompt": "deep bronze — near-black sepia in the corners, rich warm bronze "
+                  "in the field, with only a faint copper halo and a hint of pale sand",
+    },
+    # Нейтральный вариант коллекции: не «серый по недосмотру», а осознанный
+    # графитовый — для направлений, которым цветной акцент не идёт.
+    "slate": {
+        "hex": "#7C8BA5", "base": "#64748B", "ink": "#334155",
+        "prompt": "deep graphite — near-black charcoal in the corners, cool slate grey "
+                  "in the field, with only a faint steel-blue halo and a hint of pale silver",
+    },
 }
 
+# Цвета без выраженного тона: их не проверяют на насыщенность (см. тесты) —
+# графит в палитре ровно один и намеренно.
+NEUTRAL_COLORS = frozenset({"slate"})
+
 DEFAULT_COLOR = "teal"
+
+# Группы символов для пикера. Набор перевалил за четыре десятка — плоским
+# списком его листать невозможно, поэтому клиенты рисуют его секциями в этом
+# порядке. Ключ уезжает в каждый символ как "group", подпись — как
+# "group_label" (английская, как и subject: локализуют клиенты).
+ICON_GROUPS: tuple[tuple[str, str], ...] = (
+    ("exact", "Exact sciences"),
+    ("natural", "Natural sciences"),
+    ("tech", "Technology & engineering"),
+    ("humanities", "Humanities"),
+    ("language", "Languages"),
+    ("business", "Business & law"),
+    ("arts", "Arts & media"),
+    ("health", "Health & medicine"),
+    ("applied", "Applied & vocational"),
+    ("sport", "Sport"),
+)
 
 # subject — предмет, для которого символ предлагается по умолчанию. Клиенты
 #           показывают подсказку рядом с символом, а промпт берёт это значение
 #           темой, если название класса ничего не даёт («11А», «Поток 2»).
+# group   — секция пикера, ключ из ICON_GROUPS.
 # motif   — ПРИМЕР тематических элементов фона для этого символа. Именно
 #           пример: тему модель выводит из названия предмета и подбирает формы
-#           сама, а мотив задаёт планку конкретности («UI-каркасы, сетки»,
-#           а не «что-нибудь про дизайн») и держит коллекцию в одном языке.
+#           сама (SUBJECT_MOTIFS), а мотив символа работает запасным вариантом
+#           и держит коллекцию в одном языке.
+#
+# ВАЖНО про добавление символов: сам глиф рисуют клиенты (SubjectCover.vue,
+# subject_cover.dart), поэтому новый id здесь — это задача и им тоже. Идентифи-
+# каторы подобраны под имена Lucide (sigma, atom, flask-conical, dna, code,
+# app-window, database, network, shield, cpu, cog, compass, building-2, scroll,
+# brain, users, coins, briefcase, scale, camera, pen-tool, mic, heart-pulse,
+# stethoscope, pill, wrench, chef-hat, scissors, car, plane, sprout, volleyball),
+# чтобы глиф на обоих клиентах брался готовым, а не рисовался с нуля.
 ICONS: dict[str, dict[str, str]] = {
+    # ── Точные науки ────────────────────────────────────────────────────────
     "sigma": {
-        "subject": "Mathematics",
+        "subject": "Mathematics", "group": "exact",
         "motif": "coordinate grids, plotted curves, geometric constructions, "
                  "circles with radii, faint graph axes",
     },
+    "cube": {
+        "subject": "Geometry", "group": "exact",
+        "motif": "wireframe polyhedra, projection lines, angles and compass arcs, "
+                 "construction grids",
+    },
+    "dice": {
+        "subject": "Statistics", "group": "exact",
+        "motif": "distribution curves, scatter grids, probability trees, tally "
+                 "geometry, plotted axes",
+    },
+
+    # ── Естественные науки ──────────────────────────────────────────────────
     "atom": {
-        "subject": "Physics",
+        "subject": "Physics", "group": "natural",
         "motif": "wave interference, field lines, particle trails, orbital paths, "
                  "faint scientific diagrams",
     },
     "flask": {
-        "subject": "Chemistry",
+        "subject": "Chemistry", "group": "natural",
         "motif": "molecular lattices, bonded hexagonal structures, laboratory "
                  "glassware outlines, dissolving particles",
     },
     "dna": {
-        "subject": "Biology",
+        "subject": "Biology", "group": "natural",
         "motif": "DNA helices, cell membranes, branching organic structures, "
                  "microscopic patterns",
     },
-    "code": {
-        "subject": "Computer Science",
-        "motif": "wireframe layouts, node graphs, layered interface frames, "
-                 "vector paths, data flow lines",
+    "microscope": {
+        "subject": "Microbiology", "group": "natural",
+        "motif": "cell colonies under a lens, petri-dish circles, slide grids, "
+                 "microscopic filaments",
     },
-    "column": {
-        "subject": "History",
-        "motif": "old map contours, classical architecture outlines, arches and "
-                 "columns, artifact silhouettes, faint ornamental patterns",
+    "leaf": {
+        "subject": "Ecology", "group": "natural",
+        "motif": "leaf venation, growth rings, branching root systems, water cycle "
+                 "arrows reduced to thin curves",
+    },
+    "telescope": {
+        "subject": "Astronomy", "group": "natural",
+        "motif": "orbital ellipses, constellation lines, planetary arcs, star fields, "
+                 "faint celestial charts",
     },
     "globe": {
-        "subject": "Geography",
+        "subject": "Geography", "group": "natural",
         "motif": "meridian grids, terrain contour lines, coastline outlines, "
                  "topographic patterns",
     },
-    "letter": {
-        "subject": "English",
-        "motif": "flowing script-like strokes, ruled writing lines, abstract "
-                 "phonetic marks, ribbons of language",
+
+    # ── Технологии и инженерия ──────────────────────────────────────────────
+    "code": {
+        "subject": "Programming", "group": "tech",
+        "motif": "node graphs, flowing data paths, layered code blocks reduced to "
+                 "faint lines, terminal-like geometry",
+    },
+    "browser": {
+        "subject": "Web Development", "group": "tech",
+        "motif": "wireframe layouts, browser window frames, layout grids, vector "
+                 "paths, interface components reduced to thin outlines",
+    },
+    "database": {
+        "subject": "Databases", "group": "tech",
+        "motif": "stacked table grids, relation arrows, indexed rows reduced to thin "
+                 "lines, query trees",
+    },
+    "network": {
+        "subject": "Networks", "group": "tech",
+        "motif": "node topologies, routing paths, signal rings, packet trails",
+    },
+    "shield": {
+        "subject": "Cybersecurity", "group": "tech",
+        "motif": "key and lock geometry, cipher grids, layered perimeters, binary "
+                 "streams reduced to faint lines",
+    },
+    "chip": {
+        "subject": "Electronics", "group": "tech",
+        "motif": "circuit traces, pin grids, resistor and capacitor symbols, signal "
+                 "waveforms",
+    },
+    "gear": {
+        "subject": "Mechanical Engineering", "group": "tech",
+        "motif": "gear outlines, technical blueprints, dimension lines, orthographic "
+                 "projections, kinematic linkages",
+    },
+    "compass": {
+        "subject": "Architecture", "group": "tech",
+        "motif": "floor plans, elevation drawings, construction grids, arcs struck "
+                 "with a compass, dimension lines",
+    },
+    "building": {
+        "subject": "Construction", "group": "tech",
+        "motif": "structural frames, truss geometry, load diagrams, scaffolding "
+                 "lattices, site plans",
+    },
+
+    # ── Гуманитарные ────────────────────────────────────────────────────────
+    "column": {
+        "subject": "History", "group": "humanities",
+        "motif": "old map contours, classical architecture outlines, arches and "
+                 "columns, artifact silhouettes, faint ornamental patterns",
+    },
+    "scroll": {
+        "subject": "Philosophy", "group": "humanities",
+        "motif": "concentric thought circles, balanced geometry, unrolled scroll "
+                 "lines, classical proportions",
     },
     "book": {
-        "subject": "Literature",
+        "subject": "Literature", "group": "humanities",
         "motif": "layered pages, open-book outlines, ruled text blocks reduced to "
                  "faint lines, quill strokes",
     },
+    "brain": {
+        "subject": "Psychology", "group": "humanities",
+        "motif": "interconnected thought nodes, concentric mind circles, soft "
+                 "branching links, mirrored silhouetted geometry",
+    },
+    "people": {
+        "subject": "Social Studies", "group": "humanities",
+        "motif": "connection graphs between figures reduced to dots, survey grids, "
+                 "demographic curves, group circles",
+    },
+
+    # ── Языки ───────────────────────────────────────────────────────────────
+    "letter": {
+        "subject": "English", "group": "language",
+        "motif": "flowing script-like strokes, ruled writing lines, abstract "
+                 "phonetic marks, ribbons of language",
+    },
+    "chat": {
+        "subject": "Communication", "group": "language",
+        "motif": "speech-shaped outlines, sound waves, dialogue lines, phonetic "
+                 "marks reduced to faint geometry",
+    },
+
+    # ── Экономика и право ───────────────────────────────────────────────────
     "chart": {
-        "subject": "Economics",
+        "subject": "Economics", "group": "business",
         "motif": "trend lines, candlestick and bar silhouettes, plotted axes, "
                  "flowing market curves",
     },
+    "coins": {
+        "subject": "Finance", "group": "business",
+        "motif": "stacked coin circles, ledger grids, compound curves, balance "
+                 "geometry",
+    },
+    "briefcase": {
+        "subject": "Management", "group": "business",
+        "motif": "org-chart branches, process arrows, milestone timelines, matrix "
+                 "grids reduced to thin lines",
+    },
+    "scale": {
+        "subject": "Law", "group": "business",
+        "motif": "balanced scale outlines, columned facades, paragraph marks reduced "
+                 "to faint geometry, seal circles",
+    },
+
+    # ── Искусство и медиа ───────────────────────────────────────────────────
     "palette": {
-        "subject": "Art",
+        "subject": "Art", "group": "arts",
         "motif": "brush strokes, colour-wheel arcs, composition guides, golden-ratio "
                  "spirals, canvas grids",
     },
+    "pen": {
+        "subject": "Graphic Design", "group": "arts",
+        "motif": "bezier paths with handles, layout grids, type baselines, layered "
+                 "shape outlines",
+    },
     "note": {
-        "subject": "Music",
+        "subject": "Music", "group": "arts",
         "motif": "staff lines, sound waves, rhythmic pulses, equaliser bars reduced "
                  "to faint geometry",
+    },
+    "camera": {
+        "subject": "Photography", "group": "arts",
+        "motif": "aperture blades, focus rings, rule-of-thirds grids, light-ray "
+                 "diagrams, film-frame outlines",
+    },
+    "mic": {
+        "subject": "Journalism", "group": "arts",
+        "motif": "broadcast waves, column grids of a newspaper page, signal arcs, "
+                 "headline rules reduced to thin lines",
+    },
+
+    # ── Медицина ────────────────────────────────────────────────────────────
+    "pulse": {
+        "subject": "Medicine", "group": "health",
+        "motif": "pulse waveforms, anatomical outlines, cell structures, molecular "
+                 "chains, faint medical diagrams",
+    },
+    "stethoscope": {
+        "subject": "Nursing", "group": "health",
+        "motif": "pulse curves, care-plan grids, anatomical outlines, soft rounded "
+                 "medical geometry",
+    },
+    "pill": {
+        "subject": "Pharmacy", "group": "health",
+        "motif": "molecular chains, dosage curves, capsule outlines, crystalline "
+                 "lattices",
+    },
+
+    # ── Прикладные и профессии ──────────────────────────────────────────────
+    "wrench": {
+        "subject": "Technology & Crafts", "group": "applied",
+        "motif": "tool outlines, workshop blueprints, fastener geometry, assembly "
+                 "diagrams",
+    },
+    "chef": {
+        "subject": "Culinary Arts", "group": "applied",
+        "motif": "utensil outlines, recipe grids, steam curves, plated-composition "
+                 "circles",
+    },
+    "scissors": {
+        "subject": "Fashion & Sewing", "group": "applied",
+        "motif": "pattern-cutting lines, stitch dashes, fabric drape curves, "
+                 "measurement grids",
+    },
+    "car": {
+        "subject": "Automotive", "group": "applied",
+        "motif": "engine schematics, gear trains, chassis blueprints, road-line "
+                 "perspective reduced to thin geometry",
+    },
+    "plane": {
+        "subject": "Aviation", "group": "applied",
+        "motif": "airfoil profiles, flight-path arcs, airflow streamlines, "
+                 "navigation grids",
+    },
+    "sprout": {
+        "subject": "Agriculture", "group": "applied",
+        "motif": "field grids, growth curves, root systems, irrigation lines, "
+                 "seasonal cycle circles",
+    },
+
+    # ── Спорт ───────────────────────────────────────────────────────────────
+    "ball": {
+        "subject": "Physical Education", "group": "sport",
+        "motif": "motion trails, field markings, trajectory arcs, stopwatch circles, "
+                 "stadium geometry",
     },
 }
 
@@ -265,8 +504,29 @@ SUBJECT_MOTIFS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("музык", "music", "вокал", "vocal", "гитар", "фортепиан", "хор", "сольфедж"),
      "staff lines, sound waves, rhythmic pulses, equaliser bars reduced to "
      "faint geometry"),
+    (("фотограф", "photograph", "кино", "cinema", "видео", "video", "монтаж"),
+     "aperture blades, focus rings, rule-of-thirds grids, light-ray diagrams, "
+     "film-frame outlines"),
+    (("журналист", "journalism", "сми", "media", "редактир", "editorial", "пиар", "pr "),
+     "broadcast waves, newspaper column grids, signal arcs, headline rules "
+     "reduced to thin lines"),
+    (("кулинар", "culinary", "повар", "cooking", "кондитер", "пищев", "общепит"),
+     "utensil outlines, recipe grids, steam curves, plated-composition circles"),
+    (("шве", "мода", "fashion", "sewing", "текстиль", "textile", "крой", "костюм"),
+     "pattern-cutting lines, stitch dashes, fabric drape curves, measurement grids"),
+    (("автодел", "автомоб", "automotive", "автомехан", "двигател", "engine"),
+     "engine schematics, gear trains, chassis blueprints, road-line perspective "
+     "reduced to thin geometry"),
+    (("авиац", "aviation", "пилот", "самолёт", "самолет", "aerospace", "космонавт"),
+     "airfoil profiles, flight-path arcs, airflow streamlines, navigation grids"),
+    (("агроном", "agricult", "сельск", "земледел", "животновод", "farming"),
+     "field grids, growth curves, root systems, irrigation lines, seasonal cycle "
+     "circles"),
+    (("архитект", "architect", "строител", "construct", "черчение", "геодез"),
+     "floor plans, elevation drawings, construction grids, compass arcs, "
+     "dimension lines"),
     (("искусств", "art", "живопис", "painting", "рисован", "drawing", "скульпт",
-      "график", "graphic", "дизайн", "design", "фотограф", "photograph"),
+      "график", "graphic", "дизайн", "design"),
      "brush strokes, colour-wheel arcs, composition guides, golden-ratio "
      "spirals, canvas grids"),
     (("физкультур", "физическая культура", "sport", "спорт", "фитнес", "тренир"),
@@ -322,15 +582,31 @@ def normalize_subject(value: str | None, icon: str = "") -> str:
 
 def catalog() -> dict:
     """Палитра и набор символов для клиентов — веб и приложение строят пикеры
-    из этого ответа, чтобы набор цветов/символов нигде не разъезжался."""
+    из этого ответа, чтобы набор цветов/символов нигде не разъезжался.
+
+    Символы отдаются в порядке групп (ICON_GROUPS) и с полями group/
+    group_label: список перевалил за четыре десятка, и плоским он в пикере
+    нечитаем. Клиент, который про группы не знает, просто выведет всё подряд —
+    порядок для этого уже правильный.
+    """
+    order = {slug: i for i, (slug, _) in enumerate(ICON_GROUPS)}
+    labels = dict(ICON_GROUPS)
+    icons = sorted(ICONS.items(), key=lambda kv: order.get(kv[1]["group"], len(order)))
     return {
         "colors": [
             {"id": slug, "hex": v["hex"], "base": v["base"], "ink": v["ink"]}
             for slug, v in PALETTE.items()
         ],
         "icons": [
-            {"id": slug, "subject": v["subject"]} for slug, v in ICONS.items()
+            {
+                "id": slug,
+                "subject": v["subject"],
+                "group": v["group"],
+                "group_label": labels.get(v["group"], v["group"]),
+            }
+            for slug, v in icons
         ],
+        "groups": [{"id": slug, "label": label} for slug, label in ICON_GROUPS],
         "default_color": DEFAULT_COLOR,
         "default_icon": DEFAULT_ICON,
     }
@@ -367,22 +643,32 @@ _BASE_STYLE = (
     "is instantly recognisable as this field of knowledge and two different "
     "subjects never get the same background. "
 
-    "How those elements must look: thin precise lines, clean outlines, minimal "
-    "geometry, sparse particles, subtle grids, curves and waves, softly glowing "
-    "and dissolving into the gradient. They are part of the background, not "
-    "objects placed on top of it — but they must be clearly visible and easy to "
-    "read even when the cover is shown as a small card. Semi-transparent and "
-    "low-contrast, yet distinct: not a barely perceptible texture, not vague "
-    "smoke or blur. Never a collage of separate pictures, never opaque solid "
-    "shapes, never a row of icons, never a busy or crowded frame. "
+    "Draw every one of these elements strictly as line art: outlines only, one "
+    "uniform hairline stroke, flat, with no fill, no shading, no inner "
+    "gradient, no embossing, no relief, no drop shadow, no volume and no "
+    "perspective rendering. A building, a molecule, a map or a wave must read "
+    "as a schematic technical drawing, never as a modelled, sculpted or lit "
+    "object. Keep every element in exactly the same weight and treatment, so "
+    "the whole background looks drawn by one hand in one pass. "
 
-    "Spread these elements across the whole frame — both sides, the corners, "
-    "the upper and lower areas — and keep generous empty space between them. "
-    "They fade out only in the middle: a single large subject symbol is placed "
-    "over the centre by the interface and it is the main visual accent of the "
-    "cover, so the central area holds nothing but the plain gradient and "
-    "nothing may compete with the symbol there. Keep the top and bottom edges "
-    "quiet as well, the artwork is cropped there. "
+    "They are part of the background, not objects placed on top of it — but "
+    "they must be clearly visible and easy to read even when the cover is shown "
+    "as a small card. Semi-transparent and low-contrast, yet distinct: not a "
+    "barely perceptible texture, not vague smoke or blur. Do not gather several "
+    "complete objects side by side into a scene or a collage, and never draw a "
+    "row of icons: the elements form one continuous, airy background texture. "
+
+    "Balance matters: distribute the elements evenly over the whole frame, so "
+    "the left and the right side carry a similar amount and the upper and lower "
+    "areas are not left empty. Never pack one half of the image while the other "
+    "half stays bare. Keep generous empty space between the elements. "
+
+    "Keep a clear circular area in the middle, about one third of the image "
+    "width across, holding nothing but the plain gradient — no line may cross "
+    "it. A single large subject symbol is placed over that centre by the "
+    "interface and it is the main visual accent of the cover, so nothing may "
+    "compete with it or touch it there. Keep a calm empty margin along all four "
+    "edges as well, the artwork is cropped there. "
 
     "Every cover in this collection shares one style: the same darkness, the "
     "same softness, the same thin-line treatment and the same amount of empty "
@@ -487,6 +773,85 @@ def fit_cover_frame(img):
         img = img.crop((0, top, w, top + new_h))
     if img.size != (COVER_WIDTH, COVER_HEIGHT):
         img = img.resize((COVER_WIDTH, COVER_HEIGHT), Image.LANCZOS)
+    return img
+
+
+# ── Экспозиция ──────────────────────────────────────────────────────────────
+# Коридор яркости, одинаковый для всей коллекции. Цифры не из головы: у первой
+# партии сгенерированных обложек средняя яркость гуляла 77-92 из 255, а центр
+# был в 3.6-4.2 раза светлее углов — «фонарик в темноте». После правок промпта
+# стало 49 и 2.9-3.1, но это всё ещё просьба к модели, а не гарантия: соседние
+# обложки в каталоге обязаны выглядеть одинаково проэкспонированными, поэтому
+# итог доводится здесь арифметикой.
+EXPOSURE_MEAN_MAX = 58.0    # выше — обложка «светлая», выбивается из коллекции
+EXPOSURE_MEAN_MIN = 22.0    # ниже — почти чёрный прямоугольник
+EXPOSURE_CENTRE_RATIO = 2.0  # во сколько раз центр вправе быть светлее углов
+
+
+def _exposure_stats(img) -> tuple[float, float, float]:
+    """(средняя яркость, яркость центра, яркость углов) по маленькой копии.
+
+    Считаем на 96×54: полноразмерная статистика тут не нужна, а копия делает
+    замер дешёвым настолько, что его не жалко гонять несколько раз.
+    """
+    from PIL import ImageStat
+
+    thumb = img.convert("L").resize((96, 54))
+    w, h = thumb.size
+    centre = thumb.crop((round(w * 0.35), round(h * 0.25), round(w * 0.65), round(h * 0.75)))
+    corners = [
+        thumb.crop((0, 0, round(w * 0.18), round(h * 0.30))),
+        thumb.crop((round(w * 0.82), 0, w, round(h * 0.30))),
+        thumb.crop((0, round(h * 0.70), round(w * 0.18), h)),
+        thumb.crop((round(w * 0.82), round(h * 0.70), w, h)),
+    ]
+    corner_mean = sum(ImageStat.Stat(c).mean[0] for c in corners) / len(corners)
+    return (ImageStat.Stat(thumb).mean[0], ImageStat.Stat(centre).mean[0], corner_mean)
+
+
+def normalize_exposure(img):
+    """Приводит обложку к общей экспозиции коллекции.
+
+    Два шага, оба мультипликативные — они не трогают тон и насыщенность, в
+    отличие от кривых по каналам:
+
+      1. гасим «прожектор»: если центр светлее углов больше чем в
+         EXPOSURE_CENTRE_RATIO раз, накладываем широкий радиальный
+         множитель — центр темнеет, края остаются как были;
+      2. подгоняем общую яркость в коридор [MEAN_MIN, MEAN_MAX].
+
+    Ослабление ограничено (не больше чем вдвое), чтобы совсем засвеченный кадр
+    не превратился в грязь: лучше слегка светлая обложка, чем испорченная.
+    Картинка, уже попадающая в коридор, возвращается нетронутой — локальный
+    фолбэк проходит эту функцию насквозь.
+    """
+    from PIL import Image, ImageChops, ImageEnhance
+
+    img = img.convert("RGB")
+    mean, centre, corners = _exposure_stats(img)
+
+    # 1. Прожектор в середине. Проходов несколько: маска гасит и края тоже,
+    # поэтому за один раз отношение до цели не доходит — три прохода сводят
+    # его к ~2.0 и на светлых, и на тёмных кадрах.
+    for _ in range(3):
+        if not (centre > 1.0 and corners > 1.0 and centre > corners * EXPOSURE_CENTRE_RATIO):
+            break
+        k = max(0.0, min(0.45, 1.0 - (corners * EXPOSURE_CENTRE_RATIO) / centre))
+        if k <= 0.01:
+            break
+        # Маска шире кадра и мягкая: узкая дала бы видимое кольцо на градиенте.
+        dip = _radial_mask(0.5, 0.5, 0.80, softness=0.7).point(
+            lambda v: 255 - round(v * k))
+        if dip.size != img.size:
+            dip = dip.resize(img.size, Image.BICUBIC)
+        img = ImageChops.multiply(img, Image.merge("RGB", (dip, dip, dip)))
+        mean, centre, corners = _exposure_stats(img)
+
+    # 2. Общая яркость.
+    if mean > EXPOSURE_MEAN_MAX:
+        img = ImageEnhance.Brightness(img).enhance(max(0.5, EXPOSURE_MEAN_MAX / mean))
+    elif 1.0 < mean < EXPOSURE_MEAN_MIN:
+        img = ImageEnhance.Brightness(img).enhance(min(1.6, EXPOSURE_MEAN_MIN / mean))
     return img
 
 

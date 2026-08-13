@@ -118,8 +118,17 @@ def test_background_colours_are_rich_mid_tones():
         luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
         assert luma > 95, f"{slug}: заливка {v['base']} слишком тёмная"
         assert luma < 200, f"{slug}: заливка {v['base']} выцвела в пастель"
-        # И это должен быть насыщенный ЦВЕТ, а не серый.
-        assert max(r, g, b) - min(r, g, b) > 70, f"{slug}: заливка обесцвечена"
+        # И это должен быть насыщенный ЦВЕТ, а не серый. Исключение ровно одно
+        # и оно намеренное — графит для направлений без цветного акцента.
+        if slug not in cover_art.NEUTRAL_COLORS:
+            assert max(r, g, b) - min(r, g, b) > 70, f"{slug}: заливка обесцвечена"
+
+
+def test_only_the_declared_colours_are_neutral():
+    """Нейтральный цвет — осознанное исключение, а не «серый по недосмотру»:
+    список закрыт, чтобы обесцвеченная заливка не проехала мимо проверки."""
+    assert cover_art.NEUTRAL_COLORS <= set(cover_art.PALETTE)
+    assert len(cover_art.NEUTRAL_COLORS) == 1
 
 
 def test_icon_is_white_over_the_artwork():
@@ -186,8 +195,19 @@ def test_prompt_is_one_style_across_subjects():
             # сама дизайн-система
             "premium dark abstract cover background", "apple-like",
             "16:9", "smooth soft gradient", "faint ambient light",
-            "thin precise lines", "semi-transparent",
-            "keep generous empty space between them",
+            "semi-transparent", "keep generous empty space between the elements",
+            # Только контур: у первой партии History нарисовал объёмные здания
+            # со светотенью, а Physics — чистую линию, и рядом это читалось
+            # как две разные системы.
+            "strictly as line art", "outlines only, one uniform hairline stroke",
+            "no shading", "no embossing", "no relief", "no drop shadow",
+            "no volume", "schematic technical drawing",
+            "drawn by one hand in one pass",
+            # Баланс: у History весь декор был в правой половине.
+            "distribute the elements evenly over the whole frame",
+            "never pack one half of the image while the other",
+            # Чистый круг под символом вместо расплывчатого «fade towards».
+            "clear circular area in the middle", "no line may cross",
             # Центр не выжигаем: в первой версии модель ставила туда прожектор
             # и обложка превращалась в фонарик в темноте.
             "never a bright spotlight", "never a burning hotspot",
@@ -196,10 +216,9 @@ def test_prompt_is_one_style_across_subjects():
             "clearly visible and easy to", "not a barely perceptible texture",
             "every cover in this collection shares one style",
             # символ — главный акцент, фон вторичен
-            "they fade out only in the middle",
             "main visual accent",
-            "nothing may compete with the symbol there",
-            "the central area holds nothing but the plain gradient",
+            "nothing may compete with it or touch it there",
+            "holding nothing but the plain gradient",
         ):
             assert required in p, f"в промпте пропало «{required}»"
         # Прежняя ошибка: жёсткая «чистая полоса» под иконку превращала
@@ -997,3 +1016,137 @@ def test_ai_usage_list_carries_names_too(client, db_session, teacher, storage, m
     assert row["user_name"] == "Ким Гульнар Аскаровна"
     assert row["class_name"] == "Программирование"
     assert row["label"] == "Обложка предмета"
+
+
+# ── Экспозиция ──────────────────────────────────────────────────────────────
+def _lit_cover(mean_target=(24, 42, 62), spot=235):
+    """Кадр «как у модели в плохой день»: цветное поле и яркое пятно в центре."""
+    from PIL import Image, ImageDraw, ImageFilter
+
+    img = Image.new("RGB", (cover_art.COVER_WIDTH, cover_art.COVER_HEIGHT), mean_target)
+    glow = Image.new("RGB", img.size, (spot, spot, spot))
+    mask = Image.new("L", img.size, 0)
+    d = ImageDraw.Draw(mask)
+    cx, cy = img.width // 2, img.height // 2
+    r = round(img.height * 0.34)
+    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=255)
+    mask = mask.filter(ImageFilter.GaussianBlur(img.height * 0.10))
+    return Image.composite(glow, img, mask)
+
+
+def test_exposure_is_pulled_into_the_collection_band():
+    """Промпт просит тусклый ровный свет, но модель соблюдает это через раз:
+    у первой партии средняя яркость гуляла 77-92, а центр был в 3.6-4.2 раза
+    светлее углов. Итог доводится арифметикой, иначе соседние обложки в
+    каталоге выглядят по-разному проэкспонированными."""
+    before = cover_art._exposure_stats(_lit_cover())
+    after = cover_art._exposure_stats(cover_art.normalize_exposure(_lit_cover()))
+
+    assert before[0] > cover_art.EXPOSURE_MEAN_MAX          # исходник светлый
+    assert before[1] / before[2] > 3                         # и с прожектором
+    assert after[0] <= cover_art.EXPOSURE_MEAN_MAX + 1
+    assert after[1] / after[2] <= cover_art.EXPOSURE_CENTRE_RATIO + 0.3
+
+
+def test_exposure_keeps_the_colour():
+    """Гасим яркость умножением, а не кривыми по каналам: тон обложки от этого
+    не должен уезжать — иначе выбранный преподавателем цвет перестанет быть тем,
+    что он выбрал."""
+    src = _lit_cover(mean_target=(20, 90, 140))
+    out = cover_art.normalize_exposure(src)
+
+    def hue(img):
+        h = img.convert("HSV").resize((32, 18)).split()[0]
+        px = sorted(h.getdata())
+        return px[len(px) // 2]
+
+    assert abs(hue(src) - hue(out)) <= 3
+
+
+def test_exposure_leaves_a_good_cover_alone():
+    """Кадр, уже попадающий в коридор, проходит насквозь — нормализация не
+    должна «на всякий случай» душить нормальную обложку."""
+    good = cover_art.render_fallback_cover("teal", seed=1)
+    assert cover_art.normalize_exposure(good).tobytes() == good.tobytes()
+
+
+def test_exposure_does_not_crush_a_dark_cover():
+    """Ослабление ограничено: совсем тёмный кадр можно чуть поднять, но не
+    вывернуть в серость."""
+    from PIL import Image
+
+    dark = Image.new("RGB", (cover_art.COVER_WIDTH, cover_art.COVER_HEIGHT), (6, 10, 14))
+    out = cover_art.normalize_exposure(dark)
+    assert cover_art._exposure_stats(out)[0] <= cover_art.EXPOSURE_MEAN_MIN + 1
+
+
+def test_generated_cover_is_stored_normalized(client, teacher, storage, monkeypatch):
+    """Нормализация обязана стоять в пути сохранения, а не только в утилите:
+    в хранилище должен уезжать уже приведённый кадр."""
+    import io as _io
+    from PIL import Image as _Image
+
+    buf = _io.BytesIO()
+    _lit_cover().resize((1536, 1024)).save(buf, format="PNG")
+    _patch_openai(monkeypatch, lambda url, kw: _openai_image_response(buf.getvalue()))
+    cls = _make_class(client, teacher, cover_color="blue", cover_icon="atom")
+    storage.objects.clear()
+
+    client.post(f"/api/classes/{cls['id']}/cover/generate", json={},
+                headers=auth_headers(teacher))
+
+    stored = [v for k, v in storage.objects.items() if "thumbnail" not in k][0]
+    with _Image.open(_io.BytesIO(stored)) as img:
+        mean, centre, corners = cover_art._exposure_stats(img.convert("RGB"))
+    assert mean <= cover_art.EXPOSURE_MEAN_MAX + 2
+    assert centre / corners <= cover_art.EXPOSURE_CENTRE_RATIO + 0.4
+
+
+# ── Каталог оформления ──────────────────────────────────────────────────────
+def test_catalog_covers_school_and_university_directions():
+    """Проект живёт и в школе, и в вузе: восьми цветов и двенадцати символов
+    на реальный список направлений не хватало."""
+    cat = cover_art.catalog()
+    assert len(cat["colors"]) >= 12
+    assert len(cat["icons"]) >= 40
+
+
+def test_every_icon_belongs_to_a_declared_group():
+    groups = {slug for slug, _ in cover_art.ICON_GROUPS}
+    for slug, meta in cover_art.ICONS.items():
+        assert meta["group"] in groups, f"{slug}: группа «{meta['group']}» не объявлена"
+        assert meta["motif"].strip() and meta["subject"].strip()
+
+
+def test_catalog_orders_icons_by_group():
+    """Пикер из сорока с лишним символов читается только секциями, поэтому
+    порядок задаёт бэкенд: клиент, который про группы не знает, всё равно
+    получит осмысленно сгруппированный список."""
+    cat = cover_art.catalog()
+    order = [g["id"] for g in cat["groups"]]
+    assert order == [slug for slug, _ in cover_art.ICON_GROUPS]
+    positions = [order.index(i["group"]) for i in cat["icons"]]
+    assert positions == sorted(positions), "символы в ответе перемешаны между группами"
+    assert all(i["group_label"] for i in cat["icons"])
+
+
+def test_catalog_endpoint_exposes_groups(client, teacher):
+    data = client.get("/api/classes/cover/options", headers=auth_headers(teacher)).json()
+    assert len(data["icons"]) == len(cover_art.ICONS)
+    assert len(data["groups"]) == len(cover_art.ICON_GROUPS)
+    assert data["icons"][0]["group_label"]
+
+
+@pytest.mark.parametrize("icon", list(cover_art.ICONS))
+def test_every_icon_is_accepted_by_the_api(client, teacher, storage, icon):
+    """Новый символ бесполезен, если схема его не пропускает: пикер строится
+    из каталога, и любой его элемент обязан доезжать до создания класса."""
+    data = _make_class(client, teacher, cover_color="slate", cover_icon=icon)
+    assert data["cover_icon"] == icon
+    assert data["cover_color"] == "slate"
+
+
+@pytest.mark.parametrize("color", list(cover_art.PALETTE))
+def test_every_colour_renders_a_fallback(color):
+    img = cover_art.render_fallback_cover(color, seed=3)
+    assert img.size == (cover_art.COVER_WIDTH, cover_art.COVER_HEIGHT)

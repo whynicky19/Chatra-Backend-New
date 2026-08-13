@@ -194,16 +194,42 @@ def _name_maps(db: Session, logs) -> dict:
 
 @router.get("/ai-usage")
 def get_ai_usage(
-    class_id: Optional[int] = Query(None, description="Filter by class, None = all"),
+    class_id: Optional[int] = Query(None, description="Filter by class; None = all, 0 = usage outside any class"),
+    endpoint: Optional[str] = Query(None, description="Filter by kind(s) of request, comma-separated"),
+    user_id: Optional[int] = Query(None, description="Filter by user"),
+    days: Optional[int] = Query(None, ge=1, le=365, description="Only the last N days (UTC), None = all time"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_admin),
 ):
+    """Журнал расхода токенов.
+
+    Фильтры endpoint/user_id/days добавлены, чтобы дашборд был кликабельным:
+    выбрав вид расхода («обложки») или пользователя на диаграмме, админ видит
+    ровно те строки, из которых сложилась цифра, а не весь журнал подряд.
+    """
     from sqlalchemy import desc
     q = db.query(AiUsageLog).filter(AiUsageLog.org_type == current_user.org_type)
-    if class_id is not None:
+    if class_id == 0:
+        # Расход вне предмета (общий чат) хранится как class_id IS NULL, а
+        # class_id=None в параметрах уже занят значением «все классы» — поэтому
+        # для него отдельное значение 0, иначе эту строку дашборда нельзя было
+        # бы раскрыть в журнал.
+        q = q.filter(AiUsageLog.class_id.is_(None))
+    elif class_id is not None:
         q = q.filter(AiUsageLog.class_id == class_id)
+    if endpoint:
+        # Список через запятую: одна функция продукта бывает несколькими
+        # endpoint'ами (чат — это chat + chat_vision), и клик по её строке в
+        # дашборде должен открывать журнал целиком, а не одну её половину.
+        kinds = [e.strip() for e in endpoint.split(",") if e.strip()]
+        if kinds:
+            q = q.filter(AiUsageLog.endpoint.in_(kinds))
+    if user_id is not None:
+        q = q.filter(AiUsageLog.user_id == user_id)
+    if days is not None:
+        q = q.filter(AiUsageLog.created_at >= _period_start(days))
     total = q.count()
     logs = (
         q.order_by(desc(AiUsageLog.created_at))
@@ -270,14 +296,53 @@ def get_ai_usage_summary(
 
 # Человекочитаемые названия видов расхода. Ключи — значения AiUsageLog.endpoint,
 # которые пишут routers/ai.py (chat/chat_vision/ai_title), routers/classes.py
-# (cover_image) и ИИ-проверка работ (ai-grade).
+# (cover_image) и ИИ-проверка работ (ai-grade / ai-grade-auto из
+# services/deadline_checker.py).
 AI_ENDPOINT_LABELS = {
     "chat": "Чат с ИИ",
     "chat_vision": "Чат с ИИ (с изображением)",
+    "ai_chat": "Чат с ИИ (старые записи)",
     "ai_title": "Название чата",
     "cover_image": "Обложка предмета",
     "ai-grade": "Проверка работ",
+    "ai-grade-auto": "Проверка работ (по дедлайну)",
 }
+
+# Семейство расхода: несколько endpoint'ов отвечают за одну функцию продукта
+# (чат — это chat + chat_vision + старый ai_chat, проверка — ручная и по
+# дедлайну). Дашборд группирует по нему, чтобы «сколько стоит чат» читалось
+# одним числом, но детализация по endpoint при этом не терялась.
+AI_ENDPOINT_GROUPS = {
+    "chat": "chat",
+    "chat_vision": "chat",
+    "ai_chat": "chat",
+    "ai_title": "title",
+    "cover_image": "cover",
+    "ai-grade": "grade",
+    "ai-grade-auto": "grade",
+}
+AI_GROUP_LABELS = {
+    "chat": "Чат с ИИ",
+    "title": "Названия чатов",
+    "cover": "Обложки предметов",
+    "grade": "Проверка работ",
+    "other": "Прочее",
+}
+
+
+def _period_start(days: int):
+    """Начало периода: полночь UTC того дня, с которого считаем.
+
+    Считаем по календарным суткам UTC (created_at хранится naive-UTC), а не
+    «минус 24*N часов от сейчас»: иначе на графике по дням первый столбик
+    всегда оказывался бы обрезанным.
+    """
+    from datetime import timedelta
+
+    from utils.time import utcnow
+
+    now = utcnow()
+    return now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
 
 
 @router.get("/ai-usage/by-endpoint")
@@ -320,6 +385,231 @@ def get_ai_usage_by_endpoint(
         }
         for r in rows
     ]
+
+
+@router.get("/ai-usage/dashboard")
+def get_ai_usage_dashboard(
+    days: int = Query(30, ge=1, le=365, description="Окно отчёта в календарных сутках UTC"),
+    top_users: int = Query(10, ge=1, le=50),
+    top_classes: int = Query(12, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_admin),
+):
+    """Полная картина расхода токенов одним запросом.
+
+    Раньше админка собирала дашборд из трёх ручек и всё равно не отвечала на
+    вопросы «когда именно потратили», «кто потратил» и «какая функция сколько
+    стоит внутри конкретного класса». Здесь один срез: итоги за период и за всё
+    время, разбивка по видам запросов (чат / названия чатов / обложки /
+    проверка работ), по классам, по дням и по пользователям — каждая с
+    prompt/completion, числом запросов и средним чеком запроса.
+
+    Сутки считаются в UTC — так же, как их считают дневная квота сообщений
+    (services/ai_quota.py) и дневной бюджет организации (services/ai_budget.py),
+    иначе цифра «за сегодня» в дашборде расходилась бы с той, по которой
+    бэкенд реально отказывает в запросе.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import desc, func
+
+    from models import Class
+    from services import ai_budget, ai_quota
+    from utils.time import utcnow
+
+    org = current_user.org_type
+    since = _period_start(days)
+    period = (AiUsageLog.org_type == org, AiUsageLog.created_at >= since)
+    all_time = (AiUsageLog.org_type == org,)
+
+    def _totals(*where):
+        r = (db.query(
+                func.coalesce(func.sum(AiUsageLog.total_tokens), 0),
+                func.coalesce(func.sum(AiUsageLog.prompt_tokens), 0),
+                func.coalesce(func.sum(AiUsageLog.completion_tokens), 0),
+                func.count(AiUsageLog.id),
+                func.count(func.distinct(AiUsageLog.user_id)),
+                func.count(func.distinct(AiUsageLog.class_id)),
+             ).filter(*where).one())
+        requests = int(r[3])
+        return {
+            "total_tokens": int(r[0]),
+            "prompt_tokens": int(r[1]),
+            "completion_tokens": int(r[2]),
+            "request_count": requests,
+            # COUNT(DISTINCT) не считает NULL: класс NULL — это общий чат, а не
+            # ещё один класс; пользователь NULL — расход удалённого аккаунта.
+            "user_count": int(r[4]),
+            "class_count": int(r[5]),
+            "avg_tokens": round(int(r[0]) / requests) if requests else 0,
+        }
+
+    def _breakdown(column, *where, limit=None):
+        """Расход в разрезе одной колонки: (ключ, суммы) по убыванию токенов."""
+        q = (db.query(
+                column,
+                func.coalesce(func.sum(AiUsageLog.total_tokens), 0),
+                func.coalesce(func.sum(AiUsageLog.prompt_tokens), 0),
+                func.coalesce(func.sum(AiUsageLog.completion_tokens), 0),
+                func.count(AiUsageLog.id),
+                func.count(func.distinct(AiUsageLog.user_id)),
+                func.max(AiUsageLog.created_at),
+             )
+             .filter(*where)
+             .group_by(column)
+             .order_by(desc(func.sum(AiUsageLog.total_tokens))))
+        if limit:
+            q = q.limit(limit)
+        out = []
+        for r in q.all():
+            requests = int(r[4])
+            out.append({
+                "key": r[0],
+                "total_tokens": int(r[1]),
+                "prompt_tokens": int(r[2]),
+                "completion_tokens": int(r[3]),
+                "request_count": requests,
+                "user_count": int(r[5]),
+                "avg_tokens": round(int(r[1]) / requests) if requests else 0,
+                "last_used": r[6].isoformat() if r[6] else None,
+            })
+        return out
+
+    totals = _totals(*period)
+    totals_all = _totals(*all_time)
+
+    # ── Виды запросов: на что именно ушли токены ─────────────────────────────
+    by_endpoint = []
+    for row in _breakdown(AiUsageLog.endpoint, *period):
+        endpoint = row.pop("key")
+        group = AI_ENDPOINT_GROUPS.get(endpoint, "other")
+        by_endpoint.append({
+            "endpoint": endpoint,
+            # Незнакомый endpoint (новая функция, старые записи) показываем как
+            # есть — иначе часть расхода молча выпала бы из отчёта.
+            "label": AI_ENDPOINT_LABELS.get(endpoint, endpoint),
+            "group": group,
+            "group_label": AI_GROUP_LABELS[group],
+            **row,
+        })
+
+    # Свёртка по семействам функций: chat + chat_vision — это одна строка «Чат».
+    groups: dict[str, dict] = {}
+    for e in by_endpoint:
+        g = groups.setdefault(e["group"], {
+            "group": e["group"], "label": e["group_label"],
+            "total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0,
+            "request_count": 0, "endpoints": [],
+        })
+        for k in ("total_tokens", "prompt_tokens", "completion_tokens", "request_count"):
+            g[k] += e[k]
+        g["endpoints"].append(e["endpoint"])
+    by_group = sorted(groups.values(), key=lambda g: -g["total_tokens"])
+
+    # ── По классам ───────────────────────────────────────────────────────────
+    class_rows = _breakdown(AiUsageLog.class_id, *period, limit=top_classes)
+    class_ids = [r["key"] for r in class_rows if r["key"]]
+    class_names = dict(db.query(Class.id, Class.name)
+                       .filter(Class.id.in_(class_ids)).all()) if class_ids else {}
+    # Разрез «класс × вид запроса»: видно, что в одном предмете дорогая
+    # переписка, а в другом — генерация обложек.
+    class_kinds: dict = {}
+    if class_rows:
+        keys = [r["key"] for r in class_rows]
+        q = (db.query(AiUsageLog.class_id, AiUsageLog.endpoint,
+                      func.coalesce(func.sum(AiUsageLog.total_tokens), 0))
+             .filter(*period)
+             .group_by(AiUsageLog.class_id, AiUsageLog.endpoint))
+        for cid, endpoint, tokens in q.all():
+            if cid in keys:
+                class_kinds.setdefault(cid, {})[endpoint] = int(tokens)
+    by_class = [{
+        "class_id": r["key"],
+        # None — класс удалён, а расход остался: строку не прячем, иначе итог
+        # перестанет сходиться с суммой сверху.
+        "class_name": class_names.get(r["key"]) if r["key"] else None,
+        "kinds": class_kinds.get(r["key"], {}),
+        **{k: v for k, v in r.items() if k != "key"},
+    } for r in class_rows]
+
+    # ── По дням: динамика расхода, с разбивкой по видам ──────────────────────
+    day_col = func.date(AiUsageLog.created_at)
+    day_rows = (db.query(day_col, AiUsageLog.endpoint,
+                         func.coalesce(func.sum(AiUsageLog.total_tokens), 0),
+                         func.coalesce(func.sum(AiUsageLog.prompt_tokens), 0),
+                         func.coalesce(func.sum(AiUsageLog.completion_tokens), 0),
+                         func.count(AiUsageLog.id))
+                .filter(*period)
+                .group_by(day_col, AiUsageLog.endpoint)
+                .all())
+    # func.date() отдаёт строку в SQLite и date в Postgres — приводим к
+    # 'YYYY-MM-DD', иначе ключи дней не совпали бы с сеткой ниже.
+    per_day: dict[str, dict] = {}
+    for day, endpoint, total, prompt, completion, requests in day_rows:
+        key = str(day)[:10]
+        d = per_day.setdefault(key, {"date": key, "total_tokens": 0, "prompt_tokens": 0,
+                                     "completion_tokens": 0, "request_count": 0, "kinds": {}})
+        d["total_tokens"] += int(total)
+        d["prompt_tokens"] += int(prompt)
+        d["completion_tokens"] += int(completion)
+        d["request_count"] += int(requests)
+        d["kinds"][endpoint] = d["kinds"].get(endpoint, 0) + int(total)
+    # Пустые дни отдаём нулями: иначе график сжимал бы паузы и показывал
+    # ровную линию там, где ИИ вообще не пользовались.
+    by_day = []
+    for i in range(days):
+        key = (since + timedelta(days=i)).date().isoformat()
+        by_day.append(per_day.get(key, {"date": key, "total_tokens": 0, "prompt_tokens": 0,
+                                        "completion_tokens": 0, "request_count": 0, "kinds": {}}))
+
+    # ── Топ пользователей ────────────────────────────────────────────────────
+    user_rows = _breakdown(AiUsageLog.user_id, *period,
+                           AiUsageLog.user_id.isnot(None), limit=top_users)
+    user_ids = [r["key"] for r in user_rows]
+    people = {u.id: u for u in db.query(User.id, User.full_name, User.email, User.role,
+                                        User.ai_unlimited)
+              .filter(User.id.in_(user_ids)).all()} if user_ids else {}
+    user_kinds: dict = {}
+    if user_ids:
+        q = (db.query(AiUsageLog.user_id, AiUsageLog.endpoint,
+                      func.coalesce(func.sum(AiUsageLog.total_tokens), 0))
+             .filter(*period, AiUsageLog.user_id.in_(user_ids))
+             .group_by(AiUsageLog.user_id, AiUsageLog.endpoint))
+        for uid, endpoint, tokens in q.all():
+            user_kinds.setdefault(uid, {})[endpoint] = int(tokens)
+    top = []
+    for r in user_rows:
+        u = people.get(r["key"])
+        top.append({
+            "user_id": r["key"],
+            "name": u.full_name if u else None,
+            "email": u.email if u else None,
+            "role": u.role if u else None,
+            "ai_unlimited": bool(u.ai_unlimited) if u else False,
+            "kinds": user_kinds.get(r["key"], {}),
+            **{k: v for k, v in r.items() if k not in ("key", "user_count")},
+        })
+
+    return {
+        "days": days,
+        "since": since.isoformat(),
+        "generated_at": utcnow().isoformat(),
+        "totals": totals,
+        "totals_all_time": totals_all,
+        "by_endpoint": by_endpoint,
+        "by_group": by_group,
+        "by_class": by_class,
+        "by_day": by_day,
+        "top_users": top,
+        "labels": AI_ENDPOINT_LABELS,
+        # Лимиты, на фоне которых читается расход: дневной бюджет токенов
+        # организации и дневной лимит сообщений на пользователя.
+        "limits": {
+            "daily_token_budget": ai_budget.daily_budget(),
+            "tokens_used_today": ai_budget.tokens_used_today(db, org),
+            "daily_message_limit": ai_quota.daily_message_limit(),
+        },
+    }
 
 
 # Вид расхода, которым пишется генерация обложки (routers/classes.py).

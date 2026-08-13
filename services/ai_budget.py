@@ -26,6 +26,15 @@ def _daily_budget() -> int:
         return 2_000_000
 
 
+def daily_budget() -> int:
+    """Действующий дневной лимит токенов на организацию (0 — бюджет выключен).
+
+    Публичная обёртка: админский дашборд показывает расход за сегодня рядом с
+    лимитом, по которому бэкенд реально отказывает в запросе.
+    """
+    return _daily_budget()
+
+
 def tokens_used_today(db: Session, org_type: str) -> int:
     from datetime import datetime, timezone
 
