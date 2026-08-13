@@ -357,12 +357,16 @@ async def generate_cover(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_teacher),
 ):
-    """Генерирует обложку класса по цвету и иконке и сохраняет её.
+    """Генерирует обложку класса по цвету, символу и названию и сохраняет её.
 
     Единственная точка генерации на все клиенты: и веб, и приложение зовут
     этот эндпоинт, получают один и тот же coverUrl и показывают одну и ту же
-    картинку. Он же обслуживает «Перегенерировать» — цвет с иконкой остаются
+    картинку. Он же обслуживает «Перегенерировать» — цвет с символом остаются
     прежними, меняется только раскладка композиции (см. build_prompt).
+
+    Название класса уходит в промпт подсказкой темы: по нему модель подбирает
+    тематические элементы фона. Преподаватель выбирает по-прежнему только цвет
+    и символ — своего промпта у него нет, иначе коллекция расползётся.
 
     Вызывается только по явному нажатию: ни открытие класса, ни список, ни
     ребилд экрана сюда не ходят.
@@ -386,7 +390,7 @@ async def generate_cover(
     _covers_in_flight.add(class_id)
     try:
         cover_image, cover_thumbnail, source, usage = await cover_generator.build_cover(
-            color, icon, allow_ai=allow_ai
+            color, icon, allow_ai=allow_ai, subject=obj.name
         )
     except cover_generator.CoverStorageError:
         raise HTTPException(status_code=502, detail="cover_storage_unavailable")

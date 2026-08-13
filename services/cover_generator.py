@@ -3,15 +3,17 @@
 Ключ OpenAI живёт только здесь и в routers/ai.py — на клиент он не уезжает
 никогда, генерация возможна исключительно через бэкенд.
 
-Модель отвечает ТОЛЬКО за фон. Предметная иконка не входит в картинку — её
-рисуют клиенты нативным компонентом поверх (см. докстринг services/cover_art.py).
+Модель отвечает ТОЛЬКО за фон. Главный символ предмета не входит в картинку —
+его рисуют клиенты нативным компонентом поверх (см. докстринг
+services/cover_art.py).
 
-Модель: gpt-image-1-mini, quality="medium", size=1536x1024 — ~$0.015 за обложку.
-Medium, а не low: обложка — плоская графика с чистыми линиями и ровными
-краями, и на low модель заметно хуже держит композицию и аккуратность форм.
-Ландшафт, а не квадрат: обложку показывают широкой полосой (карточка каталога
-~2.1:1, шапка класса ~3.3:1), и от квадрата в кадр попадала только средняя
-полоса — 48% и 30% высоты, из-за чего обложка выглядела пустой.
+Модель: gpt-image-1.5, quality="medium", size=1536x1024. Заметно дороже
+прежней gpt-image-1-mini (~$0.06 против ~$0.015 за обложку), но обложка —
+это тонкая графика на тёмном градиенте, и mini на ней срывалась: грязные
+линии, шумные края и «пятна» вместо мягкого свечения. Генерация происходит
+только по явной кнопке, поэтому цена управляемая.
+Размер — самый широкий ландшафт, который принимает API (3:2); до кадра 16:9
+картинку доводит cover_art.fit_cover_frame.
 Всё переопределяется окружением (COVER_IMAGE_MODEL/COVER_IMAGE_QUALITY/
 COVER_IMAGE_SIZE).
 
@@ -34,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 OPENAI_IMAGES_URL = "https://api.openai.com/v1/images/generations"
 
-DEFAULT_MODEL = "gpt-image-1-mini"
+DEFAULT_MODEL = "gpt-image-1.5"
 DEFAULT_QUALITY = "medium"
 DEFAULT_SIZE = "1536x1024"
 
@@ -70,8 +72,11 @@ def generation_enabled() -> bool:
     return bool(os.getenv("OPENAI_API_KEY", "").strip())
 
 
-async def _request_background(color: str, icon: str, seed: int) -> tuple[bytes | None, dict]:
+async def _request_background(color: str, icon: str, seed: int,
+                              subject: str | None = None) -> tuple[bytes | None, dict]:
     """Фон от OpenAI. Возвращает (png_bytes|None, usage).
+
+    subject — название класса: по нему модель подбирает тематику фона.
 
     Исключения наружу не летят: единственный смысл сбоя здесь — «идём в
     фолбэк», и вызывающему коду не нужно знать, что именно сломалось.
@@ -82,7 +87,7 @@ async def _request_background(color: str, icon: str, seed: int) -> tuple[bytes |
 
     payload = {
         "model": _model(),
-        "prompt": cover_art.build_prompt(color, icon, seed),
+        "prompt": cover_art.build_prompt(color, icon, seed, subject=subject),
         "size": _size(),
         "quality": _quality(),
         "n": 1,
@@ -124,12 +129,12 @@ async def _request_background(color: str, icon: str, seed: int) -> tuple[bytes |
 
 
 def _compose_and_store(background: bytes | None, color: str, icon: str, seed: int) -> tuple[str, str, str]:
-    """Кладёт фон обложки в хранилище.
+    """Приводит фон к кадру 16:9 и кладёт его в хранилище.
 
-    Иконка сюда не подмешивается: картинка — это чистый фон, поверх которого
-    клиенты рисуют предметную иконку своим компонентом. Байты от модели всё
-    равно проходят через Pillow — так они нормализуются (и заодно проверяются
-    на пригодность) ровно тем же путём, что и локальный фолбэк.
+    Символ сюда не подмешивается: картинка — это чистый фон, поверх которого
+    клиенты рисуют главный символ предмета своим компонентом. Байты от модели
+    всё равно проходят через Pillow — так они нормализуются (и заодно
+    проверяются на пригодность) ровно тем же путём, что и локальный фолбэк.
 
     Блокирующая (Pillow + сеть до R2) — вызывать только в пуле потоков,
     см. build_cover(). Возвращает (cover_url, thumbnail_url, source).
@@ -143,7 +148,9 @@ def _compose_and_store(background: bytes | None, color: str, icon: str, seed: in
         try:
             with Image.open(io.BytesIO(background)) as bg:
                 bg.load()
-                image = bg.convert("RGB")
+                # API отдаёт 3:2, обложка живёт в 16:9 — кроп симметричный,
+                # центр с символом не трогается (cover_art.fit_cover_frame).
+                image = cover_art.fit_cover_frame(bg.convert("RGB"))
             source = SOURCE_AI
         except Exception:
             # Модель ответила, но байты не открылись — это не повод оставить
@@ -163,8 +170,13 @@ def _compose_and_store(background: bytes | None, color: str, icon: str, seed: in
 
 
 async def build_cover(color: str, icon: str, seed: int | None = None,
-                      allow_ai: bool = True) -> tuple[str, str, str, dict]:
-    """Полный цикл: промпт → OpenAI → иконка поверх → хранилище.
+                      allow_ai: bool = True,
+                      subject: str | None = None) -> tuple[str, str, str, dict]:
+    """Полный цикл: промпт → OpenAI → кадр 16:9 → хранилище.
+
+    subject — название класса. Преподаватель по-прежнему выбирает только цвет
+    и символ; название уезжает в промпт подсказкой темы, а тематические
+    элементы фона модель подбирает по нему сама (см. cover_art.build_prompt).
 
     allow_ai=False пропускает обращение к модели и сразу собирает фолбэк —
     так вызывающий код отрабатывает исчерпанный бюджет организации, не
@@ -183,7 +195,7 @@ async def build_cover(color: str, icon: str, seed: int | None = None,
         seed = random.randrange(1 << 30)
 
     if allow_ai:
-        background, usage = await _request_background(color, icon, seed)
+        background, usage = await _request_background(color, icon, seed, subject=subject)
     else:
         background, usage = None, {}
     # Pillow и загрузка в R2 блокируют — в async-эндпоинте они встали бы
