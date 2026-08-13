@@ -1,3 +1,4 @@
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -9,18 +10,63 @@ from models import Class, Cohort, User, class_members, cohort_students
 from db import get_db
 from deps import get_current_user, get_current_teacher
 from permissions import require_class_owner, require_class_access
+from services import ai_budget, cover_art, cover_generator
 from services.image_storage import convert_cover_with_thumbnail
 from services.rate_limit import RateLimiter
 from sqlalchemy import func, case
 
 router = APIRouter(prefix="/classes", tags=["Classes"])
 
+logger = logging.getLogger(__name__)
+
 
 _join_limiter = RateLimiter(max_calls=10, window_seconds=60)
+
+# Генерация обложки стоит денег на каждый вызов, поэтому лимит жёстче
+# остальных: 12 генераций в час на преподавателя. Хватает, чтобы несколько
+# раз нажать «Перегенерировать» и подобрать вариант, но не даёт зациклившемуся
+# клиенту или чужому токену молча сжечь бюджет.
+_cover_limiter = RateLimiter(max_calls=12, window_seconds=3600, namespace="cover")
+
+# Классы с генерацией прямо сейчас. Двойной тап по «Сгенерировать» или
+# ретрай клиента по таймауту иначе запускали бы вторую оплаченную генерацию,
+# результат которой ещё и затирал бы первую в непредсказуемом порядке.
+# Внутрипроцессный набор, как и in-memory RateLimiter: от случайного дубля
+# защищает, а от распределённой гонки — сам rate limit выше.
+_covers_in_flight: set[int] = set()
 
 
 def _check_join_rate_limit(key):
     _join_limiter.check(key, detail="too_many_attempts")
+
+
+def _log_cover_usage(db: Session, user, class_id: int, usage: dict) -> None:
+    """Пишет расход токенов генерации обложки в ai_usage_logs.
+
+    endpoint="cover_image" намеренно не входит в ai_quota.CHAT_ENDPOINTS:
+    обложка не должна съедать дневной лимит сообщений преподавателя ИИ-чату.
+    А вот в дневной бюджет токенов организации (services/ai_budget.py) она
+    попадает — это общий кошелёк, и картинки тратят его наравне с текстом.
+    Сбой логирования не должен ронять уже сгенерированную обложку.
+    """
+    if not usage:
+        return
+    try:
+        from models import AiUsageLog
+
+        db.add(AiUsageLog(
+            user_id=user.id,
+            class_id=class_id,
+            endpoint="cover_image",
+            org_type=user.org_type,
+            prompt_tokens=usage.get("input_tokens", 0),
+            completion_tokens=usage.get("output_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+        ))
+        db.commit()
+    except Exception:
+        logger.exception("Не удалось записать расход токенов генерации обложки")
+        db.rollback()
 
 
 def _can_view_invite_code(obj: Class, current_user) -> bool:
@@ -159,15 +205,53 @@ def create_class(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_teacher),
 ):
-    cover_image, cover_thumbnail = convert_cover_with_thumbnail(body.cover_image)
+    """Создаёт класс с готовой обложкой-фолбэком по выбранным цвету и иконке.
+
+    Обращения к модели здесь нет намеренно: генерация занимает десятки секунд
+    и стоит денег, а создание класса должно быть мгновенным и не может
+    зависеть от доступности OpenAI. Клиент сразу после создания вызывает
+    POST /{id}/cover/generate и показывает «Создаём обложку...» — до этого
+    момента (и если генерацию отменят или она не удастся) класс всё равно
+    живёт с полноценной обложкой, а не с пустым местом.
+    """
+    color = cover_art.normalize_color(body.cover_color)
+    icon = cover_art.normalize_icon(body.cover_icon)
+    try:
+        cover_image, cover_thumbnail, source = cover_generator.build_fallback_cover(color, icon)
+    except cover_generator.CoverStorageError:
+        # Хранилище недоступно — класс всё равно создаём: без обложки он
+        # полностью работоспособен, а UI отрисует градиент по цвету (клиенты
+        # это уже умеют для классов без картинки). Терять из-за этого сам
+        # класс с введённым названием и описанием было бы куда хуже.
+        logger.exception("Не удалось сохранить обложку при создании класса")
+        cover_image = cover_thumbnail = None
+        source = cover_generator.SOURCE_FALLBACK
+
     obj = crud.create_class(db, name=body.name, description=body.description,
                             created_by=current_user.id,
                             org_type=current_user.org_type,
                             cover_image=cover_image,
                             cover_thumbnail=cover_thumbnail,
+                            cover_color=color,
+                            cover_icon=icon,
+                            cover_source=source,
                             teacher=body.teacher,
                             period=body.period)
     return _to_class_response(obj, current_user, member_count=0)
+
+
+@router.get("/cover/options", response_model=schemas.CoverOptionsResponse)
+def cover_options(current_user=Depends(get_current_user)):
+    """Палитра и набор предметных иконок для пикеров оформления.
+
+    Отдаётся бэкендом, а не зашивается в каждый клиент, чтобы веб, приложение
+    и рендер обложки не разъезжались: добавить цвет или иконку можно в одном
+    месте (services/cover_art.py), и оба клиента подхватят их сами.
+    """
+    return schemas.CoverOptionsResponse(
+        **cover_art.catalog(),
+        ai_available=cover_generator.generation_enabled(),
+    )
 
 
 @router.get("/lookup-by-code", response_model=schemas.ClassResponse)
@@ -218,14 +302,118 @@ def update_class(
 ):
     obj = require_class_owner(db, class_id, current_user)
     data = body.model_dump(exclude_none=True)
-    if "cover_image" in data:
+
+    # Класс с исторической обложкой, загруженной пользователем: картинка есть,
+    # а сгенерирована она никогда не была. Его изображение НЕ трогаем, даже
+    # если клиент прислал цвет с иконкой — форма редактирования подставляет их
+    # по умолчанию просто чтобы нарисовать пикер, и обычное «Сохранить» не
+    # должно молча подменять картинку преподавателя на градиент. Выбранные
+    # значения при этом сохраняем: с ними и пойдёт первая генерация.
+    #
+    # Признак — именно cover_source, а не cover_color: цвет проставится уже
+    # при первом же сохранении формы, и класс перестал бы считаться старым,
+    # после чего ВТОРОЕ сохранение с другим цветом снесло бы загруженную
+    # картинку. cover_source заполняет только сама генерация, поэтому переход
+    # на новую систему остаётся ровно одним явным действием пользователя.
+    keeps_uploaded_cover = obj.cover_source is None and bool(obj.cover_image)
+
+    appearance_changed = not keeps_uploaded_cover and (
+        ("cover_color" in data and data["cover_color"] != obj.cover_color)
+        or ("cover_icon" in data and data["cover_icon"] != obj.cover_icon)
+    )
+    if appearance_changed:
+        # Оформление поменяли, но кнопку «Сгенерировать» не нажимали — рисуем
+        # фолбэк на новых цвете и иконке. Локально, мгновенно и бесплатно:
+        # обложка не остаётся от прежнего цвета, а платная генерация
+        # по-прежнему происходит только по явному действию пользователя.
+        color = cover_art.normalize_color(data.get("cover_color", obj.cover_color))
+        icon = cover_art.normalize_icon(data.get("cover_icon", obj.cover_icon))
+        try:
+            cover_image, cover_thumbnail, source = cover_generator.build_fallback_cover(color, icon)
+            data["cover_image"] = cover_image
+            data["cover_thumbnail"] = cover_thumbnail
+            data["cover_source"] = source
+        except cover_generator.CoverStorageError:
+            # Прежняя обложка остаётся на месте — это лучше, чем стереть её
+            # и оставить класс вообще без картинки.
+            logger.exception("Не удалось перерисовать обложку класса %s", class_id)
+            data.pop("cover_image", None)
+    elif "cover_image" in data:
+        # Легаси-путь: старые сборки приложения ещё присылают свою картинку.
         cover_image, cover_thumbnail = convert_cover_with_thumbnail(data["cover_image"])
         data["cover_image"] = cover_image
         if cover_thumbnail:
             data["cover_thumbnail"] = cover_thumbnail
+
     obj = crud.update_class(db, class_id, data)
     counts = _member_counts(db, [obj.id])
     return _to_class_response(obj, current_user, member_count=counts.get(obj.id, 0))
+
+
+@router.post("/{class_id}/cover/generate", response_model=schemas.CoverGenerateResponse)
+async def generate_cover(
+    class_id: int,
+    body: schemas.CoverGenerateRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_teacher),
+):
+    """Генерирует обложку класса по цвету и иконке и сохраняет её.
+
+    Единственная точка генерации на все клиенты: и веб, и приложение зовут
+    этот эндпоинт, получают один и тот же coverUrl и показывают одну и ту же
+    картинку. Он же обслуживает «Перегенерировать» — цвет с иконкой остаются
+    прежними, меняется только раскладка композиции (см. build_prompt).
+
+    Вызывается только по явному нажатию: ни открытие класса, ни список, ни
+    ребилд экрана сюда не ходят.
+    """
+    obj = require_class_owner(db, class_id, current_user)
+
+    color = cover_art.normalize_color(body.color or obj.cover_color)
+    icon = cover_art.normalize_icon(body.icon or obj.cover_icon)
+
+    if class_id in _covers_in_flight:
+        raise HTTPException(status_code=409, detail="cover_generation_in_progress")
+    # Лимит проверяем ПОСЛЕ проверки владельца: иначе чужой запрос к чужому
+    # классу тратил бы квоту владельца.
+    _cover_limiter.check(current_user.id, detail="too_many_cover_generations")
+
+    # Дневной бюджет токенов организации исчерпан — не отказываем, а собираем
+    # обложку локально: пользователь получает полноценный результат, счёт не
+    # растёт. Тот же кошелёк, что у ИИ-проверки работ (services/ai_budget.py).
+    allow_ai = ai_budget.can_spend(db, current_user.org_type)
+
+    _covers_in_flight.add(class_id)
+    try:
+        cover_image, cover_thumbnail, source, usage = await cover_generator.build_cover(
+            color, icon, allow_ai=allow_ai
+        )
+    except cover_generator.CoverStorageError:
+        raise HTTPException(status_code=502, detail="cover_storage_unavailable")
+    finally:
+        _covers_in_flight.discard(class_id)
+
+    # Тот же update_class, что и у обычного редактирования: он же удаляет
+    # прежний файл обложки из хранилища после успешного commit (BE-10). Так
+    # класс с исторической загруженной картинкой переезжает на новую систему
+    # ровно здесь — и старый файл убирается штатным путём, а не отдельным
+    # массовым сносом.
+    obj = crud.update_class(db, class_id, {
+        "cover_image": cover_image,
+        "cover_thumbnail": cover_thumbnail,
+        "cover_color": color,
+        "cover_icon": icon,
+        "cover_source": source,
+    })
+    _log_cover_usage(db, current_user, class_id, usage)
+
+    return schemas.CoverGenerateResponse(
+        cover_image=obj.cover_image,
+        cover_thumbnail=obj.cover_thumbnail,
+        cover_color=obj.cover_color,
+        cover_icon=obj.cover_icon,
+        cover_source=obj.cover_source,
+    )
 
 
 @router.delete("/{class_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -82,6 +82,21 @@ def _process_and_upload(raw: bytes) -> tuple[str, str] | None:
     return cover_url, thumbnail_url
 
 
+def store_cover_bytes(raw: bytes) -> tuple[str, str] | None:
+    """Сжимает и заливает уже готовые байты картинки как обложку класса.
+
+    Тот же путь, что и у загруженной пользователем обложки (ресайз ≤1600px +
+    WebP + миниатюра ≤480px, уникальный ключ, годовой immutable-кэш) — просто
+    без шага декодирования data-URI. Нужен сгенерированным обложкам (см.
+    services/cover_generator.py), чтобы они лежали в хранилище ровно так же,
+    как исторические, и работали во всех местах показа без исключений.
+    Возвращает (cover_url, thumbnail_url) или None при сбое.
+    """
+    if not raw or len(raw) > MAX_IMAGE_BYTES:
+        return None
+    return _process_and_upload(raw)
+
+
 def data_uri_to_file_url(data_uri: str) -> str | None:
     """Сохраняет data-URI картинку (сжатую) в R2 и возвращает URL основного
     файла. Возвращает None, если строка не является поддерживаемой картинкой

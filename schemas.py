@@ -230,20 +230,63 @@ class AiGradeResult(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+def validate_cover_color(value: Optional[str]) -> Optional[str]:
+    """Слаг цвета обложки. Опечатку возвращаем 422, а не молча подменяем
+    дефолтом — иначе преподаватель выбрал бы один цвет, а получил другой."""
+    from services.cover_art import PALETTE
+
+    if value is None:
+        return None
+    key = value.strip().lower()
+    if key not in PALETTE:
+        raise ValueError(f"cover_color must be one of {tuple(PALETTE)}")
+    return key
+
+
+def validate_cover_icon(value: Optional[str]) -> Optional[str]:
+    from services.cover_art import ICONS
+
+    if value is None:
+        return None
+    key = value.strip().lower()
+    if key not in ICONS:
+        raise ValueError(f"cover_icon must be one of {tuple(ICONS)}")
+    return key
+
+
 class ClassCreate(BaseModel):
+    """Новые классы оформляются только парой «цвет + иконка»: обложку рисует
+    бэкенд (см. services/cover_generator.py), загрузки картинки здесь больше
+    нет. Если цвет с иконкой не переданы, берутся значения по умолчанию —
+    класс не может появиться без обложки."""
     name: str = Field(max_length=MAX_NAME_LEN)
     description: Optional[str] = Field(default=None, max_length=MAX_DESCRIPTION_LEN)
-    cover_image: Optional[str] = None
+    cover_color: Optional[str] = None
+    cover_icon: Optional[str] = None
     teacher: Optional[str] = Field(default=None, max_length=200)
     period: Optional[str] = Field(default=None, max_length=100)
+
+    _v_color = field_validator("cover_color")(validate_cover_color)
+    _v_icon = field_validator("cover_icon")(validate_cover_icon)
 
 class ClassUpdate(BaseModel):
     name: Optional[str] = Field(default=None, max_length=MAX_NAME_LEN)
     description: Optional[str] = Field(default=None, max_length=MAX_DESCRIPTION_LEN)
     is_active: Optional[bool] = None
+    # Смена цвета/иконки перерисовывает обложку локальным фолбэком (мгновенно
+    # и бесплатно), чтобы она не разъезжалась с выбором. Обращение к модели —
+    # только явной кнопкой, POST /classes/{id}/cover/generate.
+    cover_color: Optional[str] = None
+    cover_icon: Optional[str] = None
+    # Легаси: путь загрузки своей картинки. Клиенты Chatra его больше не
+    # используют, но поле оставлено, чтобы уже установленные у пользователей
+    # старые сборки приложения не теряли обложку при редактировании класса.
     cover_image: Optional[str] = None
     teacher: Optional[str] = Field(default=None, max_length=200)
     period: Optional[str] = Field(default=None, max_length=100)
+
+    _v_color = field_validator("cover_color")(validate_cover_color)
+    _v_icon = field_validator("cover_icon")(validate_cover_icon)
 
 class ClassResponse(BaseModel):
     id: int
@@ -256,6 +299,10 @@ class ClassResponse(BaseModel):
     invite_code: Optional[str] = None
     cover_image: Optional[str] = None
     cover_thumbnail: Optional[str] = None
+    # NULL — обложка загружена пользователем по старой системе (см. models.py).
+    cover_color: Optional[str] = None
+    cover_icon: Optional[str] = None
+    cover_source: Optional[str] = None
     teacher: Optional[str] = None
     period: Optional[str] = None
     rotation_mode: str = "manual"
@@ -264,6 +311,52 @@ class ClassResponse(BaseModel):
     is_archived_for_user: bool = False
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class CoverGenerateRequest(BaseModel):
+    """Тело POST /classes/{id}/cover/generate. Собственного промпта у
+    преподавателя нет намеренно: единый стиль коллекции держится тем, что
+    промпт целиком строит бэкенд (services/cover_art.py: build_prompt)."""
+    color: Optional[str] = None
+    icon: Optional[str] = None
+
+    _v_color = field_validator("color")(validate_cover_color)
+    _v_icon = field_validator("icon")(validate_cover_icon)
+
+
+class CoverGenerateResponse(BaseModel):
+    cover_image: Optional[str] = None
+    cover_thumbnail: Optional[str] = None
+    cover_color: Optional[str] = None
+    cover_icon: Optional[str] = None
+    # 'ai' — обложку нарисовала модель; 'fallback' — модель была недоступна и
+    # обложку собрал сам сервис. Клиент по этому полю показывает мягкое
+    # предупреждение и предлагает повторить.
+    cover_source: Optional[str] = None
+
+
+class CoverColorOption(BaseModel):
+    id: str
+    hex: str
+    deep: str
+
+
+class CoverIconOption(BaseModel):
+    id: str
+    subject: str
+
+
+class CoverOptionsResponse(BaseModel):
+    """Палитра и набор иконок для пикеров. Веб и приложение строят выбор из
+    этого ответа, поэтому набор нигде не расходится с тем, что умеет рисовать
+    бэкенд."""
+    colors: List[CoverColorOption]
+    icons: List[CoverIconOption]
+    default_color: str
+    default_icon: str
+    # False — OPENAI_API_KEY на сервере не задан: генерация недоступна, все
+    # обложки будут фолбэками. Клиент прячет кнопку «Сгенерировать».
+    ai_available: bool = True
 
 class ClassMemberAdd(BaseModel):
     user_id: int

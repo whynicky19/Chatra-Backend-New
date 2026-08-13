@@ -52,6 +52,25 @@ class Class(Base):
     # см. services/image_processing.py. Может быть NULL для обложек,
     # созданных до появления миниатюр (см. migrations/015_optimize_existing_covers.py).
     cover_thumbnail: Mapped[str] = mapped_column(Text, nullable=True)
+
+    # Оформление обложки: слаг цвета из палитры и слаг предметной иконки
+    # (services/cover_art.py: PALETTE / ICONS). По ним обложка генерируется
+    # заново («Перегенерировать») и рисуется локальный фолбэк, поэтому они
+    # хранятся отдельно от самой картинки.
+    #
+    # NULL в cover_color/cover_icon = класс ещё на старой системе, где
+    # преподаватель загружал свою фотографию. Такие классы продолжают
+    # показывать своё изображение как есть; на новую систему класс
+    # переезжает в момент, когда преподаватель впервые сгенерирует обложку
+    # (см. routers/classes.py: generate_cover). Массовой миграции нет
+    # намеренно — старые картинки ничем не хуже и удалять их не за что.
+    cover_color: Mapped[str] = mapped_column(String(16), nullable=True)
+    cover_icon: Mapped[str] = mapped_column(String(32), nullable=True)
+    # 'ai' | 'fallback' | 'upload' (см. services/cover_generator.py). Нужен,
+    # чтобы UI мог сказать «модель была недоступна, это запасной вариант»
+    # и предложить повторить, не гадая по самой картинке.
+    cover_source: Mapped[str] = mapped_column(String(16), nullable=True)
+
     teacher: Mapped[str] = mapped_column(String(200), nullable=True)
     period: Mapped[str] = mapped_column(String(100), nullable=True)
 
