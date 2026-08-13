@@ -235,3 +235,57 @@ def get_ai_usage_summary(
         for r in rows
     ]
 
+
+# Человекочитаемые названия видов расхода. Ключи — значения AiUsageLog.endpoint,
+# которые пишут routers/ai.py (chat/chat_vision/ai_title), routers/classes.py
+# (cover_image) и ИИ-проверка работ (ai-grade).
+AI_ENDPOINT_LABELS = {
+    "chat": "Чат с ИИ",
+    "chat_vision": "Чат с ИИ (с изображением)",
+    "ai_title": "Название чата",
+    "cover_image": "Обложка предмета",
+    "ai-grade": "Проверка работ",
+}
+
+
+@router.get("/ai-usage/by-endpoint")
+def get_ai_usage_by_endpoint(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_admin),
+):
+    """Расход токенов в разрезе видов запросов.
+
+    Общая сумма по классам не отвечала на вопрос «на что именно ушли токены»:
+    в неё одинаково падают и переписка с ИИ, и генерация обложек, и заголовки
+    чатов. Здесь тот же расход разложен по AiUsageLog.endpoint, поэтому видно
+    цену каждой функции отдельно.
+    """
+    from sqlalchemy import desc, func
+
+    rows = (
+        db.query(
+            AiUsageLog.endpoint,
+            func.sum(AiUsageLog.total_tokens).label("total_tokens"),
+            func.sum(AiUsageLog.prompt_tokens).label("prompt_tokens"),
+            func.sum(AiUsageLog.completion_tokens).label("completion_tokens"),
+            func.count(AiUsageLog.id).label("request_count"),
+        )
+        .filter(AiUsageLog.org_type == current_user.org_type)
+        .group_by(AiUsageLog.endpoint)
+        .order_by(desc(func.sum(AiUsageLog.total_tokens)))
+        .all()
+    )
+    return [
+        {
+            "endpoint": r.endpoint,
+            # Неизвестный endpoint (новая функция, старые записи) показываем
+            # как есть, а не прячем — иначе часть расхода пропадёт из отчёта.
+            "label": AI_ENDPOINT_LABELS.get(r.endpoint, r.endpoint),
+            "total_tokens": r.total_tokens or 0,
+            "prompt_tokens": r.prompt_tokens or 0,
+            "completion_tokens": r.completion_tokens or 0,
+            "request_count": r.request_count or 0,
+        }
+        for r in rows
+    ]
+
