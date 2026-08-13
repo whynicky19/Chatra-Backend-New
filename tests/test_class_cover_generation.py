@@ -185,15 +185,21 @@ def test_prompt_is_one_style_across_subjects():
             "screenshot of a real application interface",
             # сама дизайн-система
             "premium dark abstract cover background", "apple-like",
-            "16:9", "smooth soft gradient", "soft ambient glow",
+            "16:9", "smooth soft gradient", "faint ambient light",
             "thin precise lines", "semi-transparent",
-            "leave large areas of the gradient completely empty",
+            "keep generous empty space between them",
+            # Центр не выжигаем: в первой версии модель ставила туда прожектор
+            # и обложка превращалась в фонарик в темноте.
+            "never a bright spotlight", "never a burning hotspot",
+            "the centre included, stays dark and calm",
+            # И элементы фона должны быть ВИДНЫ, а не угадываться.
+            "clearly visible and easy to", "not a barely perceptible texture",
             "every cover in this collection shares one style",
             # символ — главный акцент, фон вторичен
-            "the centre of the frame stays calm",
+            "they fade out only in the middle",
             "main visual accent",
-            "nothing in the background may compete with it",
-            "keep the thematic elements away from",
+            "nothing may compete with the symbol there",
+            "the central area holds nothing but the plain gradient",
         ):
             assert required in p, f"в промпте пропало «{required}»"
         # Прежняя ошибка: жёсткая «чистая полоса» под иконку превращала
@@ -219,6 +225,41 @@ def test_prompt_passes_the_subject_name_as_topic_only():
     assert "Web Design" in p
     assert "never render it, or any other word, as text" in p
     assert "any text, letters, numbers, subject names" in p
+
+
+def test_theme_follows_the_class_name_not_the_chosen_symbol():
+    """Реальный баг с продакшена: предмет «Physics», символ — колба (её просто
+    выбрал преподаватель), и фон уезжал в химические молекулы с лабораторной
+    посудой. Тему задаёт название, символ — только украшение."""
+    p = cover_art.build_prompt("teal", "flask", seed=1, subject="Physics")
+    assert cover_art.SUBJECT_MOTIFS[3][1] in p          # волны, силовые линии
+    assert cover_art.ICONS["flask"]["motif"] not in p   # молекул и колб нет
+    assert "the subject name always wins" in p
+
+
+@pytest.mark.parametrize("name,expect", [
+    ("Web Design", "wireframe layouts"),
+    ("Веб-дизайн 2 курс", "wireframe layouts"),
+    ("Программирование", "node graphs"),
+    ("Математика", "coordinate grids"),
+    ("Физика 10 класс", "wave interference"),
+    ("Химия", "molecular lattices"),
+    ("Биология", "DNA helices"),
+    ("История Казахстана", "old map contours"),
+    ("Английский язык", "flowing script-like strokes"),
+    ("Экономика", "trend lines"),
+])
+def test_common_subjects_get_their_own_background(name, expect):
+    """Тематика фона должна отличаться от предмета к предмету — иначе вся
+    коллекция превращается в один и тот же тёмный градиент."""
+    assert expect in cover_art.build_prompt("blue", "book", seed=1, subject=name)
+
+
+def test_unknown_subject_keeps_the_symbol_motif():
+    """Свой курс или кружок в таблицу не попадёт — тогда работает мотив
+    символа: он хотя бы в языке коллекции."""
+    p = cover_art.build_prompt("blue", "note", seed=1, subject="Клуб дебатов")
+    assert cover_art.ICONS["note"]["motif"] in p
 
 
 def test_prompt_falls_back_to_the_default_subject_for_a_nameless_class():
@@ -828,3 +869,131 @@ def test_legacy_client_can_still_send_an_uploaded_cover(client, teacher, storage
                       json={"name": "Класс", "cover_image": "https://cdn.test/legacy.png"},
                       headers=auth_headers(teacher)).json()
     assert data["cover_image"] == "https://cdn.test/legacy.png"
+
+
+# ── Отчёт по обложкам в админке ─────────────────────────────────────────────
+def _admin(db_session):
+    return make_user(db_session, role="admin")
+
+
+@pytest.fixture()
+def clean_usage(db_session):
+    """Тестовая БД одна на весь прогон, а отчёт считает итог по ВСЕМ записям
+    расхода — иначе строки от соседних тестов ломают ожидаемые суммы."""
+    from models import AiUsageLog
+
+    db_session.query(AiUsageLog).delete()
+    db_session.commit()
+    return db_session
+
+
+def test_cover_report_shows_teacher_name_class_and_tokens(
+        client, db_session, teacher, storage, monkeypatch, clean_usage):
+    """Дашборд должен отвечать на вопрос «сколько стоила эта обложка и чья
+    она»: ФИО преподавателя, название предмета и токены — в одной строке, без
+    отдельных запросов за каждым id."""
+    teacher.full_name = "Иванова Мария Петровна"
+    db_session.commit()
+
+    _patch_openai(monkeypatch, lambda url, kw: _openai_image_response(
+        _png_bytes(), usage={"input_tokens": 30, "output_tokens": 272, "total_tokens": 302}))
+    cls = _make_class(client, teacher, name="Веб-дизайн", cover_color="blue", cover_icon="code")
+    client.post(f"/api/classes/{cls['id']}/cover/generate", json={},
+                headers=auth_headers(teacher))
+
+    data = client.get("/api/admin/ai-usage/covers",
+                      headers=auth_headers(_admin(db_session))).json()
+
+    assert data["total"] == 1
+    assert data["total_tokens"] == 302
+    row = data["items"][0]
+    assert row["teacher_name"] == "Иванова Мария Петровна"
+    assert row["class_name"] == "Веб-дизайн"
+    assert row["class_id"] == cls["id"]
+    assert row["total_tokens"] == 302
+    assert row["created_at"]
+
+
+def test_cover_report_holds_only_cover_generations(
+        client, db_session, teacher, storage, monkeypatch, clean_usage):
+    """Чат и заголовки в отчёт по обложкам попадать не должны — иначе цифра
+    «сколько ушло на обложки» перестаёт что-либо значить."""
+    from models import AiUsageLog
+
+    _patch_openai(monkeypatch, lambda url, kw: _openai_image_response(
+        _png_bytes(), usage={"total_tokens": 302}))
+    cls = _make_class(client, teacher, cover_color="blue", cover_icon="atom")
+    client.post(f"/api/classes/{cls['id']}/cover/generate", json={},
+                headers=auth_headers(teacher))
+    db_session.add(AiUsageLog(user_id=teacher.id, class_id=cls["id"], endpoint="chat",
+                              org_type=teacher.org_type, total_tokens=5000))
+    db_session.commit()
+
+    data = client.get("/api/admin/ai-usage/covers",
+                      headers=auth_headers(_admin(db_session))).json()
+    assert data["total"] == 1
+    assert data["total_tokens"] == 302
+
+
+def test_cover_report_totals_cover_every_page(client, db_session, teacher, storage,
+                                              monkeypatch, clean_usage):
+    """Итог считается по всем генерациям, а не по видимой странице: иначе
+    админ сверяет со счётом OpenAI неполную сумму."""
+    from models import AiUsageLog
+
+    for _ in range(3):
+        db_session.add(AiUsageLog(user_id=teacher.id, class_id=None,
+                                  endpoint="cover_image", org_type=teacher.org_type,
+                                  total_tokens=100))
+    db_session.commit()
+
+    data = client.get("/api/admin/ai-usage/covers?page=1&page_size=1",
+                      headers=auth_headers(_admin(db_session))).json()
+    assert len(data["items"]) == 1
+    assert data["total"] == 3
+    assert data["total_tokens"] == 300
+
+
+def test_cover_report_survives_a_deleted_class(client, db_session, teacher, storage,
+                                               clean_usage):
+    """Класс удалили, а расход остался — строка обязана остаться видимой,
+    иначе итог в отчёте разойдётся со счётом."""
+    from models import AiUsageLog
+
+    db_session.add(AiUsageLog(user_id=teacher.id, class_id=999999,
+                              endpoint="cover_image", org_type=teacher.org_type,
+                              total_tokens=250))
+    db_session.commit()
+
+    data = client.get("/api/admin/ai-usage/covers",
+                      headers=auth_headers(_admin(db_session))).json()
+    assert data["total"] == 1
+    assert data["items"][0]["class_name"] is None
+    assert data["items"][0]["total_tokens"] == 250
+
+
+def test_cover_report_is_admin_only(client, db_session, teacher):
+    assert client.get("/api/admin/ai-usage/covers",
+                      headers=auth_headers(teacher)).status_code == 403
+    student = make_user(db_session, role="student")
+    assert client.get("/api/admin/ai-usage/covers",
+                      headers=auth_headers(student)).status_code == 403
+
+
+def test_ai_usage_list_carries_names_too(client, db_session, teacher, storage, monkeypatch):
+    """Общий журнал расхода тоже показывает ФИО и предмет: раньше там были
+    голые user_id/class_id, и админка их не умела расшифровать."""
+    teacher.full_name = "Ким Гульнар Аскаровна"
+    db_session.commit()
+    _patch_openai(monkeypatch, lambda url, kw: _openai_image_response(
+        _png_bytes(), usage={"total_tokens": 302}))
+    cls = _make_class(client, teacher, name="Программирование",
+                      cover_color="pink", cover_icon="code")
+    client.post(f"/api/classes/{cls['id']}/cover/generate", json={},
+                headers=auth_headers(teacher))
+
+    row = client.get("/api/admin/ai-usage",
+                     headers=auth_headers(_admin(db_session))).json()["items"][0]
+    assert row["user_name"] == "Ким Гульнар Аскаровна"
+    assert row["class_name"] == "Программирование"
+    assert row["label"] == "Обложка предмета"

@@ -76,43 +76,43 @@ PALETTE: dict[str, dict[str, str]] = {
     "blue": {
         "hex": "#0A84FF", "base": "#3B82F6", "ink": "#1D4ED8",
         "prompt": "deep midnight blue — near-black navy in the corners, rich cobalt "
-                  "in the field, with soft luminous sky-blue and pale azure light",
+                  "in the field, with only a faint sky-blue halo and a hint of pale azure",
     },
     "purple": {
         "hex": "#8B5CF6", "base": "#7C5CE6", "ink": "#6D28D9",
         "prompt": "deep midnight violet — near-black plum in the corners, rich purple "
-                  "in the field, with soft luminous lavender and pale lilac light",
+                  "in the field, with only a faint lavender halo and a hint of pale lilac",
     },
     "green": {
         "hex": "#22C55E", "base": "#12A970", "ink": "#047857",
         "prompt": "deep forest emerald — near-black pine in the corners, rich emerald "
-                  "in the field, with soft luminous mint and pale seafoam light",
+                  "in the field, with only a faint mint halo and a hint of pale seafoam",
     },
     "orange": {
         "hex": "#F97316", "base": "#F4842B", "ink": "#C2410C",
         "prompt": "deep ember orange — near-black burnt umber in the corners, rich amber "
-                  "in the field, with soft luminous apricot and pale golden light",
+                  "in the field, with only a faint apricot halo and a hint of pale golden",
     },
     "red": {
         "hex": "#EF4444", "base": "#E4534F", "ink": "#B91C1C",
         "prompt": "deep crimson — near-black maroon in the corners, rich warm red "
-                  "in the field, with soft luminous coral and pale rose light",
+                  "in the field, with only a faint coral halo and a hint of pale rose",
     },
     "pink": {
         "hex": "#EC4899", "base": "#E8559C", "ink": "#BE185D",
         "prompt": "deep magenta — near-black wine in the corners, rich fuchsia "
-                  "in the field, with soft luminous pink and pale petal light",
+                  "in the field, with only a faint pink halo and a hint of pale petal",
     },
     # Фирменный бирюзовый Chatra (C.teal в lib/theme/app_theme.dart).
     "teal": {
         "hex": "#00B1C9", "base": "#12A2B5", "ink": "#0E7490",
         "prompt": "deep ocean teal — near-black petrol in the corners, rich teal "
-                  "in the field, with soft luminous turquoise and pale aqua light",
+                  "in the field, with only a faint turquoise halo and a hint of pale aqua",
     },
     "indigo": {
         "hex": "#6366F1", "base": "#5A5FE0", "ink": "#4338CA",
         "prompt": "deep indigo — near-black ink blue in the corners, rich indigo "
-                  "in the field, with soft luminous periwinkle and pale cornflower light",
+                  "in the field, with only a faint periwinkle halo and a hint of pale cornflower",
     },
 }
 
@@ -190,6 +190,107 @@ ICONS: dict[str, dict[str, str]] = {
 
 DEFAULT_ICON = "book"
 
+# Тематика фона по НАЗВАНИЮ предмета. Мотив символа для этого не годится:
+# преподаватель ставит на «Physics» колбу (просто потому, что нравится), и фон
+# уезжал в химические молекулы с лабораторной посудой. Название — источник
+# правды о предмете, символ — только украшение, поэтому сначала ищем здесь.
+#
+# Порядок важен: срабатывает первое совпадение, поэтому узкие темы («веб-
+# дизайн») стоят выше общих («дизайн»). Ключи в нижнем регистре, сравнение —
+# по вхождению подстроки, чтобы «Математика 2 курс» и «Matematika» попадали
+# в ту же строку.
+SUBJECT_MOTIFS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("веб-дизайн", "веб дизайн", "web design", "web-design", "ui/ux", "ui ux",
+      "юай", "вёрстк", "верстк", "frontend", "фронтенд", "html", "css"),
+     "wireframe layouts, browser window frames, layout grids, vector paths, "
+     "interface components reduced to thin outlines"),
+    (("программир", "programming", "informatik", "информатик", "computer science",
+      "coding", "кодинг", "python", "java", "algorithm", "алгоритм", "разработк",
+      "software", "backend", "бэкенд", "devops", "базы данных", "database"),
+     "node graphs, flowing data paths, layered code blocks reduced to faint "
+     "lines, network topologies, terminal-like geometry"),
+    (("матем", "matem", "math", "алгебр", "algebra", "геометр", "geometr",
+      "матан", "calculus", "тригоном", "статист", "statist", "теория вероят"),
+     "coordinate grids, plotted curves, geometric constructions, circles with "
+     "radii, faint graph axes"),
+    (("физик", "fizik", "physics", "механик", "mechanic", "оптик", "термодинам",
+      "электродинам", "квант", "quantum"),
+     "wave interference, field lines, particle trails, orbital paths, faint "
+     "scientific diagrams"),
+    (("астроном", "astronom", "космос", "space", "вселенн"),
+     "orbital ellipses, constellation lines, planetary arcs, star fields, faint "
+     "celestial charts"),
+    (("хими", "himi", "chem", "органическая", "неорганическ"),
+     "molecular lattices, bonded hexagonal structures, laboratory glassware "
+     "outlines, dissolving particles"),
+    (("биолог", "biolog", "анатом", "anatom", "ботаник", "зоолог", "эколог",
+      "ecolog", "генетик", "genetic", "микробиолог"),
+     "DNA helices, cell membranes, branching organic structures, microscopic "
+     "patterns"),
+    (("медиц", "medic", "здоров", "health", "сестринск", "nursing", "фармац",
+      "pharma"),
+     "anatomical outlines, pulse waveforms, cell structures, molecular chains, "
+     "faint medical diagrams"),
+    (("истори", "history", "археолог", "archaeolog", "культуролог"),
+     "old map contours, classical architecture outlines, arches and columns, "
+     "artifact silhouettes, faint ornamental patterns"),
+    (("географ", "geograph", "картограф", "геолог", "geolog", "краевед"),
+     "meridian grids, terrain contour lines, coastline outlines, topographic "
+     "patterns"),
+    (("литератур", "literature", "поэз", "poetry", "чтение"),
+     "layered pages, open-book outlines, ruled text blocks reduced to faint "
+     "lines, quill strokes"),
+    (("англ", "english", "немецк", "german", "deutsch", "французск", "french",
+      "испанск", "spanish", "китайск", "chinese", "казахск", "qazaq", "тілі",
+      "язык", "language", "лингвист", "linguist", "грамматик", "grammar",
+      "речь", "speaking"),
+     "flowing script-like strokes, ruled writing lines, abstract phonetic "
+     "marks, ribbons of language"),
+    (("эконом", "econom", "финанс", "finance", "бизнес", "business", "бухгалт",
+      "accounting", "маркетинг", "marketing", "менеджмент", "management",
+      "предпринимат"),
+     "trend lines, candlestick and bar silhouettes, plotted axes, flowing "
+     "market curves"),
+    (("прав", "law", "юрид", "legal", "конституц"),
+     "balanced scale outlines, columned facades, paragraph marks reduced to "
+     "faint geometry, seal and stamp circles"),
+    (("психолог", "psycholog", "философ", "philosoph", "социолог", "sociolog",
+      "политолог"),
+     "interconnected thought nodes, concentric mind circles, mirrored "
+     "silhouetted geometry, soft branching links"),
+    (("инженер", "engineer", "электротехн", "схемотехн", "робот", "robot",
+      "черчен", "drafting", "механотрон", "cad"),
+     "technical blueprints, circuit traces, gear outlines, dimension lines, "
+     "orthographic projections"),
+    (("музык", "music", "вокал", "vocal", "гитар", "фортепиан", "хор", "сольфедж"),
+     "staff lines, sound waves, rhythmic pulses, equaliser bars reduced to "
+     "faint geometry"),
+    (("искусств", "art", "живопис", "painting", "рисован", "drawing", "скульпт",
+      "график", "graphic", "дизайн", "design", "фотограф", "photograph"),
+     "brush strokes, colour-wheel arcs, composition guides, golden-ratio "
+     "spirals, canvas grids"),
+    (("физкультур", "физическая культура", "sport", "спорт", "фитнес", "тренир"),
+     "motion trails, field markings, trajectory arcs, stopwatch circles, "
+     "stadium geometry"),
+)
+
+
+def resolve_motif(subject: str | None, icon: str) -> str:
+    """Тематические элементы фона: сначала по названию предмета, потом по
+    символу.
+
+    Мотив символа — только запасной вариант: символ преподаватель выбирает
+    как понравившуюся картинку, а тему предмета несёт название. Ничего не
+    совпало (свой курс, «Поток 2», кружок) — берём мотив символа, он хотя бы
+    в языке коллекции.
+    """
+    low = (subject or "").strip().lower()
+    if low:
+        for keys, motif in SUBJECT_MOTIFS:
+            if any(k in low for k in keys):
+                return motif
+    return ICONS[normalize_icon(icon)]["motif"]
+
 
 def normalize_color(value: str | None) -> str:
     """Слаг цвета из палитры; неизвестное/пустое → DEFAULT_COLOR."""
@@ -250,32 +351,37 @@ _BASE_STYLE = (
 
     "Colour and light: {color}. Fill the entire frame with one smooth soft "
     "gradient built from this single colour family — darkest in the corners, "
-    "slightly brighter and luminous towards the middle. Add gentle depth and a "
-    "soft ambient glow, as if light came from behind the artwork. The glow must "
-    "stay soft and diffused: no harsh highlights, no strong neon, no glare, no "
-    "second unrelated colour. "
+    "only slightly lighter towards the middle. The light must stay dim, wide "
+    "and evenly spread, like faint ambient light behind the artwork. Never a "
+    "bright spotlight, never a burning hotspot, never a pale washed-out or "
+    "white-hot area in the middle: the whole frame, the centre included, stays "
+    "dark and calm. No harsh highlights, no strong neon, no glare, no second "
+    "unrelated colour. "
 
     "Subject of the course: \"{subject}\". Treat this only as the topic of the "
-    "background — never render it, or any other word, as text. Across the "
-    "outer part of the frame, place abstract elements "
-    "that belong to this specific subject, for example: {motif}. Work out the "
-    "elements yourself from the meaning of the subject, so the cover is "
-    "instantly recognisable as this field of knowledge, and so that two "
-    "different subjects never get the same background. "
+    "background — never render it, or any other word, as text. Fill the "
+    "background with abstract elements that belong to this specific subject, "
+    "for example: {motif}. These are only examples: if they do not fit the "
+    "subject, ignore them and use elements that do — the subject name always "
+    "wins. Work the elements out from the meaning of the subject, so the cover "
+    "is instantly recognisable as this field of knowledge and two different "
+    "subjects never get the same background. "
 
-    "How those elements must look: thin precise lines, faint outlines, "
-    "minimal geometry, sparse particles, subtle grids, curves and waves. Very "
-    "low contrast, semi-transparent, softly glowing and dissolving into the "
-    "gradient — they are part of the background, not objects placed on top of "
-    "it. Never a collage of separate pictures, never opaque solid shapes, never "
-    "a row of icons, never a busy or crowded frame. Use only a few of them and "
-    "leave large areas of the gradient completely empty. "
+    "How those elements must look: thin precise lines, clean outlines, minimal "
+    "geometry, sparse particles, subtle grids, curves and waves, softly glowing "
+    "and dissolving into the gradient. They are part of the background, not "
+    "objects placed on top of it — but they must be clearly visible and easy to "
+    "read even when the cover is shown as a small card. Semi-transparent and "
+    "low-contrast, yet distinct: not a barely perceptible texture, not vague "
+    "smoke or blur. Never a collage of separate pictures, never opaque solid "
+    "shapes, never a row of icons, never a busy or crowded frame. "
 
-    "The centre of the frame stays calm: only the gradient and the soft glow "
-    "there. A single large subject symbol is placed over the centre by the "
-    "interface and it is the main visual accent of the cover — nothing in the "
-    "background may compete with it, so keep the thematic elements away from "
-    "the middle and let them fade out towards it. Keep the top and bottom edges "
+    "Spread these elements across the whole frame — both sides, the corners, "
+    "the upper and lower areas — and keep generous empty space between them. "
+    "They fade out only in the middle: a single large subject symbol is placed "
+    "over the centre by the interface and it is the main visual accent of the "
+    "cover, so the central area holds nothing but the plain gradient and "
+    "nothing may compete with the symbol there. Keep the top and bottom edges "
     "quiet as well, the artwork is cropped there. "
 
     "Every cover in this collection shares one style: the same darkness, the "
@@ -294,22 +400,22 @@ _BASE_STYLE = (
     "same design system as every other cover in the app."
 )
 
-# Варианты раскладки для Regenerate — куда сместить свечение и где собрать
+# Варианты раскладки для Regenerate — куда сместить свет и где собрать
 # тематику. Середина остаётся спокойной в каждом варианте: это не «тоже
 # направление», а условие читаемости символа.
 _COMPOSITIONS = (
-    "Layout: the glow sits slightly right of centre, the thematic elements "
-    "gather along the left edge and the lower corner.",
-    "Layout: the glow sits slightly left of centre, the thematic elements "
-    "gather along the right edge and the upper corner.",
-    "Layout: a wide low glow across the middle, the thematic elements drift in "
-    "from both side edges and fade before reaching the centre.",
-    "Layout: the glow is centred and tight, the thematic elements form a very "
-    "sparse ring far around it.",
-    "Layout: the glow rises from the lower third, the thematic elements hang in "
-    "the upper corners as faint distant structures.",
-    "Layout: a diagonal band of light from the lower left to the upper right, "
-    "the thematic elements scattered sparsely along its darker side.",
+    "Layout: the dim light pools slightly right of centre, the thematic "
+    "elements are denser along the left edge and the lower corner.",
+    "Layout: the dim light pools slightly left of centre, the thematic "
+    "elements are denser along the right edge and the upper corner.",
+    "Layout: a wide low band of dim light across the middle, the thematic "
+    "elements reach in from both side edges and stop before the centre.",
+    "Layout: the dim light stays centred and narrow, the thematic elements "
+    "form a wide sparse ring far around it.",
+    "Layout: the dim light rises from the lower third, the thematic elements "
+    "hang in the upper corners as faint distant structures.",
+    "Layout: a soft diagonal band of dim light from the lower left to the "
+    "upper right, the thematic elements spread along its darker side.",
 )
 
 
@@ -317,9 +423,11 @@ def build_prompt(color: str, icon: str, seed: int | None = None,
                  subject: str | None = None) -> str:
     """Единый промпт Chatra под выбранные цвет, символ и предмет.
 
-    subject — название класса: модель по нему сама подбирает тематические
-    элементы фона (преподаватель по-прежнему выбирает только цвет и символ).
-    Пустое/бессодержательное название заменяется предметом по умолчанию для
+    subject — название класса: и тема фона, и источник примеров тематических
+    элементов (resolve_motif). Преподаватель по-прежнему выбирает только цвет и
+    символ; символ участвует в тематике лишь как запасной вариант, когда
+    название ничего не говорит о предмете — иначе колба на «Physics» тянула бы
+    в фон химию. Пустое название заменяется предметом по умолчанию для
     выбранного символа, см. normalize_subject.
 
     seed меняет только раскладку (одна фраза из _COMPOSITIONS) — Images API не
@@ -328,12 +436,13 @@ def build_prompt(color: str, icon: str, seed: int | None = None,
     """
     color = normalize_color(color)
     icon = normalize_icon(icon)
+    topic = normalize_subject(subject, icon)
     rng = random.Random(seed)
     return " ".join((
         _BASE_STYLE.format(
             color=PALETTE[color]["prompt"],
-            subject=normalize_subject(subject, icon),
-            motif=ICONS[icon]["motif"],
+            subject=topic,
+            motif=resolve_motif(topic, icon),
         ),
         rng.choice(_COMPOSITIONS),
     ))
@@ -443,14 +552,15 @@ def render_background(color: str, seed: int | None = None):
             px[xx, yy] = tuple(round(night[i] + (field[i] - night[i]) * t) for i in range(3))
     img = small.resize((COVER_WIDTH, COVER_HEIGHT), Image.BICUBIC).convert("RGB")
 
-    # Свечение у середины — главный источник глубины и то, на чём читается
-    # белый символ. Смещаем его слабо: символ ложится по центру, и уводить
-    # свет далеко от него нельзя.
-    gx = 0.5 + rng.uniform(-0.10, 0.10)
-    gy = 0.5 + rng.uniform(-0.08, 0.08)
+    # Свет у середины — источник глубины, а не прожектор: широкий и тусклый.
+    # Узкое яркое пятно здесь уже было и выжигало центр, из-за чего обложка
+    # выглядела как фонарик в темноте. Смещаем слабо: символ ложится по
+    # центру, и уводить свет далеко от него нельзя.
+    gx = 0.5 + rng.uniform(-0.09, 0.09)
+    gy = 0.5 + rng.uniform(-0.07, 0.07)
     halo = Image.new("RGB", (COVER_WIDTH, COVER_HEIGHT), glow)
-    img = Image.composite(halo, img, _radial_mask(gx, gy, rng.uniform(0.62, 0.78)).point(
-        lambda v: round(v * 0.42)))
+    img = Image.composite(halo, img, _radial_mask(gx, gy, rng.uniform(0.85, 1.05)).point(
+        lambda v: round(v * 0.24)))
 
     # Виньетка — та самая premium-глубина: углы уходят в почти чёрный. Кладём
     # её ДО тонкой графики: наоборот она гасила линии до полной невидимости —
@@ -474,7 +584,7 @@ def render_background(color: str, seed: int | None = None):
         cy = rng.uniform(-0.2, 1.2) * COVER_HEIGHT
         start = rng.uniform(0, 360)
         draw.arc((cx - r, cy - r, cx + r, cy + r), start, start + rng.uniform(50, 130),
-                 fill=(*line, rng.randint(70, 110)), width=hairline)
+                 fill=(*line, rng.randint(105, 150)), width=hairline)
 
     for _ in range(rng.randint(3, 5)):
         y = rng.uniform(0.04, 0.96)
@@ -484,7 +594,7 @@ def render_background(color: str, seed: int | None = None):
         draw.line((x0 * COVER_WIDTH, y * COVER_HEIGHT,
                    (x0 + rng.uniform(0.22, 0.45)) * COVER_WIDTH,
                    (y + rng.uniform(-0.05, 0.05)) * COVER_HEIGHT),
-                  fill=(*line, rng.randint(45, 75)), width=hairline)
+                  fill=(*line, rng.randint(75, 110)), width=hairline)
 
     for _ in range(rng.randint(16, 24)):
         x, y = rng.random(), rng.random()
@@ -493,7 +603,7 @@ def render_background(color: str, seed: int | None = None):
         r = rng.uniform(1.8, 4.5)
         draw.ellipse((x * COVER_WIDTH - r, y * COVER_HEIGHT - r,
                       x * COVER_WIDTH + r, y * COVER_HEIGHT + r),
-                     fill=(*line, rng.randint(90, 160)))
+                     fill=(*line, rng.randint(130, 200)))
 
     # Размытие — только чтобы снять лесенку ImageDraw (он не сглаживает).
     shapes = shapes.filter(ImageFilter.GaussianBlur(COVER_HEIGHT * 0.0016))

@@ -168,6 +168,30 @@ def get_class_members(
         raise HTTPException(status_code=404, detail="Not found")
     return crud_classes.get_members(db, class_id)
 
+def _name_maps(db: Session, logs) -> dict:
+    """ФИО/почта пользователей и названия классов для строк расхода.
+
+    Два запроса на страницу, а не по запросу на строку: дашборд показывает по
+    50 записей, и ленивое обращение к relationship превращало бы это в сотню
+    round-trip'ов. Класс мог быть удалён, а user_id обнулён (ON DELETE SET
+    NULL) — тогда в словаре просто нет ключа и наружу уедет null, а строка
+    расхода всё равно останется видимой.
+    """
+    from models import Class
+
+    user_ids = {l.user_id for l in logs if l.user_id}
+    class_ids = {l.class_id for l in logs if l.class_id}
+    users = (db.query(User.id, User.full_name, User.email)
+             .filter(User.id.in_(user_ids)).all()) if user_ids else []
+    classes = (db.query(Class.id, Class.name)
+               .filter(Class.id.in_(class_ids)).all()) if class_ids else []
+    return {
+        "users": {u.id: u.full_name for u in users},
+        "emails": {u.id: u.email for u in users},
+        "classes": {c.id: c.name for c in classes},
+    }
+
+
 @router.get("/ai-usage")
 def get_ai_usage(
     class_id: Optional[int] = Query(None, description="Filter by class, None = all"),
@@ -187,6 +211,7 @@ def get_ai_usage(
         .limit(page_size)
         .all()
     )
+    names = _name_maps(db, logs)
     return {
         "total": total,
         "page": page,
@@ -195,8 +220,15 @@ def get_ai_usage(
             {
                 "id": l.id,
                 "user_id": l.user_id,
+                # ФИО и название класса отдаём прямо здесь: без них админка
+                # показывала «user 42 / class 7» и по каждой строке дашборда
+                # приходилось бы делать отдельный запрос.
+                "user_name": names["users"].get(l.user_id),
+                "user_email": names["emails"].get(l.user_id),
                 "class_id": l.class_id,
+                "class_name": names["classes"].get(l.class_id),
                 "endpoint": l.endpoint,
+                "label": AI_ENDPOINT_LABELS.get(l.endpoint, l.endpoint),
                 "prompt_tokens": l.prompt_tokens,
                 "completion_tokens": l.completion_tokens,
                 "total_tokens": l.total_tokens,
@@ -288,4 +320,71 @@ def get_ai_usage_by_endpoint(
         }
         for r in rows
     ]
+
+
+# Вид расхода, которым пишется генерация обложки (routers/classes.py).
+COVER_ENDPOINT = "cover_image"
+
+
+@router.get("/ai-usage/covers")
+def get_cover_usage(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_admin),
+):
+    """Расход на обложки предметов: кто сгенерировал, для какого предмета и
+    сколько токенов ушло.
+
+    Отдельный отчёт, а не фильтр по /ai-usage, потому что у обложки другой
+    вопрос: не «сколько потратил пользователь», а «сколько стоила каждая
+    картинка». Поэтому здесь сразу ФИО преподавателя и название предмета, а
+    рядом — итог по ВСЕМ генерациям, а не только по текущей странице: именно
+    его админ сверяет со счётом OpenAI.
+
+    ФИО или название могут прийти null: пользователь удалён (user_id
+    обнуляется по ON DELETE SET NULL) или класс удалён. Строку расхода это не
+    прячет — иначе итог перестал бы сходиться с реальным счётом.
+    """
+    from sqlalchemy import desc, func
+
+    where = (AiUsageLog.org_type == current_user.org_type,
+             AiUsageLog.endpoint == COVER_ENDPOINT)
+    totals = (db.query(func.count(AiUsageLog.id),
+                       func.coalesce(func.sum(AiUsageLog.total_tokens), 0),
+                       func.coalesce(func.sum(AiUsageLog.prompt_tokens), 0),
+                       func.coalesce(func.sum(AiUsageLog.completion_tokens), 0))
+              .filter(*where)
+              .one())
+    logs = (db.query(AiUsageLog)
+            .filter(*where)
+            .order_by(desc(AiUsageLog.created_at))
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all())
+    names = _name_maps(db, logs)
+
+    return {
+        "total": totals[0],
+        "page": page,
+        "page_size": page_size,
+        "total_tokens": totals[1],
+        "prompt_tokens": totals[2],
+        "completion_tokens": totals[3],
+        "items": [
+            {
+                "id": l.id,
+                "user_id": l.user_id,
+                "teacher_name": names["users"].get(l.user_id),
+                "teacher_email": names["emails"].get(l.user_id),
+                "class_id": l.class_id,
+                "class_name": names["classes"].get(l.class_id),
+                "prompt_tokens": l.prompt_tokens,
+                "completion_tokens": l.completion_tokens,
+                "total_tokens": l.total_tokens,
+                "created_at": l.created_at.isoformat() if l.created_at else None,
+            }
+            for l in logs
+        ],
+    }
 
