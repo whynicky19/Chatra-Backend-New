@@ -494,7 +494,7 @@ SUBJECT_MOTIFS: tuple[tuple[tuple[str, ...], str], ...] = (
      "balanced scale outlines, columned facades, paragraph marks reduced to "
      "faint geometry, seal and stamp circles"),
     (("психолог", "psycholog", "философ", "philosoph", "социолог", "sociolog",
-      "политолог"),
+      "политолог", "полит", "politic", "govern", "обществозн"),
      "interconnected thought nodes, concentric mind circles, mirrored "
      "silhouetted geometry, soft branching links"),
     (("инженер", "engineer", "электротехн", "схемотехн", "робот", "robot",
@@ -619,89 +619,89 @@ def catalog() -> dict:
 # Правки формулировок здесь меняют вид ВСЕХ будущих обложек: этот текст и есть
 # дизайн-система. Прежние обложки при этом не трогаются — каждая живёт своей
 # картинкой в хранилище, пока её не перегенерируют.
+#
+# Баланс инструкций тут важнее формулировок. Версия на 4000 символов и 34
+# запрета (одиннадцать из которых требовали пустоты: «hairline», «low
+# contrast», «generous empty space», «empty margin along all four edges»,
+# «stays dark and calm») дала ровно то, что и должна была: модель выполнила
+# все ограничения сразу, не нарисовав ничего — голый градиент с парой пылинок.
+# Поэтому теперь сначала ЧТО рисуем и сколько этого должно быть, и только
+# потом — ограничения, каждое ровно по одному разу.
 _BASE_STYLE = (
-    "Create a premium dark abstract cover background for a modern educational "
-    "application. The visual language is high-end and Apple-like: calm, "
-    "minimal, confident, with a lot of empty space. "
-    "Wide cinematic 16:9 horizontal composition. "
+    "Design the background of a course cover for a premium educational "
+    "application: a dark, elegant, Apple-like graphic in a wide 16:9 frame. "
 
-    "Colour and light: {color}. Fill the entire frame with one smooth soft "
-    "gradient built from this single colour family — darkest in the corners, "
-    "only slightly lighter towards the middle. The light must stay dim, wide "
-    "and evenly spread, like faint ambient light behind the artwork. Never a "
-    "bright spotlight, never a burning hotspot, never a pale washed-out or "
-    "white-hot area in the middle: the whole frame, the centre included, stays "
-    "dark and calm. No harsh highlights, no strong neon, no glare, no second "
-    "unrelated colour. "
+    # 1. Что рисуем — первым и с обязательным покрытием кадра.
+    # Название приходит от преподавателя и печатать его на картинке нельзя:
+    # запрет стоит вплотную к самому названию, а не только в общем списке в
+    # конце — так модель реже пытается подписать обложку.
+    "Subject of the course: \"{subject}\" — use it only as the topic, never "
+    "write it, or any other word, on the image. "
+    "Draw a background built from "
+    "abstract elements of this subject — for example: {motif}. These are only "
+    "examples: if they do not fit the subject, ignore them and use elements "
+    "that do, the subject name always wins. The cover must be instantly "
+    "recognisable as this field of knowledge, and two different subjects must "
+    "never get the same background. "
 
-    "Subject of the course: \"{subject}\". Treat this only as the topic of the "
-    "background — never render it, or any other word, as text. Fill the "
-    "background with abstract elements that belong to this specific subject, "
-    "for example: {motif}. These are only examples: if they do not fit the "
-    "subject, ignore them and use elements that do — the subject name always "
-    "wins. Work the elements out from the meaning of the subject, so the cover "
-    "is instantly recognisable as this field of knowledge and two different "
-    "subjects never get the same background. "
+    "These elements are the content of this image, not a decoration: they "
+    "cover most of the frame as one continuous, airy drawing — the left and "
+    "the right side carrying a similar amount, the upper and the lower areas "
+    "used as well. "
 
-    "Draw every one of these elements strictly as line art: outlines only, one "
-    "uniform hairline stroke, flat, with no fill, no shading, no inner "
-    "gradient, no embossing, no relief, no drop shadow, no volume and no "
-    "perspective rendering. A building, a molecule, a map or a wave must read "
-    "as a schematic technical drawing, never as a modelled, sculpted or lit "
-    "object. Keep every element in exactly the same weight and treatment, so "
-    "the whole background looks drawn by one hand in one pass. "
+    # 2. Как рисуем — видимость задана явно, иначе «тонко» читается как «никак».
+    "Draw them as line art: clean outlines of even weight, thin but solid, "
+    "like a technical pen, in a pale lighter tint of the background colour, "
+    "glowing softly. They must be clearly visible and readable when the cover "
+    "is shown as a small card — a blueprint drawn in light ink on dark paper, "
+    "not a barely perceptible texture, not smoke, not blur. Flat outlines "
+    "only: no fill, no shading, no relief, no drop shadow, no volume, no "
+    "perspective — a schematic technical drawing, all of it in the same "
+    "weight, as if drawn by one hand in one pass. Do not gather several "
+    "complete objects into a scene or a collage, and never draw a row of "
+    "icons. "
 
-    "They are part of the background, not objects placed on top of it — but "
-    "they must be clearly visible and easy to read even when the cover is shown "
-    "as a small card. Semi-transparent and low-contrast, yet distinct: not a "
-    "barely perceptible texture, not vague smoke or blur. Do not gather several "
-    "complete objects side by side into a scene or a collage, and never draw a "
-    "row of icons: the elements form one continuous, airy background texture. "
+    # 3. Цвет и свет.
+    "Colour: {color}. Fill the frame with one smooth gradient of this single "
+    "colour family, darkest at the corners. Light it with a wide, dim glow "
+    "behind the middle: soft and evenly spread, never a bright spotlight, "
+    "never a white-hot core, no neon and no glare. "
 
-    "Balance matters: distribute the elements evenly over the whole frame, so "
-    "the left and the right side carry a similar amount and the upper and lower "
-    "areas are not left empty. Never pack one half of the image while the other "
-    "half stays bare. Keep generous empty space between the elements. "
+    # 4. Центр под символ.
+    "Leave a clear circular area in the middle, about one third of the image "
+    "width across, holding nothing but the gradient — no line may cross it. "
+    "The interface places a single large subject symbol there, and it stays "
+    "the main accent of the cover. Keep the top and bottom edges calmer, the "
+    "artwork is cropped there. "
 
-    "Keep a clear circular area in the middle, about one third of the image "
-    "width across, holding nothing but the plain gradient — no line may cross "
-    "it. A single large subject symbol is placed over that centre by the "
-    "interface and it is the main visual accent of the cover, so nothing may "
-    "compete with it or touch it there. Keep a calm empty margin along all four "
-    "edges as well, the artwork is cropped there. "
-
+    # 5. Коллекция.
     "Every cover in this collection shares one style: the same darkness, the "
-    "same softness, the same thin-line treatment and the same amount of empty "
-    "space. Only the colour and the thematic elements change. "
+    "same soft light, the same thin-line drawing. Only the colour and the "
+    "subject of the drawing change. "
 
-    "Do not draw: any text, letters, numbers, subject names, labels, captions, "
-    "logos or watermarks; the subject symbol itself; photographs, people, "
-    "characters, mascots or random unrelated objects; realistic 3D renders, "
-    "glossy or metallic materials, cartoon or hand-drawn illustration; bright "
-    "neon, rainbow or multi-colour palettes; cluttered compositions; anything "
-    "that looks like a screenshot of a real application interface. "
-
-    "The final result should look like one cover from a professionally designed "
-    "premium collection — dark, quiet, atmospheric and unmistakably part of the "
-    "same design system as every other cover in the app."
+    # 6. Запреты — один короткий список в конце.
+    "Never draw text, letters, numbers, subject names or logos; never draw the "
+    "subject symbol itself; no photographs, people, characters or unrelated "
+    "objects; no 3D rendering, no glossy materials, no cartoon style; no "
+    "rainbow or multi-colour palettes."
 )
 
 # Варианты раскладки для Regenerate — куда сместить свет и где собрать
 # тематику. Середина остаётся спокойной в каждом варианте: это не «тоже
 # направление», а условие читаемости символа.
 _COMPOSITIONS = (
-    "Layout: the dim light pools slightly right of centre, the thematic "
-    "elements are denser along the left edge and the lower corner.",
-    "Layout: the dim light pools slightly left of centre, the thematic "
-    "elements are denser along the right edge and the upper corner.",
-    "Layout: a wide low band of dim light across the middle, the thematic "
-    "elements reach in from both side edges and stop before the centre.",
-    "Layout: the dim light stays centred and narrow, the thematic elements "
-    "form a wide sparse ring far around it.",
-    "Layout: the dim light rises from the lower third, the thematic elements "
-    "hang in the upper corners as faint distant structures.",
-    "Layout: a soft diagonal band of dim light from the lower left to the "
-    "upper right, the thematic elements spread along its darker side.",
+    "Layout: the drawing runs across the frame as a wide diagonal band from "
+    "the lower left to the upper right, the glow sits just right of centre.",
+    "Layout: the drawing forms a loose, irregular grid over the whole frame, "
+    "the glow sits just left of centre.",
+    "Layout: the drawing radiates outward from behind the central area towards "
+    "all four corners.",
+    "Layout: the drawing fills both sides of the frame and is joined across "
+    "the top and the bottom by long thin lines.",
+    "Layout: the drawing runs as long horizontal bands through the upper and "
+    "the lower thirds, the glow spread wide across the middle.",
+    "Layout: the drawing is scattered evenly like a constellation, its parts "
+    "linked by long faint lines.",
 )
 
 
@@ -785,7 +785,8 @@ def fit_cover_frame(img):
 # итог доводится здесь арифметикой.
 EXPOSURE_MEAN_MAX = 58.0    # выше — обложка «светлая», выбивается из коллекции
 EXPOSURE_MEAN_MIN = 22.0    # ниже — почти чёрный прямоугольник
-EXPOSURE_CENTRE_RATIO = 2.0  # во сколько раз центр вправе быть светлее углов
+EXPOSURE_CENTRE_RATIO = 2.2  # во сколько раз центр вправе быть светлее углов
+EXPOSURE_MAX_DIP = 0.45      # сильнее середину не гасим ни при каком исходнике
 
 
 def _exposure_stats(img) -> tuple[float, float, float]:
@@ -830,15 +831,22 @@ def normalize_exposure(img):
     img = img.convert("RGB")
     mean, centre, corners = _exposure_stats(img)
 
-    # 1. Прожектор в середине. Проходов несколько: маска гасит и края тоже,
-    # поэтому за один раз отношение до цели не доходит — три прохода сводят
-    # его к ~2.0 и на светлых, и на тёмных кадрах.
-    for _ in range(3):
+    # 1. Прожектор в середине. Маска гасит и края тоже, поэтому за один проход
+    # отношение до цели не доходит — идём итерациями. Ограничение стоит не на
+    # числе проходов, а на СУММАРНОМ затемнении центра (EXPOSURE_MAX_DIP):
+    # раньше три прохода по 0.45 давали в пределе 0.17 — центр темнел в шесть
+    # раз, и графика на нём уходила в ровное пятно.
+    dip_total = 1.0
+    for _ in range(4):
         if not (centre > 1.0 and corners > 1.0 and centre > corners * EXPOSURE_CENTRE_RATIO):
             break
         k = max(0.0, min(0.45, 1.0 - (corners * EXPOSURE_CENTRE_RATIO) / centre))
+        # Дальше EXPOSURE_MAX_DIP не гасим: лучше оставить кадр чуть светлее
+        # в середине, чем выжечь в нём тёмную дыру.
+        k = min(k, max(0.0, 1.0 - EXPOSURE_MAX_DIP / dip_total))
         if k <= 0.01:
             break
+        dip_total *= 1.0 - k
         # Маска шире кадра и мягкая: узкая дала бы видимое кольцо на градиенте.
         dip = _radial_mask(0.5, 0.5, 0.80, softness=0.7).point(
             lambda v: 255 - round(v * k))

@@ -185,46 +185,72 @@ def test_prompt_is_one_style_across_subjects():
     for p in prompts:
         for required in (
             # что нельзя рисовать
-            "never render it, or any other word, as text",
-            "do not draw", "any text, letters, numbers, subject names",
-            "logos or watermarks", "the subject symbol itself",
-            "photographs, people", "characters, mascots",
-            "realistic 3d renders", "cartoon or hand-drawn illustration",
-            "bright neon", "cluttered compositions",
-            "screenshot of a real application interface",
+            "never draw text, letters, numbers, subject names or logos",
+            "never draw the subject symbol itself",
+            "no photographs, people, characters or unrelated objects",
+            "no 3d rendering", "no glossy materials", "no cartoon style",
+            "rainbow or multi-colour palettes",
             # сама дизайн-система
-            "premium dark abstract cover background", "apple-like",
-            "16:9", "smooth soft gradient", "faint ambient light",
-            "semi-transparent", "keep generous empty space between the elements",
-            # Только контур: у первой партии History нарисовал объёмные здания
+            "apple-like", "16:9", "one smooth gradient",
+            "wide, dim glow",
+            # Центр не выжигаем: модель ставила туда прожектор и обложка
+            # превращалась в фонарик в темноте.
+            "never a bright spotlight", "never a white-hot core",
+            # Только контур: у одной партии History нарисовал объёмные здания
             # со светотенью, а Physics — чистую линию, и рядом это читалось
             # как две разные системы.
-            "strictly as line art", "outlines only, one uniform hairline stroke",
-            "no shading", "no embossing", "no relief", "no drop shadow",
-            "no volume", "schematic technical drawing",
-            "drawn by one hand in one pass",
-            # Баланс: у History весь декор был в правой половине.
-            "distribute the elements evenly over the whole frame",
-            "never pack one half of the image while the other",
-            # Чистый круг под символом вместо расплывчатого «fade towards».
-            "clear circular area in the middle", "no line may cross",
-            # Центр не выжигаем: в первой версии модель ставила туда прожектор
-            # и обложка превращалась в фонарик в темноте.
-            "never a bright spotlight", "never a burning hotspot",
-            "the centre included, stays dark and calm",
-            # И элементы фона должны быть ВИДНЫ, а не угадываться.
-            "clearly visible and easy to", "not a barely perceptible texture",
+            "draw them as line art", "outlines of even weight",
+            "no shading", "no relief", "no drop shadow", "no volume",
+            "schematic technical drawing", "drawn by one hand in one pass",
+            "do not gather several complete objects into a scene or a collage",
+            # Тематика обязана заполнять кадр — см. соседний тест про пустоту.
+            "these elements are the content of this image",
+            "they cover most of the frame",
+            "the left and the right side carrying a similar amount",
+            # И быть ВИДНЫ, а не угадываться.
+            "clearly visible and readable when the cover",
+            "blueprint drawn in light ink on dark paper",
+            "not a barely perceptible texture",
             "every cover in this collection shares one style",
             # символ — главный акцент, фон вторичен
-            "main visual accent",
-            "nothing may compete with it or touch it there",
-            "holding nothing but the plain gradient",
+            "clear circular area in the middle", "no line may cross it",
+            "stays the main accent of the cover",
         ):
             assert required in p, f"в промпте пропало «{required}»"
         # Прежняя ошибка: жёсткая «чистая полоса» под иконку превращала
         # обложку в SaaS-фон. Середина спокойная, но не вырезанная зона.
         assert "left third" not in p and "right third" not in p
         assert "clean and empty" not in p
+
+
+def test_prompt_does_not_pile_up_demands_for_emptiness():
+    """Регрессия на «модель стала рисовать голый фон».
+
+    Промпт дорос до 4000 символов и 34 ограничений, из которых одиннадцать
+    требовали пустоты и приглушённости («a lot of empty space», «hairline
+    stroke», «low-contrast», «generous empty space between the elements»,
+    «empty margin along all four edges», «stays dark and calm») — против ОДНОЙ
+    инструкции что-то нарисовать. Модель выполнила всё сразу самым дешёвым
+    способом: вернула чистый градиент с парой пылинок.
+
+    Отсюда правило: сначала «что рисуем» и сколько этого в кадре, а требования
+    пустоты — по одному разу и только там, где они правда нужны (круг под
+    символом).
+    """
+    p = cover_art.build_prompt("teal", "chart", seed=1, subject="Economics").lower()
+
+    # Главное — в начале: чем позже сказано, что рисовать, тем охотнее модель
+    # отделывается градиентом.
+    assert p.index("subject of the course") < len(p) * 0.33
+
+    for banned in ("a lot of empty space", "hairline", "low-contrast",
+                   "generous empty space", "empty margin along all four edges",
+                   "the same amount of empty space", "sparse"):
+        assert banned not in p, f"в промпт вернулось требование пустоты «{banned}»"
+
+    # Длина сама по себе не порок, но 4000 символов оказались симптомом:
+    # столько ограничений модель уже не удерживает.
+    assert len(p) < 3200, f"промпт снова разросся: {len(p)} символов"
 
 
 def test_prompt_carries_chosen_colour_and_thematic_hint():
@@ -242,8 +268,8 @@ def test_prompt_passes_the_subject_name_as_topic_only():
     AI-текст, который потом никак не исправить."""
     p = cover_art.build_prompt("blue", "code", seed=3, subject="Web Design")
     assert "Web Design" in p
-    assert "never render it, or any other word, as text" in p
-    assert "any text, letters, numbers, subject names" in p
+    assert "never write it, or any other word, on the image" in p
+    assert "never draw text, letters, numbers, subject names or logos" in p.lower()
 
 
 def test_theme_follows_the_class_name_not_the_chosen_symbol():
@@ -304,7 +330,7 @@ def test_subject_name_cannot_smuggle_instructions_into_the_prompt():
     # Кавычки вокруг темы остаются ровно одни — вырваться из них нечем.
     assert p.count('"') == 2
     # И стиль коллекции всё равно на месте, чем бы ни назвали класс.
-    assert "premium dark abstract cover background" in p
+    assert "Apple-like graphic in a wide 16:9 frame" in p
 
 
 def test_regenerate_varies_composition_but_not_style():
@@ -571,7 +597,7 @@ def test_generation_sends_the_class_name_as_the_topic(client, teacher, storage, 
 
     assert "Веб-дизайн" in prompts[0]
     # И запрет на текст внутри картинки едет тем же промптом.
-    assert "never render it, or any other word, as text" in prompts[0]
+    assert "never write it, or any other word, on the image" in prompts[0]
 
 
 def test_generation_updates_appearance_when_client_picks_new_values(client, teacher, storage, monkeypatch):
@@ -1019,8 +1045,14 @@ def test_ai_usage_list_carries_names_too(client, db_session, teacher, storage, m
 
 
 # ── Экспозиция ──────────────────────────────────────────────────────────────
-def _lit_cover(mean_target=(24, 42, 62), spot=235):
-    """Кадр «как у модели в плохой день»: цветное поле и яркое пятно в центре."""
+def _lit_cover(mean_target=(24, 42, 62), spot=150):
+    """Кадр «как у модели в плохой день»: цветное поле и яркое пятно в центре.
+
+    spot=150 повторяет реальный худший замер по продакшену (средняя яркость
+    ~92 из 255, центр в 4.3 раза светлее углов) — на нём нормализация обязана
+    сходиться. Совсем выжженный кадр проверяется отдельно, там работает уже
+    порог EXPOSURE_MAX_DIP.
+    """
     from PIL import Image, ImageDraw, ImageFilter
 
     img = Image.new("RGB", (cover_art.COVER_WIDTH, cover_art.COVER_HEIGHT), mean_target)
@@ -1046,6 +1078,24 @@ def test_exposure_is_pulled_into_the_collection_band():
     assert before[1] / before[2] > 3                         # и с прожектором
     assert after[0] <= cover_art.EXPOSURE_MEAN_MAX + 1
     assert after[1] / after[2] <= cover_art.EXPOSURE_CENTRE_RATIO + 0.3
+
+
+def test_exposure_never_burns_a_hole_in_the_centre():
+    """Совсем выжженный кадр не дотягивается до цели — и это правильно.
+
+    Гашение ограничено EXPOSURE_MAX_DIP: раньше проходы перемножались до 0.17
+    и середина превращалась в тёмную дыру, а нарисованное на ней — в ровное
+    пятно. Лучше чуть более светлый центр, чем испорченная обложка.
+    """
+    burnt = _lit_cover(spot=250)
+    before = cover_art._exposure_stats(burnt)
+    after = cover_art._exposure_stats(cover_art.normalize_exposure(burnt))
+
+    assert after[1] / after[2] < before[1] / before[2] * 0.75, "прожектор не поджался"
+    # Центр обязан остаться светлее краёв: обложка светится изнутри, а не
+    # наоборот.
+    assert after[1] > after[2]
+    assert after[1] >= before[1] * cover_art.EXPOSURE_MAX_DIP * 0.9
 
 
 def test_exposure_keeps_the_colour():
