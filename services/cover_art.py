@@ -15,22 +15,17 @@
 одной толщины линии и одного стиля во всех предметах, её можно перекрасить или
 заменить без перегенерации всех обложек.
 
-Отсюда же требование к самому фону: центральная ПОЛОСА кадра должна оставаться
-чистой — туда ляжет иконка. Это записано и в промпт, и в локальный рендер.
+Визуальный ориентир — обложка курса, нарисованная графическим дизайнером для
+premium-образовательного продукта: цельная абстрактная композиция из немногих
+крупных форм, перетекающие кривые, наложения и прозрачность, богатый цвет одной
+семьи. НЕ дашборд, не инфографика, не паттерн из точек и прямоугольников.
 
-Визуальный ориентир — светлый баннер курса, а не «AI-картинка про математику»:
-пастельный фон выбранного цвета с мягким градиентом, аккуратная раскладка
-простых плоских форм в ЛЕВОЙ и ПРАВОЙ третях, чистая середина и цветная иконка
-в тон поверх неё.
-
-Про раскладку по бокам, а не по углам: обложку показывают широкой полосой, и
-по высоте её режут очень сильно (в шапке класса видно ~30%). Углы при этом
-уезжают за кадр, а в кадре остаётся пустая середина — ровно на это и жаловались.
-По ширине же кадр виден целиком всегда, поэтому декор живёт по бокам.
+Специальную пустую зону под иконку модель больше НЕ оставляет: сетки и «чистые
+полосы» ровно и превращали картинку в SaaS-фон. Иконка кладётся UI-слоем поверх
+готовой композиции, а её читаемость обеспечивает сам слой (см. ICON_ON_ARTWORK).
 """
 import colorsys
 import logging
-import math
 import random
 
 logger = logging.getLogger(__name__)
@@ -38,107 +33,138 @@ logger = logging.getLogger(__name__)
 # Ландшафт 3:2. Квадрат здесь уже был и провалился: обложку показывают широкой
 # полосой (карточка каталога ~2.1:1, шапка класса ~3.3:1), поэтому от квадрата
 # в кадр попадала только средняя полоса — 48% и 30% высоты соответственно.
-# А это ровно та зона, которую композиция оставляет чистой под иконку: снаружи
-# обложка выглядела пустой, а декор по углам обрезался краями кадра.
 COVER_WIDTH = 1536
 COVER_HEIGHT = 1024
 
-# Чистая зона под иконку — вертикальная полоса ПО ЦЕНТРУ, а не круг у центра.
-# Кроп по высоте может быть сколь угодно жёстким, но по горизонтали кадр всегда
-# виден целиком, поэтому декор живёт в левой и правой третях (там он переживает
-# любой кроп), а середина остаётся свободной.
-_CLEAR_COLUMN_HALF_WIDTH = 0.17   # доля ширины в каждую сторону от центра
+# Иконка ложится поверх произвольной точки композиции, а не в зарезервированную
+# пустоту. Клиенты рисуют её белой с мягкой тенью — единственный вариант,
+# который читается на любом кадре: сама композиция теперь насыщенная и её
+# яркость в центре заранее неизвестна. Константа держит это решение в одном
+# месте вместе с промптом, который его и породил.
+ICON_ON_ARTWORK = "white-with-shadow"
 
 
 # ── Палитра ─────────────────────────────────────────────────────────────────
 # hex   — акцент бренда: свотч в пикере и подсветка выбора.
-# base  — заливка фона: СВЕТЛЫЙ пастельный тон. Обложка — воздушная карточка
-#         курса, а не насыщенный плакат: сначала здесь были почти чёрные
-#         значения (тёмно и «ночно»), потом насыщенные средние (плотно и
-#         пусто). Пастель даёт лёгкость и место для тонкой текстуры.
-# ink   — цвет предметной иконки, которую клиенты рисуют поверх фона. Насыщенный
-#         тон того же оттенка: иконка должна быть В ЦВЕТ обложки, а не белой —
-#         белая на светлой пастели просто пропадает.
-# prompt — как назвать цвет модели словами: hex-код в промпте image-модели
-#         работает плохо, название цвета — надёжно.
+# base  — основной тон композиции: насыщенный средний цвет, из которого строится
+#         вся обложка. Здесь уже побывали почти чёрные значения (вышло «ночно»)
+#         и очень светлая пастель (вышло блёкло и по-дашбордному) — держим
+#         выразительную середину.
+# ink   — цвет иконки, когда она рисуется В ТОН. Сейчас клиенты рисуют её белой
+#         (см. ICON_ON_ARTWORK), но значение оставлено: пикер подсвечивает им
+#         выбранную иконку, и оно же понадобится, если решим вернуть иконку в тон.
+# prompt — как описать цвет модели словами. Не один тон, а СЕМЬЯ оттенков:
+#         промпт просит строить композицию на нескольких оттенках одного цвета,
+#         и семья должна быть названа явно — иначе модель делает однотонную
+#         заливку. Hex-коды image-модель понимает плохо, названия — надёжно.
 PALETTE: dict[str, dict[str, str]] = {
-    "blue":   {"hex": "#0A84FF", "base": "#E3EDFF", "ink": "#1D4ED8", "prompt": "soft pastel blue"},
-    "purple": {"hex": "#8B5CF6", "base": "#EDE9FE", "ink": "#7C3AED", "prompt": "soft pastel lavender purple"},
-    "green":  {"hex": "#22C55E", "base": "#DEF7E9", "ink": "#047857", "prompt": "soft pastel mint green"},
-    "orange": {"hex": "#F97316", "base": "#FFEBD9", "ink": "#C2410C", "prompt": "soft pastel peach orange"},
-    "red":    {"hex": "#EF4444", "base": "#FEE4E2", "ink": "#B91C1C", "prompt": "soft pastel rose red"},
-    "pink":   {"hex": "#EC4899", "base": "#FCE7F3", "ink": "#BE185D", "prompt": "soft pastel pink"},
+    "blue": {
+        "hex": "#0A84FF", "base": "#3B82F6", "ink": "#1D4ED8",
+        "prompt": "blue — luminous cornflower, sky blue and soft cobalt, with lighter azure tints and pale translucent highlights",
+    },
+    "purple": {
+        "hex": "#8B5CF6", "base": "#7C5CE6", "ink": "#6D28D9",
+        "prompt": "purple — luminous violet, lavender and periwinkle, with lighter lilac tints and pale translucent highlights",
+    },
+    "green": {
+        "hex": "#22C55E", "base": "#12A970", "ink": "#047857",
+        "prompt": "green — luminous emerald, mint and spring green, with lighter sage tints and pale translucent highlights",
+    },
+    "orange": {
+        "hex": "#F97316", "base": "#F4842B", "ink": "#C2410C",
+        "prompt": "orange — luminous warm orange, peach and amber, with lighter apricot tints and pale translucent highlights",
+    },
+    "red": {
+        "hex": "#EF4444", "base": "#E4534F", "ink": "#B91C1C",
+        "prompt": "red — luminous coral, rose and warm crimson, with lighter blush tints and pale translucent highlights",
+    },
+    "pink": {
+        "hex": "#EC4899", "base": "#E8559C", "ink": "#BE185D",
+        "prompt": "pink — luminous pink, magenta and soft rose, with lighter petal tints and pale translucent highlights",
+    },
     # Фирменный бирюзовый Chatra (C.teal в lib/theme/app_theme.dart).
-    "teal":   {"hex": "#00B1C9", "base": "#D6F1F7", "ink": "#0E7490", "prompt": "soft pastel aqua teal"},
-    "indigo": {"hex": "#6366F1", "base": "#E6E7FD", "ink": "#4F46E5", "prompt": "soft pastel indigo"},
+    "teal": {
+        "hex": "#00B1C9", "base": "#12A2B5", "ink": "#0E7490",
+        "prompt": "teal — luminous turquoise, aqua and teal, with lighter seafoam tints and pale translucent highlights",
+    },
+    "indigo": {
+        "hex": "#6366F1", "base": "#5A5FE0", "ink": "#4338CA",
+        "prompt": "indigo — luminous periwinkle, blue-violet and indigo, with lighter cornflower tints and pale translucent highlights",
+    },
 }
 
 DEFAULT_COLOR = "teal"
 
 # subject — предмет, для которого иконка предлагается по умолчанию (клиенты
 # показывают подсказку рядом с иконкой).
-# motif — декоративный язык предмета: НЕ «нарисуй колбу», а перечень простых
-# абстрактных элементов. Модель хорошо делает сетки, дуги, точки и линии и
-# плохо — узнаваемые предметы, поэтому просим ровно первое.
+# motif — АБСТРАКТНЫЙ визуальный язык предмета. Не «нарисуй колбу» и не список
+# фигур («сетка, точки, прямоугольники») — второе как раз и превращало обложку
+# в дашборд. Здесь описывается характер форм и движения, а конкретную
+# композицию модель придумывает сама.
 ICONS: dict[str, dict[str, str]] = {
     "sigma": {
         "subject": "Mathematics",
-        "motif": "a sparse square grid, a few long diagonal lines, two concentric "
-                 "arcs and a small cluster of dots",
+        "motif": "abstract mathematical visual language: elegant geometric "
+                 "relationships, arcs, curves, coordinate-like lines, circles and "
+                 "subtle mathematical structures",
     },
     "atom": {
         "subject": "Physics",
-        "motif": "wide elliptical orbit curves, a few small particle dots and one "
-                 "smooth wave line",
+        "motif": "abstract physics visual language: flowing waves, orbital curves, "
+                 "particles, energy fields and subtle motion",
     },
     "flask": {
         "subject": "Chemistry",
-        "motif": "small circles joined by straight bond lines and one soft rounded "
-                 "vessel-like shape",
+        "motif": "abstract chemistry visual language: molecular relationships, "
+                 "connected structures, fluid shapes and subtle "
+                 "laboratory-inspired geometry",
     },
     "dna": {
         "subject": "Biology",
-        "motif": "soft organic curves, overlapping cell-like circles and one gently "
-                 "branching line",
+        "motif": "abstract biological visual language: organic cellular forms, "
+                 "branching structures, flowing membranes and soft circular forms",
     },
     "code": {
         "subject": "Computer Science",
-        "motif": "a regular dot grid, a few connected nodes with straight link lines "
-                 "and offset rectangular blocks",
+        "motif": "abstract computational visual language: connected nodes, flowing "
+                 "paths, layered structures and network-like geometry",
     },
     "column": {
         "subject": "History",
-        "motif": "evenly spaced vertical bars, one wide flat triangle and stepped "
-                 "rectangular forms",
+        "motif": "abstract historical visual language: architectural geometry, "
+                 "classical proportions, arches and columns reduced to simple "
+                 "graphic forms",
     },
     "globe": {
         "subject": "Geography",
-        "motif": "concentric circles, curved meridian lines and soft contour bands",
+        "motif": "abstract geographic visual language: flowing map-like curves, "
+                 "contour lines, globe-inspired arcs and terrain-like organic forms",
     },
     "letter": {
         "subject": "English",
-        "motif": "flowing ribbon curves, sparse horizontal baseline rules and small "
-                 "rounded speech-bubble forms",
+        "motif": "abstract language visual language: flowing ribbons of script-like "
+                 "movement, soft speech-shaped forms and elegant connecting curves",
     },
     "book": {
         "subject": "Literature",
-        "motif": "layered rounded rectangles like stacked pages, soft folded curves "
-                 "and thin ruled lines",
+        "motif": "abstract literary visual language: flowing pages, layered forms, "
+                 "elegant lines and abstract book-like geometry",
     },
     "chart": {
         "subject": "Economics",
-        "motif": "ascending rectangular bars, one rising straight line and small "
-                 "marker dots",
+        "motif": "abstract economic visual language: rising curves, balanced "
+                 "geometric forms and subtle charts transformed into elegant "
+                 "abstract shapes",
     },
     "palette": {
         "subject": "Art",
-        "motif": "overlapping soft circles of different sizes, one sweeping "
-                 "brush-like curve and small dots",
+        "motif": "abstract artistic visual language: expressive curves, layered "
+                 "shapes, creative colour blocks and organic composition",
     },
     "note": {
         "subject": "Music",
-        "motif": "parallel horizontal staff lines, small round dots and two smooth "
-                 "wave curves",
+        "motif": "abstract musical visual language: flowing rhythm lines, waves, "
+                 "circular motion and elegant repeating curves",
     },
 }
 
@@ -181,53 +207,58 @@ def catalog() -> dict:
 # дизайн-система. Прежние обложки при этом не трогаются — каждая живёт своей
 # картинкой в хранилище, пока её не перегенерируют.
 _BASE_STYLE = (
-    "A wide flat illustrated banner for an educational course card, in the style "
-    "of a clean modern classroom app theme. Part of one consistent design system. "
-    "Background: a very light {color} field with a smooth gentle gradient across "
-    "the width. Pale, soft and luminous throughout. Never saturated, never "
-    "mid-tone, never dark, never near-black. "
-    "On this field draw a tidy decorative arrangement of simple flat shapes, all "
-    "of them in slightly deeper tints of the SAME pastel hue, all low contrast "
-    "and calm. No other hues anywhere in the image. "
-    "LAYOUT, this matters most: group the decoration into the LEFT THIRD and the "
-    "RIGHT THIRD of the banner, spread over the full height of each side, "
-    "balanced left against right. Keep the central vertical band of the banner — "
-    "the middle third of its width, top to bottom — completely clean and empty: "
-    "plain pale background, nothing drawn in it at all, because an icon is "
-    "placed there afterwards. "
-    "Every shape must sit FULLY INSIDE the frame with a margin: nothing may run "
-    "off or be cut by the edges of the image. "
-    "Motifs for this subject: {motif}. Draw them as neat flat vector shapes, "
-    "several per side, at varied sizes, arranged like a considered pattern rather "
-    "than scattered at random. They are decorative suggestions, never a literal "
-    "illustration, never a diagram, never a large central symbol. "
-    "Crisp flat vector language, uniform thin line weight, no shading, no grain, "
-    "no noise, no drop shadows. "
-    "Strictly no text, no letters, no numbers, no words, no symbols that read as "
-    "writing, no logos, no watermarks, no signatures, no icons, no UI elements. "
-    "No photography, no people, no hands, no faces, no 3D rendering, no realistic "
-    "objects, no scenes, no clutter, no dark areas, no multiple competing colours."
+    "Create a premium illustrated course banner for a modern educational "
+    "application. "
+    "The artwork should feel like a professionally designed editorial graphic "
+    "illustration — not an AI-generated diagram, dashboard background, "
+    "infographic, SaaS interface or generic stock illustration. "
+    "Create one cohesive abstract composition using a small number of carefully "
+    "designed large and medium visual forms. The composition should feel "
+    "intentional, elegant and slightly playful. "
+    "Use flowing curves, large rounded geometric shapes, arcs, circles, organic "
+    "forms, subtle lines and a few small decorative details. Allow shapes to "
+    "overlap naturally and create visual depth through scale, layering, "
+    "transparency and contrast. "
+    "Do not arrange the elements into a grid. Do not create columns. Do not "
+    "create repetitive patterns. Do not force symmetry. Do not divide the "
+    "artwork into left and right sections. "
+    "The composition should have a natural visual rhythm with a strong focal "
+    "area, supporting decorative elements and generous breathing room. "
+    "Colour: {color}. Use this colour family as the dominant colour of the entire "
+    "artwork, built from several carefully chosen shades and tints of that same "
+    "family. The palette should feel rich and sophisticated rather than washed "
+    "out. Avoid pure black backgrounds and avoid overly pale backgrounds. Keep "
+    "enough contrast for the artwork to stay visually interesting when displayed "
+    "as a small course card. "
+    "Subject: {motif}. Represent the subject through this abstract visual "
+    "language rather than a literal illustration. "
+    "The artwork should be flat and graphic, with subtle layering and "
+    "transparency, but not 3D. Clean contemporary graphic design, soft rounded "
+    "geometry, elegant curves, subtle depth, sophisticated composition. It should "
+    "feel premium, modern, youthful and suitable for an educational technology "
+    "product. "
+    "Do not place any text inside the artwork. Do not draw the subject icon "
+    "itself. No letters, no symbols, no logos, no UI elements, no buttons, no "
+    "cards, no dashboards. No photographs, no people, no realistic objects, no "
+    "photorealism, no 3D rendering. Not an infographic, not a diagram, no "
+    "repetitive dot grids, no rows of rectangles, nothing that looks like a SaaS "
+    "dashboard. "
+    "The final result should look like a polished course cover illustration "
+    "created by a professional graphic designer for a premium education "
+    "application. Maintain the same overall visual language across every subject "
+    "cover."
 )
 
-# Вариации для Regenerate. Стиль, цвет и набор элементов остаются теми же —
-# меняется только их раскладка. Каждая вариация обязана оставлять центр
-# свободным: туда клиент кладёт иконку.
-# Вариации для Regenerate. Все обязаны держать декор в боковых третях и
-# оставлять центральную полосу чистой — меняется только расстановка внутри
-# этих третей.
+# Варианты композиции для Regenerate — не координаты, а художественное
+# направление. Точные раскладки («левая треть», «чистая середина») ровно и
+# превращали обложку в дашборд, поэтому модель строит композицию сама.
 _COMPOSITIONS = (
-    "Arrangement: larger shapes low on the left side, smaller ones high on the "
-    "right side.",
-    "Arrangement: a vertical stack of shapes on the left side, a looser diagonal "
-    "run of shapes on the right side.",
-    "Arrangement: shapes clustered at mid-height on both sides, thinning towards "
-    "the top and bottom.",
-    "Arrangement: larger shapes high on the left side, smaller ones low on the "
-    "right side.",
-    "Arrangement: an even rhythm of shapes down the left side, two or three "
-    "bigger ones on the right side.",
-    "Arrangement: shapes gathered near the outer edges of both sides, leaving "
-    "room between them and the clean central band.",
+    "Composition direction: large overlapping organic forms.",
+    "Composition direction: flowing curves with layered circles.",
+    "Composition direction: asymmetric geometric composition.",
+    "Composition direction: large soft shapes with subtle linear elements.",
+    "Composition direction: layered arcs and abstract structures.",
+    "Composition direction: balanced geometric-organic composition.",
 )
 
 
@@ -263,45 +294,14 @@ def _shift(rgb: tuple[int, int, int], *, light: float = 1.0, sat: float = 1.0):
 
 
 # ── Локальный фон (фолбэк) ──────────────────────────────────────────────────
-# Запас на размытие (см. конец render_background): размытая кромка фигуры
-# заезжает чуть дальше её геометрической границы.
-_BLUR_MARGIN = 0.02
-
-
-def _side_spots(rng, count: int) -> list[tuple[float, float]]:
-    """Точки для кластеров декора — только в левой и правой третях, во всю
-    высоту кадра, поровну с обеих сторон.
-
-    Раньше декор раскладывался по УГЛАМ, и это было прямой причиной жалоб
-    «фон пустой» и «элементы уходят по краям»: обложку показывают широкой
-    полосой (в шапке класса видно всего 30% высоты), поэтому углы уезжали за
-    кадр, а в кадре оставалась пустая середина. По горизонтали же кадр виден
-    целиком всегда — значит и декор должен жить по бокам.
-    """
-    left = [(x, y) for x in (0.11, 0.24) for y in (0.16, 0.40, 0.64, 0.88)]
-    right = [(1 - x, y) for x, y in left]
-    rng.shuffle(left)
-    rng.shuffle(right)
-
-    spots: list[tuple[float, float]] = []
-    # Чередуем стороны, чтобы композиция не перекосилась на одну.
-    for i in range(count):
-        pool = left if i % 2 == 0 else right
-        if pool:
-            spots.append(pool.pop())
-    return spots
-
-
-def _clear_column(x: float, half: float = _CLEAR_COLUMN_HALF_WIDTH) -> bool:
-    """True — точка попадает в центральную полосу под иконку."""
-    return abs(x - 0.5) < half
-
-
 def render_background(color: str, seed: int | None = None):
-    """Локальный фон в том же визуальном языке, что и AI-версия: светлый
-    пастельный градиент + деликатная текстура (точечные сетки, штриховка,
-    волны, дуги, мягкие пятна) в ЛЕВОЙ и ПРАВОЙ третях, с чистой центральной
-    полосой под иконку.
+    """Локальный фон в том же визуальном языке, что и AI-версия: насыщенный
+    цвет одной семьи, несколько крупных перетекающих форм с наложением и
+    прозрачностью, пара тонких дуг.
+
+    Никаких сеток, точечных матриц и «чистой середины» — ровно они и делали
+    обложку похожей на дашборд. Иконку клиенты кладут поверх готовой
+    композиции, отдельного места под неё не резервируется.
 
     Используется, когда генерация недоступна (нет ключа, ошибка/таймаут
     OpenAI, исчерпан бюджет), и при создании класса — чтобы обложка была
@@ -314,141 +314,54 @@ def render_background(color: str, seed: int | None = None):
     rng = random.Random(seed)
     side = COVER_HEIGHT
 
-    # Переход в основном ПО ГОРИЗОНТАЛИ: по ширине кадр виден целиком всегда,
-    # а по высоте его режут, поэтому вертикальный градиент в показе почти не
-    # читается. Небольшая вертикальная составляющая оставлена для живости.
-    deep = _shift(base, light=0.94, sat=1.06)
-    pale = _shift(base, light=1.045, sat=0.55)
+    # Основа — мягкий переход внутри одной цветовой семьи, по диагонали.
+    deep = _shift(base, light=0.72, sat=1.05)
+    lift = _shift(base, light=1.16, sat=0.94)
     flip = rng.random() < 0.5
     small = Image.new("RGB", (64, 64))
     px = small.load()
-    for y in range(64):
-        for x in range(64):
-            u = (x / 63) if flip else (1 - x / 63)
-            t = u * 0.78 + (y / 63) * 0.22
-            px[x, y] = tuple(round(deep[i] + (pale[i] - deep[i]) * t) for i in range(3))
+    for yy in range(64):
+        for xx in range(64):
+            u = (xx / 63) if flip else (1 - xx / 63)
+            t = u * 0.62 + (yy / 63) * 0.38
+            px[xx, yy] = tuple(round(deep[i] + (lift[i] - deep[i]) * t) for i in range(3))
     img = small.resize((COVER_WIDTH, COVER_HEIGHT), Image.BICUBIC).convert("RGBA")
 
-    # Текстура — тем же оттенком, но заметно глубже фона. Альфа маленькая:
-    # декор должен читаться «со второго взгляда», а не спорить с иконкой.
-    tint = _shift(base, light=0.80, sat=1.15)
-    blob = _shift(base, light=0.93, sat=1.10)
+    # Оттенки той же семьи для форм: светлее, темнее и почти белый акцент.
+    tints = [
+        _shift(base, light=1.34, sat=0.86),
+        _shift(base, light=0.66, sat=1.10),
+        _shift(base, light=1.55, sat=0.55),
+    ]
 
     shapes = Image.new("RGBA", (COVER_WIDTH, COVER_HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(shapes)
-    hairline = max(2, round(side * 0.0035))
 
-    def _dot_grid(cx, cy):
-        """Мелкая точечная сетка — самый узнаваемый элемент референса."""
-        step = side * 0.030
-        n = rng.randint(4, 6)
-        r = side * 0.0045
-        for row in range(n):
-            for col in range(n):
-                x = (cx * COVER_WIDTH) + (col - (n - 1) / 2) * step
-                y = (cy * COVER_HEIGHT) + (row - (n - 1) / 2) * step
-                draw.ellipse((x - r, y - r, x + r, y + r), fill=(*tint, 96))
+    def blob(cx: float, cy: float, r: float, fill):
+        draw.ellipse((cx * COVER_WIDTH - r, cy * COVER_HEIGHT - r,
+                      cx * COVER_WIDTH + r, cy * COVER_HEIGHT + r), fill=fill)
 
-    def _hatch(cx, cy):
-        """Тонкая параллельная штриховка под 45°."""
-        n = rng.randint(5, 8)
-        step = side * 0.026
-        length = side * rng.uniform(0.13, 0.19)
-        for i in range(n):
-            off = (i - (n - 1) / 2) * step
-            x = cx * COVER_WIDTH + off
-            y = cy * COVER_HEIGHT - off
-            draw.line((x, y, x + length * 0.72, y + length * 0.72),
-                      fill=(*tint, 74), width=hairline)
+    # Три-четыре крупные формы, свободно расставленные и намеренно
+    # перекрывающиеся — глубина берётся из наложения и прозрачности.
+    for i in range(rng.randint(3, 4)):
+        r = rng.uniform(0.30, 0.62) * side
+        cx = rng.uniform(-0.05, 1.05)
+        cy = rng.uniform(-0.10, 1.10)
+        blob(cx, cy, r, (*tints[i % len(tints)], rng.randint(46, 84)))
 
-    def _waves(cx, cy):
-        """Мягкие волновые ленты."""
-        for k in range(rng.randint(2, 3)):
-            pts = []
-            span = side * 0.42
-            amp = side * rng.uniform(0.020, 0.034)
-            phase = rng.uniform(0, math.tau)
-            y0 = cy * COVER_HEIGHT + k * side * 0.032
-            for i in range(33):
-                t = i / 32
-                pts.append((cx * COVER_WIDTH - span / 2 + span * t,
-                            y0 + math.sin(phase + t * math.tau) * amp))
-            draw.line(pts, fill=(*tint, 70), width=hairline, joint="curve")
+    # Пара тонких дуг — «subtle lines» из промпта, без всякой регулярности.
+    hairline = max(3, round(side * 0.005))
+    for _ in range(rng.randint(1, 2)):
+        r = rng.uniform(0.45, 0.85) * side
+        cx = rng.uniform(0.0, 1.0) * COVER_WIDTH
+        cy = rng.uniform(0.0, 1.0) * COVER_HEIGHT
+        start = rng.uniform(0, 360)
+        draw.arc((cx - r, cy - r, cx + r, cy + r), start, start + rng.uniform(60, 150),
+                 fill=(*tints[2], 110), width=hairline)
 
-    def _arcs(cx, cy):
-        """Концентрические дуги."""
-        for k in range(rng.randint(2, 4)):
-            r = side * (0.12 + k * 0.055)
-            start = rng.uniform(0, 360)
-            draw.arc((cx * COVER_WIDTH - r, cy * COVER_HEIGHT - r,
-                      cx * COVER_WIDTH + r, cy * COVER_HEIGHT + r),
-                     start, start + rng.uniform(70, 150),
-                     fill=(*tint, 80), width=hairline)
-
-    # Крупные бледные пятна — по одному с каждой стороны, прижаты к внешним
-    # краям, чтобы не наползать на центральную полосу.
-    for side_x in (rng.uniform(0.02, 0.14), rng.uniform(0.86, 0.98)):
-        r_norm = rng.uniform(0.24, 0.34)
-        cy = rng.uniform(0.15, 0.85)
-        r = r_norm * side
-        draw.ellipse((side_x * COVER_WIDTH - r, cy * COVER_HEIGHT - r,
-                      side_x * COVER_WIDTH + r, cy * COVER_HEIGHT + r),
-                     fill=(*blob, 90))
-
-    # Четыре-шесть кластеров текстуры по бокам — фон перестаёт быть пустым при
-    # любом кропе по высоте, оставаясь тихим.
-    makers = [_dot_grid, _hatch, _waves, _arcs]
-    rng.shuffle(makers)
-    spots = _side_spots(rng, rng.randint(4, 6))
-    for i, (cx, cy) in enumerate(spots):
-        if _clear_column(cx):
-            continue
-        makers[i % len(makers)](cx, cy)
-
-    # Лёгкое размытие снимает лесенку ImageDraw (он не сглаживает), но
-    # оставляет линии читаемыми — это плоская графика, а не туман.
-    shapes = shapes.filter(ImageFilter.GaussianBlur(side * 0.0022))
-
-    # Центральная полоса вычищается маской, а не аккуратной геометрией каждого
-    # элемента: раньше приходилось доказывать про каждую дугу и сетку, что она
-    # не заедет под иконку, и одна дуга с большим радиусом это условие
-    # нарушала. Маска даёт инвариант по построению — что бы ни нарисовали выше.
-    shapes.putalpha(Image.composite(
-        Image.new("L", shapes.size, 0), shapes.getchannel("A"), _centre_mask(shapes.size),
-    ))
+    # Размытие — только чтобы снять лесенку ImageDraw (он не сглаживает).
+    shapes = shapes.filter(ImageFilter.GaussianBlur(side * 0.003))
     return Image.alpha_composite(img, shapes).convert("RGB")
-
-
-_centre_mask_cache: dict[tuple[int, int], object] = {}
-
-
-def _centre_mask(size: tuple[int, int]):
-    """Маска центральной ПОЛОСЫ под иконку: белое внутри, чёрное снаружи, с
-    мягким краем — жёсткая граница резала бы текстуру видимой линией.
-
-    Полоса, а не круг: кроп по высоте бывает очень жёстким (в шапке класса
-    видно ~30% высоты), поэтому чистой должна быть вся центральная колонка на
-    любой высоте, а не только пятно вокруг геометрического центра.
-    """
-    from PIL import Image, ImageDraw, ImageFilter
-
-    cached = _centre_mask_cache.get(size)
-    if cached is not None:
-        return cached
-
-    w, h = size
-    half = w * _CLEAR_COLUMN_HALF_WIDTH
-    # Полоса рисуется ШИРЕ защищаемой зоны, а размытие уводит спад наружу: если
-    # растушевать ровно по границе, полупрозрачный край маски приходится на
-    # саму зону и текстура просачивается под иконку у её кромки.
-    blur = half * 0.30
-    outer = half + blur * 2.6
-
-    mask = Image.new("L", size, 0)
-    ImageDraw.Draw(mask).rectangle((w / 2 - outer, -1, w / 2 + outer, h + 1), fill=255)
-    mask = mask.filter(ImageFilter.GaussianBlur(blur))
-    _centre_mask_cache[size] = mask
-    return mask
 
 
 def render_fallback_cover(color: str, icon: str = "", seed: int | None = None):

@@ -106,31 +106,37 @@ def _contrast(a: str, b: str) -> float:
     return (hi + 0.05) / (lo + 0.05)
 
 
-def test_background_colours_are_light_pastel():
-    """Обложка — светлая воздушная карточка курса. Здесь уже побывали почти
-    чёрные значения («ночной» вид) и насыщенные средние («плотно и пусто») —
-    оба раза пришлось откатывать, поэтому диапазон закреплён тестом."""
+def test_background_colours_are_rich_mid_tones():
+    """Цвет — основа всей композиции, поэтому он должен быть выразительным.
+
+    Диапазон закреплён тестом, потому что края уже дважды приходилось
+    откатывать: почти чёрные значения давали «ночной» вид, а очень светлая
+    пастель — блёклый дашбордный фон.
+    """
     for slug, v in cover_art.PALETTE.items():
         r, g, b = cover_art._rgb(v["base"])
         luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
-        assert luma > 218, f"{slug}: заливка {v['base']} слишком тёмная для пастели"
-        assert luma < 252, f"{slug}: заливка {v['base']} выцвела почти в белый"
-        # И это должен быть ЦВЕТ, а не серый.
-        assert max(r, g, b) - min(r, g, b) > 8, f"{slug}: заливка обесцвечена"
+        assert luma > 95, f"{slug}: заливка {v['base']} слишком тёмная"
+        assert luma < 200, f"{slug}: заливка {v['base']} выцвела в пастель"
+        # И это должен быть насыщенный ЦВЕТ, а не серый.
+        assert max(r, g, b) - min(r, g, b) > 70, f"{slug}: заливка обесцвечена"
 
 
-def test_icon_colour_reads_on_its_background():
-    """Иконка рисуется В ЦВЕТ обложки, а не белой — значит контраст с пастелью
-    обязан быть достаточным, и примерно одинаковым во всех предметах: иначе
-    один предмет выглядит бледнее другого и коллекция разваливается."""
-    ratios = {}
+def test_icon_is_white_over_the_artwork():
+    """Иконка лежит поверх произвольной точки насыщенной композиции, поэтому
+    клиенты рисуют её белой с тенью (ICON_ON_ARTWORK).
+
+    Тест сторожит именно это решение: вариант «в тон» здесь уже был и на
+    нынешних цветах даёт контраст около 1.5-2.0 — иконка просто пропадает.
+    """
+    assert cover_art.ICON_ON_ARTWORK == "white-with-shadow"
     for slug, v in cover_art.PALETTE.items():
-        ratios[slug] = _contrast(v["ink"], v["base"])
-        assert ratios[slug] >= 4.0, (
-            f"{slug}: иконка {v['ink']} на {v['base']} — контраст {ratios[slug]:.2f}"
-        )
-    spread = max(ratios.values()) - min(ratios.values())
-    assert spread < 2.0, f"вес иконки разъезжается между предметами: {ratios}"
+        white = _contrast("#FFFFFF", v["base"])
+        ink = _contrast(v["ink"], v["base"])
+        assert white > ink, f"{slug}: белая иконка проигрывает цветной — пересмотри тон"
+        # Голого контраста мало на светлых заливках (оранжевый ~2.6), поэтому
+        # у глифа на обоих клиентах есть мягкая тень. Ниже 2.5 не опускаемся.
+        assert white >= 2.5, f"{slug}: белая иконка на {v['base']} — контраст {white:.2f}"
 
 
 def test_every_icon_has_a_decorative_motif():
@@ -169,21 +175,31 @@ def test_prompt_is_one_style_across_subjects():
     ]
     for p in prompts:
         for required in (
-            # запреты
-            "no text", "no letters", "no words", "no people", "no photography",
-            "no logos", "no watermarks", "no 3d rendering", "no icons",
-            "never a large central symbol", "no dark areas",
+            # что нельзя рисовать
+            "do not place any text inside the artwork",
+            "do not draw the subject icon itself",
+            "no letters", "no symbols", "no logos", "no ui elements",
+            "no buttons", "no cards", "no dashboards", "no photographs",
+            "no people", "no realistic objects", "no photorealism",
+            "no 3d rendering", "not an infographic", "not a diagram",
+            "no repetitive dot grids", "no rows of rectangles", "saas dashboard",
             # сама дизайн-система
-            "one consistent design system", "very light", "gentle gradient",
-            "same pastel hue", "low contrast",
-            "never saturated", "never mid-tone", "never dark", "never near-black",
-            # раскладка — главное, что чинит «пустой фон» на широком кропе
-            "left third", "right third", "fully inside the frame",
+            "premium illustrated course banner", "one cohesive abstract composition",
+            "flowing curves", "overlap naturally", "rich and sophisticated",
+            "avoid pure black", "avoid overly pale",
+            "maintain the same overall visual language",
+            # запреты на старую «дашбордную» раскладку
+            "do not arrange the elements into a grid", "do not create columns",
+            "do not create repetitive patterns", "do not force symmetry",
+            "do not divide the artwork into left and right sections",
         ):
             assert required in p, f"в промпте пропало «{required}»"
         # Центр обязан оставаться пустым в КАЖДОМ промпте: туда клиент кладёт
         # предметную иконку.
-        assert "central vertical band of the banner" in p
+        # Пустая зона под иконку больше НЕ резервируется — она и делала
+        # картинку похожей на дашборд.
+        assert "left third" not in p and "right third" not in p
+        assert "clean and empty" not in p
 
 
 def test_prompt_carries_chosen_colour_and_subject_motif():
@@ -249,67 +265,39 @@ def test_fallback_is_landscape():
     assert 1.4 < img.width / img.height < 1.7
 
 
-@pytest.mark.parametrize("color", list(cover_art.PALETTE))
-@pytest.mark.parametrize("seed", [0, 1, 7, 42])
-def test_fallback_leaves_the_centre_column_clear_for_the_icon(color, seed):
-    """Иконку рисует UI поверх обложки, поэтому центральная ПОЛОСА кадра обязана
-    оставаться ровной: пятно или дуга под иконкой превратили бы её в кашу.
-
-    Именно полоса, а не пятно вокруг центра: по высоте кадр режут очень сильно
-    (в шапке класса видно ~30%), и иконка может оказаться на любой высоте.
-
-    Мерим вторую разность вдоль строки — у ровного градиента она равна нулю по
-    определению, а любая нарисованная фигура даёт всплеск.
+def test_fallback_fills_the_whole_frame(seed=3):
+    """Композиция должна работать на всей площади: обложку кропают под очень
+    разные пропорции, и любая зарезервированная пустота (как «чистая
+    центральная полоса», которая тут была) при широком кропе превращается в
+    пустой фон.
     """
-    img = cover_art.render_fallback_cover(color, seed=seed).convert("L")
-    half = round(img.width * cover_art._CLEAR_COLUMN_HALF_WIDTH)
-    cx = img.width // 2
-    step = 4
-
-    worst = 0
-    for y in range(0, img.height, step):
-        row = [img.getpixel((x, y)) for x in range(cx - half, cx + half, step)]
-        for i in range(1, len(row) - 1):
-            worst = max(worst, abs(row[i - 1] - 2 * row[i] + row[i + 1]))
-
-    assert worst <= 2, f"{color}/{seed}: в центре обложки что-то нарисовано ({worst})"
-
-
-def test_fallback_decorates_both_sides(seed=3):
-    """Декор обязан быть в ЛЕВОЙ и ПРАВОЙ третях: только они переживают
-    жёсткий кроп по высоте. Раньше он лежал по углам — и при показе широкой
-    полосой обложка выглядела пустой."""
     for color in ("blue", "orange", "teal"):
         img = cover_art.render_fallback_cover(color, seed=seed).convert("L")
-        third = img.width // 3
+        w, h = img.size
 
-        def variation(x0, x1):
-            worst = 0
-            for y in range(0, img.height, 4):
-                row = [img.getpixel((x, y)) for x in range(x0, x1, 4)]
-                for i in range(1, len(row) - 1):
-                    worst = max(worst, abs(row[i - 1] - 2 * row[i] + row[i + 1]))
-            return worst
+        def spread(x0, x1):
+            px = [img.getpixel((x, y))
+                  for y in range(0, h, 8) for x in range(x0, x1, 8)]
+            return max(px) - min(px)
 
-        assert variation(0, third) > 2, f"{color}: левая треть пустая"
-        assert variation(img.width - third, img.width) > 2, f"{color}: правая треть пустая"
+        third = w // 3
+        for name, x0, x1 in (("левая", 0, third),
+                             ("центральная", third, 2 * third),
+                             ("правая", 2 * third, w)):
+            assert spread(x0, x1) > 10, f"{color}: {name} треть пустая"
 
 
-def test_fallback_centre_stays_light_under_the_coloured_icon():
-    """Иконка в UI рисуется тёмным насыщенным `ink` — значит фон под ней обязан
-    остаться светлым. Проверяем не константу палитры, а реально отрисованный
-    центр: градиент и текстура могли бы его затемнить."""
-    for color, meta in cover_art.PALETTE.items():
+def test_fallback_centre_is_not_blown_out_under_the_white_icon():
+    """Иконка белая с тенью, поэтому фолбэк не должен уходить в белизну в
+    центре — иначе глиф растворится даже с тенью."""
+    for color in cover_art.PALETTE:
         img = cover_art.render_fallback_cover(color, seed=4)
-        cx = cy = img.width // 2
-        half = round(img.width * 0.12)
+        cx, cy = img.width // 2, img.height // 2
+        half = round(img.width * 0.10)
         centre = img.crop((cx - half, cy - half, cx + half, cy + half)).convert("L")
         pixels = list(centre.getdata())
         mean = sum(pixels) / len(pixels)
-        assert mean > 205, f"{color}: центр обложки потемнел до {mean:.0f}"
-
-        # И контраст с цветом иконки на этом фоне всё ещё достаточный.
-        assert _contrast(meta["ink"], meta["base"]) >= 4.0
+        assert mean < 225, f"{color}: центр обложки выбелен до {mean:.0f}"
 
 
 def test_different_colours_produce_different_backgrounds():
