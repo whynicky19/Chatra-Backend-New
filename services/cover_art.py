@@ -1,24 +1,26 @@
-"""Единая визуальная система обложек классов Chatra: палитра, иконки, промпт
-и локальный рендер (фолбэк + наложение иконки).
+"""Единая визуальная система обложек классов Chatra: палитра, промпт и
+локальный рендер фона.
 
-Обложка собирается из ДВУХ слоёв, и это принципиально:
+Обложка — это ДВА независимых слоя, и разделение принципиально:
 
-  1. фон — абстрактная композиция (генерирует OpenAI, см. services/
-     cover_generator.py; при любом сбое — локальный градиент из render_background);
-  2. предметная иконка — рисуется ЗДЕСЬ примитивами Pillow поверх фона.
+  1. фон — плоский графический баннер (генерирует OpenAI, см. services/
+     cover_generator.py; при любом сбое — локальный render_background);
+  2. предметная иконка — НЕ часть картинки. Её рисуют клиенты поверх фона
+     нативным компонентом (components/classes/SubjectCover.vue на вебе,
+     widgets/subject_cover.dart в приложении).
 
-Иконку намеренно не рисует модель: символы вроде Σ, спирали ДНК или колбы
-генеративные модели воспроизводят нестабильно (лишние штрихи, зеркальные
-буквы, псевдотекст), а обложка предмета должна быть узнаваемой всегда. Слой
-кода даёт одинаково чёткий глиф в каждой обложке — и в AI-, и в фолбэк-версии,
-поэтому обе выглядят одной коллекцией.
+Модель отвечает только за фон и композицию. Символы вроде Σ, спирали ДНК или
+колбы генеративные модели воспроизводят нестабильно (лишние штрихи, зеркальные
+буквы, псевдотекст), поэтому иконка живёт в UI: там она всегда одного размера,
+одной толщины линии и одного стиля во всех предметах, её можно перекрасить или
+заменить без перегенерации всех обложек.
 
-Композитинг сделан на бэкенде, а не оверлеем в UI, сознательно: обложка
-показывается больше чем в десяти местах веба и мобильного приложения
-(карточки списка, архив, админка, шапка класса, диалог вступления по коду),
-и все они уже умеют показывать одну картинку по cover_image/cover_thumbnail.
-Единая готовая картинка не требует править ни одно из этих мест и остаётся
-корректной везде, куда обложку добавят потом.
+Отсюда же требование к самому фону: ЦЕНТР кадра должен оставаться пустым полем
+цвета — туда ляжет иконка. Это записано и в промпт, и в локальный рендер.
+
+Визуальный ориентир — графический баннер курса, а не «AI-картинка про
+математику»: один доминирующий цвет, 2-4 простых абстрактных элемента из
+оттенков того же цвета, мягкая асимметрия, много воздуха.
 """
 import colorsys
 import logging
@@ -27,56 +29,104 @@ import random
 
 logger = logging.getLogger(__name__)
 
-# Ландшафт 3:2, а не квадрат: все существующие места показа — широкие баннеры
-# (карточка класса 200px высотой на всю ширину, SliverAppBar 220px в
-# приложении). Квадрат в них жёстко обрезался бы сверху и снизу.
-COVER_WIDTH = 1536
+# Квадрат: обложка кропается под очень разные пропорции (широкая карточка
+# каталога, шапка класса, мелкая плашка в диалоге вступления). Квадратный
+# исходник переживает любой из этих кропов, а композиция промпта держит
+# элементы у краёв и центр пустым, поэтому кроп ничего важного не срезает.
+COVER_WIDTH = 1024
 COVER_HEIGHT = 1024
 
-# Иконка ставится по центру кадра: сверху-слева на обложке лежит кнопка
-# «назад», сверху-справа — код класса и «редактировать», снизу — название и
-# описание (см. class_cover_sliver.dart, pages/index.vue). Центр — единственная
-# зона, свободная во всех местах показа и переживающая любой кроп.
-_ICON_CENTER_X = 0.5
-_ICON_CENTER_Y = 0.44
-_ICON_HEIGHT_RATIO = 0.34   # доля высоты кадра под глиф
-_GLYPH_SUPERSAMPLE = 3      # ImageDraw без сглаживания — рисуем крупнее и ужимаем
+# Радиус центральной зоны (доля от стороны), которую фон обязан оставить
+# пустым под иконку. Локальный рендер в неё не рисует, промпт её требует.
+_CLEAR_CENTRE_RADIUS = 0.22
 
 
 # ── Палитра ─────────────────────────────────────────────────────────────────
-# hex — акцент (он же цвет превью в UI и подсказка модели), deep — тёмный
-# конец градиента фолбэка. prompt — как назвать цвет модели словами: hex-код
-# в промпте image-модели работает плохо, название цвета — надёжно.
+# hex   — акцент бренда: цвет свотча в пикере и иконки в UI.
+# base  — заливка фона: насыщенный средний тон того же оттенка. Именно он
+#         определяет всю обложку. Раньше здесь были почти чёрные значения —
+#         обложки выходили тёмными и «ночными» вместо графичных баннеров.
+# prompt — как назвать цвет модели словами: hex-код в промпте image-модели
+#         работает плохо, название цвета — надёжно.
 PALETTE: dict[str, dict[str, str]] = {
-    "blue":   {"hex": "#0A84FF", "deep": "#0A2A5E", "prompt": "vivid azure blue"},
-    "purple": {"hex": "#8B5CF6", "deep": "#2B1857", "prompt": "rich violet purple"},
-    "green":  {"hex": "#22C55E", "deep": "#0B3722", "prompt": "fresh emerald green"},
-    "orange": {"hex": "#F97316", "deep": "#54220A", "prompt": "warm amber orange"},
-    "red":    {"hex": "#EF4444", "deep": "#511616", "prompt": "deep coral red"},
-    "pink":   {"hex": "#EC4899", "deep": "#4F1030", "prompt": "soft magenta pink"},
+    "blue":   {"hex": "#0A84FF", "base": "#1C5FC4", "prompt": "azure blue"},
+    "purple": {"hex": "#8B5CF6", "base": "#6D45CE", "prompt": "violet purple"},
+    "green":  {"hex": "#22C55E", "base": "#1E9B54", "prompt": "emerald green"},
+    "orange": {"hex": "#F97316", "base": "#D2600F", "prompt": "amber orange"},
+    "red":    {"hex": "#EF4444", "base": "#C93A3A", "prompt": "coral red"},
+    "pink":   {"hex": "#EC4899", "base": "#C43B80", "prompt": "magenta pink"},
     # Фирменный бирюзовый Chatra (C.teal в lib/theme/app_theme.dart).
-    "teal":   {"hex": "#00B1C9", "deep": "#00303A", "prompt": "bright cyan teal"},
-    "indigo": {"hex": "#6366F1", "deep": "#1C1D52", "prompt": "deep indigo"},
+    "teal":   {"hex": "#00B1C9", "base": "#0891A6", "prompt": "cyan teal"},
+    "indigo": {"hex": "#6366F1", "base": "#4B4ECC", "prompt": "indigo"},
 }
 
 DEFAULT_COLOR = "teal"
 
 # subject — предмет, для которого иконка предлагается по умолчанию (клиенты
-# показывают подсказку рядом с иконкой). motif — как описать её модели, чтобы
-# фон перекликался с предметом, оставаясь абстрактным.
+# показывают подсказку рядом с иконкой).
+# motif — декоративный язык предмета: НЕ «нарисуй колбу», а перечень простых
+# абстрактных элементов. Модель хорошо делает сетки, дуги, точки и линии и
+# плохо — узнаваемые предметы, поэтому просим ровно первое.
 ICONS: dict[str, dict[str, str]] = {
-    "sigma":   {"subject": "Mathematics",      "motif": "summation and mathematical notation"},
-    "atom":    {"subject": "Physics",          "motif": "atomic orbits and particle trajectories"},
-    "flask":   {"subject": "Chemistry",        "motif": "laboratory glassware and molecular bonds"},
-    "dna":     {"subject": "Biology",          "motif": "a double helix and organic cell structures"},
-    "code":    {"subject": "Computer Science", "motif": "angle brackets, grids and data flow"},
-    "column":  {"subject": "History",          "motif": "classical columns and architectural pediments"},
-    "globe":   {"subject": "Geography",        "motif": "a globe, meridians and contour lines"},
-    "letter":  {"subject": "English",          "motif": "letterforms and language structure"},
-    "book":    {"subject": "Literature",       "motif": "open pages and flowing paper"},
-    "chart":   {"subject": "Economics",        "motif": "ascending bars and trend lines"},
-    "palette": {"subject": "Art",              "motif": "a painter palette and brush strokes"},
-    "note":    {"subject": "Music",            "motif": "musical notes and sound waves"},
+    "sigma": {
+        "subject": "Mathematics",
+        "motif": "a sparse square grid, a few long diagonal lines, two concentric "
+                 "arcs and a small cluster of dots",
+    },
+    "atom": {
+        "subject": "Physics",
+        "motif": "wide elliptical orbit curves, a few small particle dots and one "
+                 "smooth wave line",
+    },
+    "flask": {
+        "subject": "Chemistry",
+        "motif": "small circles joined by straight bond lines and one soft rounded "
+                 "vessel-like shape",
+    },
+    "dna": {
+        "subject": "Biology",
+        "motif": "soft organic curves, overlapping cell-like circles and one gently "
+                 "branching line",
+    },
+    "code": {
+        "subject": "Computer Science",
+        "motif": "a regular dot grid, a few connected nodes with straight link lines "
+                 "and offset rectangular blocks",
+    },
+    "column": {
+        "subject": "History",
+        "motif": "evenly spaced vertical bars, one wide flat triangle and stepped "
+                 "rectangular forms",
+    },
+    "globe": {
+        "subject": "Geography",
+        "motif": "concentric circles, curved meridian lines and soft contour bands",
+    },
+    "letter": {
+        "subject": "English",
+        "motif": "flowing ribbon curves, sparse horizontal baseline rules and small "
+                 "rounded speech-bubble forms",
+    },
+    "book": {
+        "subject": "Literature",
+        "motif": "layered rounded rectangles like stacked pages, soft folded curves "
+                 "and thin ruled lines",
+    },
+    "chart": {
+        "subject": "Economics",
+        "motif": "ascending rectangular bars, one rising straight line and small "
+                 "marker dots",
+    },
+    "palette": {
+        "subject": "Art",
+        "motif": "overlapping soft circles of different sizes, one sweeping "
+                 "brush-like curve and small dots",
+    },
+    "note": {
+        "subject": "Music",
+        "motif": "parallel horizontal staff lines, small round dots and two smooth "
+                 "wave curves",
+    },
 }
 
 DEFAULT_ICON = "book"
@@ -99,7 +149,7 @@ def catalog() -> dict:
     из этого ответа, чтобы набор цветов/иконок нигде не разъезжался."""
     return {
         "colors": [
-            {"id": slug, "hex": v["hex"], "deep": v["deep"]}
+            {"id": slug, "hex": v["hex"], "base": v["base"]}
             for slug, v in PALETTE.items()
         ],
         "icons": [
@@ -111,41 +161,54 @@ def catalog() -> dict:
 
 
 # ── Промпт ──────────────────────────────────────────────────────────────────
-# Общий каркас стиля — один на все обложки. Меняются только цвет и мотив,
-# поэтому предметы выглядят как одна коллекция, а не как случайные картинки.
+# Общий каркас стиля — один на все обложки. Меняются только цвет и набор
+# декоративных элементов, поэтому предметы выглядят одной коллекцией.
+#
+# Правки формулировок здесь меняют вид ВСЕХ будущих обложек: этот текст и есть
+# дизайн-система. Прежние обложки при этом не трогаются — каждая живёт своей
+# картинкой в хранилище, пока её не перегенерируют.
 _BASE_STYLE = (
-    "Premium minimal artwork for an educational app cover. "
-    "Clean modern abstract composition, sophisticated flat vector-inspired visual "
-    "language, subtle depth, soft geometric shapes with smooth edges, restrained "
-    "detail, elegant balanced composition, generous negative space. "
-    "Exactly one dominant accent colour: {color}. Deep dark background in the same "
-    "hue family, accent used sparingly against it. "
-    "Abstract geometry loosely evoking {motif} — suggestion only, never a literal "
-    "or diagrammatic illustration. "
-    "Flat 2D, matte finish, even level of detail across the whole frame. "
-    "Keep the centre of the frame calm, dark and uncluttered. "
+    "Flat minimal graphic banner artwork for an educational course card, part of "
+    "one consistent design system. "
+    "Background: a single solid {color} field, evenly lit, mid-tone and clearly "
+    "coloured — never near-black, never dark, never washed out to white. "
+    "On that field place only 2 to 4 simple abstract decorative elements, drawn "
+    "in lighter and darker tints of the SAME colour, plus at most one small soft "
+    "off-white accent. No other hues anywhere in the image. "
+    "The elements are large, calm and geometric: soft rounded shapes, thin clean "
+    "lines, gentle arcs, small dots, sparse regular grids. Crisp flat vector "
+    "language, uniform line weight, no shading, no texture, no noise, no outlines "
+    "around shapes. "
+    "Composition: soft asymmetric balance with the elements grouped towards the "
+    "edges and corners; at least half the frame stays an empty field of plain "
+    "colour. The CENTRE of the frame must remain completely empty — plain "
+    "background colour with absolutely nothing drawn in it. "
+    "Decorative language for this subject: {motif}. This is a suggestion "
+    "expressed purely as abstract geometry — never a literal illustration, never "
+    "a diagram, never a recognisable object, and never a large central symbol. "
     "Strictly no text, no letters, no numbers, no words, no symbols that read as "
-    "writing, no logos, no watermarks, no signatures, no UI elements. "
-    "No photography, no people, no hands, no faces, no realistic 3D renders, "
-    "no glossy reflections, no clutter, no busy patterns. "
-    "One consistent design system: this image must look like it was made by the "
-    "same designer, in the same session, as every other cover in the set."
+    "writing, no logos, no watermarks, no signatures, no icons, no UI elements. "
+    "No photography, no people, no hands, no faces, no 3D rendering, no realistic "
+    "objects, no scenes, no busy patterns, no clutter, no multiple competing "
+    "colours."
 )
 
-# Вариации для Regenerate. Стиль и цвет остаются теми же — меняется только
-# раскладка, поэтому повторная генерация даёт другую картинку, а не другой стиль.
+# Вариации для Regenerate. Стиль, цвет и набор элементов остаются теми же —
+# меняется только их раскладка. Каждая вариация обязана оставлять центр
+# свободным: туда клиент кладёт иконку.
 _COMPOSITIONS = (
-    "Composition: large soft shapes drifting in from the lower left, empty space upper right.",
-    "Composition: a slow diagonal band of shapes from the upper left to the lower right.",
-    "Composition: concentric arcs opening from the right edge, quiet space on the left.",
-    "Composition: a loose scatter of overlapping translucent shapes near the top edge.",
-    "Composition: two overlapping planes meeting near the lower third, wide calm sky above.",
-    "Composition: a soft radial glow behind sparse geometry at the outer edges.",
+    "Layout: elements gathered in the lower-left corner, the rest of the frame empty.",
+    "Layout: elements along the top edge, a wide empty field below them.",
+    "Layout: elements sweeping down the right-hand edge, the left side left empty.",
+    "Layout: elements clustered in the upper-left corner with one small element "
+    "near the lower-right corner.",
+    "Layout: a sparse band of elements across the lower third, wide empty field above.",
+    "Layout: elements hugging the left edge, the right two thirds left empty.",
 )
 
 
 def build_prompt(color: str, icon: str, seed: int | None = None) -> str:
-    """Единый промпт Chatra под выбранные цвет и иконку.
+    """Единый промпт Chatra под выбранные цвет и предмет.
 
     seed меняет только раскладку (одна фраза из _COMPOSITIONS) — Images API не
     принимает seed как параметр, поэтому вариативность для Regenerate вносим
@@ -171,262 +234,128 @@ def _shift(rgb: tuple[int, int, int], *, light: float = 1.0, sat: float = 1.0):
     умножение RGB уводит оттенок, а нам нужен тот же цвет другой яркости."""
     r, g, b = (c / 255 for c in rgb)
     h, l, s = colorsys.rgb_to_hls(r, g, b)
-    r, g, b = colorsys.hls_to_rgb(h, min(1.0, l * light), min(1.0, s * sat))
+    r, g, b = colorsys.hls_to_rgb(h, max(0.0, min(1.0, l * light)), max(0.0, min(1.0, s * sat)))
     return round(r * 255), round(g * 255), round(b * 255)
 
 
-# ── Фолбэк-фон ──────────────────────────────────────────────────────────────
+# ── Локальный фон (фолбэк) ──────────────────────────────────────────────────
+# Запас на размытие (см. конец render_background): размытая кромка фигуры
+# заезжает чуть дальше её геометрической границы.
+_BLUR_MARGIN = 0.02
+
+
+def _place_disc(rng, radius: float) -> tuple[float, float]:
+    """Центр круга радиуса radius (в долях стороны) так, чтобы КРАЙ круга не
+    заходил в центральную зону под иконку.
+
+    Считать нужно именно по краю: проверка одного лишь центра фигуры пускала
+    в кадр крупные пятна, которые сами лежали за границей зоны, а перекрывали
+    её с запасом — иконка ложилась на пятно.
+    """
+    need = _CLEAR_CENTRE_RADIUS + radius + _BLUR_MARGIN
+    for _ in range(64):
+        x, y = rng.uniform(-0.15, 1.15), rng.uniform(-0.15, 1.15)
+        if math.hypot(x - 0.5, y - 0.5) > need:
+            return x, y
+    # Гарантированный угол: по диагонали до угла ~0.71 от центра, что заведомо
+    # больше любого допустимого need при radius ≤ 0.34.
+    return rng.choice(((-0.1, -0.1), (1.1, -0.1), (-0.1, 1.1), (1.1, 1.1)))
+
+
+def _place_ring(rng, radius: float) -> tuple[float, float] | None:
+    """Центр окружности радиуса radius так, чтобы сама ЛИНИЯ окружности не
+    пересекала центральную зону: либо кольцо целиком далеко, либо зона целиком
+    внутри кольца. Дуга — это тонкая линия, и «центр далеко» её не спасает."""
+    clear = _CLEAR_CENTRE_RADIUS + _BLUR_MARGIN
+    for _ in range(64):
+        x, y = rng.uniform(-0.15, 1.15), rng.uniform(-0.15, 1.15)
+        d = math.hypot(x - 0.5, y - 0.5)
+        if d - radius > clear or radius - d > clear:
+            return x, y
+    return None
+
+
 def render_background(color: str, seed: int | None = None):
-    """Локальный фон в том же визуальном языке, что и AI-версия: диагональный
-    градиент выбранного цвета + несколько крупных мягких геометрических пятен.
+    """Локальный фон в том же визуальном языке, что и AI-версия: плоская
+    заливка выбранного цвета + несколько простых форм из оттенков того же
+    цвета, с пустым центром под иконку.
 
     Используется, когда генерация недоступна (нет ключа, ошибка/таймаут
-    OpenAI, исчерпан бюджет, сбой хранилища), и при создании класса — чтобы
-    обложка была готова мгновенно и класс никогда не оставался без неё.
+    OpenAI, исчерпан бюджет), и при создании класса — чтобы обложка была
+    готова мгновенно и класс никогда не оставался без неё.
     """
     from PIL import Image, ImageDraw, ImageFilter
 
     color = normalize_color(color)
-    accent = _rgb(PALETTE[color]["hex"])
-    deep = _rgb(PALETTE[color]["deep"])
+    base = _rgb(PALETTE[color]["base"])
     rng = random.Random(seed)
 
-    # Градиент считается на маленьком холсте и растягивается бикубиком: попиксельный
-    # проход по 1536x1024 занял бы секунды, здесь — доли миллисекунды.
-    small = Image.new("RGB", (64, 64))
+    # Очень мягкий вертикальный переход внутри одного тона — плоско, но не
+    # мертво. Считается на маленьком холсте и растягивается: попиксельный
+    # проход по полному размеру занял бы секунды.
+    top = _shift(base, light=1.10, sat=0.98)
+    bottom = _shift(base, light=0.92)
+    small = Image.new("RGB", (2, 64))
     px = small.load()
     for y in range(64):
-        for x in range(64):
-            t = (x / 63 * 0.62 + (1 - y / 63) * 0.38)
-            px[x, y] = tuple(
-                round(deep[i] + (accent[i] - deep[i]) * (t ** 1.7) * 0.85)
-                for i in range(3)
-            )
-    img = small.resize((COVER_WIDTH, COVER_HEIGHT), Image.BICUBIC)
+        t = y / 63
+        for x in range(2):
+            px[x, y] = tuple(round(top[i] + (bottom[i] - top[i]) * t) for i in range(3))
+    img = small.resize((COVER_WIDTH, COVER_HEIGHT), Image.BICUBIC).convert("RGBA")
 
-    # Мягкие пятна рисуются на отдельном слое и размываются целиком — иначе
-    # жёсткие края эллипсов ImageDraw выдали бы «клипарт».
+    light = _shift(base, light=1.34, sat=0.86)
+    dark = _shift(base, light=0.78)
+    side = COVER_HEIGHT
+
     shapes = Image.new("RGBA", (COVER_WIDTH, COVER_HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(shapes)
-    glow = _shift(accent, light=1.25, sat=0.9)
-    for _ in range(4):
-        r = rng.uniform(0.22, 0.46) * COVER_HEIGHT
-        cx = rng.uniform(-0.1, 1.1) * COVER_WIDTH
-        cy = rng.uniform(-0.1, 1.1) * COVER_HEIGHT
-        draw.ellipse((cx - r, cy - r, cx + r, cy + r),
-                     fill=(*glow, rng.randint(26, 52)))
-    shapes = shapes.filter(ImageFilter.GaussianBlur(COVER_HEIGHT * 0.045))
-    img = Image.alpha_composite(img.convert("RGBA"), shapes)
 
-    # Тонкие дуги — отдельным, почти не размытым слоём: под тем же 46-пиксельным
-    # блюром, что у пятен, шестипиксельная линия исчезала бы полностью.
-    arcs = Image.new("RGBA", (COVER_WIDTH, COVER_HEIGHT), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(arcs)
-    for _ in range(3):
-        r = rng.uniform(0.45, 0.95) * COVER_HEIGHT
-        cx = rng.uniform(0.0, 1.0) * COVER_WIDTH
-        cy = rng.uniform(0.0, 1.0) * COVER_HEIGHT
+    def disc(cx, cy, r_norm, fill):
+        r = r_norm * side
+        draw.ellipse((cx * COVER_WIDTH - r, cy * COVER_HEIGHT - r,
+                      cx * COVER_WIDTH + r, cy * COVER_HEIGHT + r), fill=fill)
+
+    # 2-3 крупные мягкие формы по краям — те же «soft rounded shapes», что
+    # просит промпт. Центр не трогаем: там будет иконка.
+    for _ in range(rng.randint(2, 3)):
+        r_norm = rng.uniform(0.20, 0.34)
+        cx, cy = _place_disc(rng, r_norm)
+        tint = light if rng.random() < 0.65 else dark
+        disc(cx, cy, r_norm, (*tint, rng.randint(46, 74)))
+
+    # Пара тонких дуг и горсть точек — «thin clean lines, gentle arcs, dots».
+    stroke = max(2, round(side * 0.006))
+    for _ in range(2):
+        r_norm = rng.uniform(0.30, 0.52)
+        placed = _place_ring(rng, r_norm)
+        if placed is None:
+            continue
+        cx, cy = placed
+        r = r_norm * side
         start = rng.uniform(0, 360)
-        draw.arc((cx - r, cy - r, cx + r, cy + r), start, start + rng.uniform(60, 140),
-                 fill=(*glow, 110), width=max(2, round(COVER_HEIGHT * 0.005)))
-    arcs = arcs.filter(ImageFilter.GaussianBlur(COVER_HEIGHT * 0.004))
+        draw.arc((cx * COVER_WIDTH - r, cy * COVER_HEIGHT - r,
+                  cx * COVER_WIDTH + r, cy * COVER_HEIGHT + r),
+                 start, start + rng.uniform(55, 120),
+                 fill=(*light, 120), width=stroke)
+    for _ in range(rng.randint(3, 6)):
+        r_norm = rng.uniform(0.008, 0.018)
+        cx, cy = _place_disc(rng, r_norm)
+        disc(cx, cy, r_norm, (*light, 150))
 
-    return Image.alpha_composite(img, arcs).convert("RGB")
-
-
-# ── Глифы иконок ────────────────────────────────────────────────────────────
-# Координаты нормированы в [0,1] по стороне квадрата глифа: одна и та же
-# запись рисуется в любом масштабе, и все иконки одинаковой «весовой» толщины.
-def _line(draw, pts, n, w, fill):
-    draw.line([(x * n, y * n) for x, y in pts], fill=fill, width=w, joint="curve")
-
-
-def _ellipse(draw, box, n, w, fill):
-    x0, y0, x1, y1 = box
-    draw.ellipse((x0 * n, y0 * n, x1 * n, y1 * n), outline=fill, width=w)
+    # Лёгкое размытие снимает лесенку ImageDraw (он не сглаживает), но
+    # оставляет формы читаемыми — это плоская графика, а не туман.
+    shapes = shapes.filter(ImageFilter.GaussianBlur(side * 0.004))
+    return Image.alpha_composite(img, shapes).convert("RGB")
 
 
-def _disc(draw, cx, cy, r, n, fill):
-    draw.ellipse(((cx - r) * n, (cy - r) * n, (cx + r) * n, (cy + r) * n), fill=fill)
+def render_fallback_cover(color: str, icon: str = "", seed: int | None = None):
+    """Полноценный фон обложки без единого обращения к внешним сервисам.
 
-
-def _rotated(n, angle, painter):
-    """Слой с фигурой, повёрнутый на angle. ImageDraw умеет только оси-
-    параллельные эллипсы — орбиты атома иначе не нарисовать."""
-    from PIL import Image, ImageDraw
-
-    layer = Image.new("L", (n, n), 0)
-    painter(ImageDraw.Draw(layer))
-    return layer.rotate(angle, resample=Image.BICUBIC, fillcolor=0)
-
-
-def _glyph_sigma(draw, n, w, fill):
-    _line(draw, [(.78, .13), (.22, .13), (.52, .5), (.22, .87), (.78, .87)], n, w, fill)
-
-
-def _glyph_atom(draw, n, w, fill):
-    _disc(draw, .5, .5, .075, n, fill)
-
-
-def _glyph_atom_layers(n, w):
-    box = (.5 - .48, .5 - .20, .5 + .48, .5 + .20)
-    return [
-        _rotated(n, angle, lambda d: _ellipse(d, box, n, w, 255))
-        for angle in (0, 60, 120)
-    ]
-
-
-def _glyph_flask(draw, n, w, fill):
-    _line(draw, [(.37, .12), (.63, .12)], n, w, fill)                 # горлышко сверху
-    _line(draw, [(.43, .12), (.43, .40), (.15, .87), (.85, .87), (.57, .40), (.57, .12)],
-          n, w, fill)
-    _disc(draw, .40, .70, .045, n, fill)                              # пузырьки
-    _disc(draw, .56, .77, .033, n, fill)
-
-
-def _glyph_dna(draw, n, w, fill):
-    # Ровно один период на всю высоту: нити расходятся дважды и пересекаются
-    # сверху, по центру и снизу — та самая читаемая «двойная спираль».
-    # Полтора периода складывались в стопку линз и переставали читаться.
-    def dx(t):
-        return .28 * math.sin(2 * math.pi * t)
-
-    strand = [(i / 48, .10 + .80 * (i / 48)) for i in range(49)]
-    _line(draw, [(.5 + dx(t), y) for t, y in strand], n, w, fill)
-    _line(draw, [(.5 - dx(t), y) for t, y in strand], n, w, fill)
-    # Перекладины только там, где нити заметно разошлись, и чуть тоньше нитей —
-    # иначе сливаются с контуром в одно пятно.
-    for t in (.14, .25, .36, .64, .75, .86):
-        y, d = .10 + .80 * t, dx(t)
-        _line(draw, [(.5 + d, y), (.5 - d, y)], n, max(2, round(w * 0.55)), fill)
-
-
-def _glyph_code(draw, n, w, fill):
-    _line(draw, [(.34, .26), (.13, .5), (.34, .74)], n, w, fill)
-    _line(draw, [(.66, .26), (.87, .5), (.66, .74)], n, w, fill)
-    _line(draw, [(.585, .18), (.415, .82)], n, max(2, round(w * 0.72)), fill)
-
-
-def _glyph_column(draw, n, w, fill):
-    _line(draw, [(.09, .33), (.5, .10), (.91, .33), (.09, .33)], n, w, fill)   # фронтон
-    _line(draw, [(.15, .40), (.85, .40)], n, w, fill)                          # капитель
-    for x in (.28, .5, .72):
-        _line(draw, [(x, .40), (x, .82)], n, w, fill)                          # колонны
-    _line(draw, [(.12, .88), (.88, .88)], n, w, fill)                          # стилобат
-
-
-def _glyph_globe(draw, n, w, fill):
-    _ellipse(draw, (.10, .10, .90, .90), n, w, fill)
-    _ellipse(draw, (.30, .10, .70, .90), n, w, fill)   # меридиан
-    _line(draw, [(.10, .5), (.90, .5)], n, w, fill)    # экватор
-    _line(draw, [(.205, .285), (.795, .285)], n, w, fill)
-    _line(draw, [(.205, .715), (.795, .715)], n, w, fill)
-
-
-def _glyph_letter(draw, n, w, fill):
-    _line(draw, [(.15, .88), (.5, .12), (.85, .88)], n, w, fill)
-    _line(draw, [(.295, .62), (.705, .62)], n, w, fill)
-
-
-def _glyph_book(draw, n, w, fill):
-    _line(draw, [(.5, .26), (.5, .88)], n, w, fill)                                  # корешок
-    _line(draw, [(.5, .26), (.30, .18), (.12, .22), (.12, .80), (.30, .78), (.5, .88)], n, w, fill)
-    _line(draw, [(.5, .26), (.70, .18), (.88, .22), (.88, .80), (.70, .78), (.5, .88)], n, w, fill)
-
-
-def _glyph_chart(draw, n, w, fill):
-    _line(draw, [(.16, .12), (.16, .86), (.90, .86)], n, w, fill)                    # оси
-    bar = max(3, round(w * 1.5))
-    for x, top in ((.34, .62), (.53, .42), (.72, .24)):
-        _line(draw, [(x, .86), (x, top)], n, bar, fill)
-
-
-def _glyph_palette(draw, n, w, fill):
-    _ellipse(draw, (.08, .14, .92, .86), n, w, fill)
-    _disc(draw, .62, .60, .105, n, fill)                                             # отверстие
-    for cx, cy in ((.28, .38), (.46, .28), (.66, .34), (.26, .60)):
-        _disc(draw, cx, cy, .062, n, fill)                                           # краски
-
-
-def _glyph_note(draw, n, w, fill):
-    draw.ellipse((.20 * n, .64 * n, .56 * n, .88 * n), fill=fill)                    # головка
-    _line(draw, [(.545, .76), (.545, .14)], n, w, fill)                              # штиль
-    _line(draw, [(.545, .14), (.74, .24), (.80, .38), (.76, .48)], n, w, fill)       # флажок
-
-
-_GLYPHS = {
-    "sigma": _glyph_sigma,
-    "atom": _glyph_atom,
-    "flask": _glyph_flask,
-    "dna": _glyph_dna,
-    "code": _glyph_code,
-    "column": _glyph_column,
-    "globe": _glyph_globe,
-    "letter": _glyph_letter,
-    "book": _glyph_book,
-    "chart": _glyph_chart,
-    "palette": _glyph_palette,
-    "note": _glyph_note,
-}
-
-
-def render_glyph(icon: str, size: int):
-    """Маска глифа (режим "L", size×size) со сглаженными краями.
-
-    ImageDraw не сглаживает — рисуем в _GLYPH_SUPERSAMPLE раз крупнее и
-    уменьшаем LANCZOS, иначе на обложке видна лесенка по диагоналям (Σ, A, ДНК).
+    icon в рендер не входит и принимается только для симметрии вызова:
+    предметную иконку рисуют клиенты поверх этой картинки (см. докстринг
+    модуля), поэтому фолбэк и AI-версия проходят один и тот же путь.
     """
-    from PIL import Image, ImageDraw
-
-    icon = normalize_icon(icon)
-    n = size * _GLYPH_SUPERSAMPLE
-    mask = Image.new("L", (n, n), 0)
-    draw = ImageDraw.Draw(mask)
-    width = max(2, round(n * 0.072))
-
-    _GLYPHS[icon](draw, n, width, 255)
-    if icon == "atom":
-        for layer in _glyph_atom_layers(n, width):
-            mask.paste(255, (0, 0), layer)
-
-    return mask.resize((size, size), Image.LANCZOS)
-
-
-def apply_icon(base, icon: str):
-    """Накладывает белый глиф предмета на готовый фон (AI или фолбэк).
-
-    Под глифом — размытая тёмная копия его же маски: без неё светлая
-    AI-картинка «съедала» бы белый символ. Тень строится из самой маски, а не
-    рисуется отдельной фигурой, поэтому обводит глиф точно по форме.
-    """
-    from PIL import Image, ImageFilter
-
-    icon = normalize_icon(icon)
-    img = base.convert("RGBA")
-    size = round(img.height * _ICON_HEIGHT_RATIO)
-    mask = render_glyph(icon, size)
-
-    left = round(img.width * _ICON_CENTER_X - size / 2)
-    top = round(img.height * _ICON_CENTER_Y - size / 2)
-
-    pad = round(size * 0.22)
-    shadow_mask = Image.new("L", (size + pad * 2, size + pad * 2), 0)
-    shadow_mask.paste(mask, (pad, pad))
-    shadow_mask = shadow_mask.filter(ImageFilter.GaussianBlur(size * 0.055))
-    shadow_mask = shadow_mask.point(lambda v: min(255, round(v * 1.35)))
-    shadow = Image.new("RGBA", shadow_mask.size, (5, 8, 12, 255))
-    shadow.putalpha(shadow_mask)
-    img.alpha_composite(shadow, (left - pad, top - pad + round(size * 0.02)))
-
-    glyph = Image.new("RGBA", (size, size), (255, 255, 255, 255))
-    glyph.putalpha(mask)
-    img.alpha_composite(glyph, (left, top))
-    return img.convert("RGB")
-
-
-def render_fallback_cover(color: str, icon: str, seed: int | None = None):
-    """Полноценная обложка без единого обращения к внешним сервисам."""
-    return apply_icon(render_background(color, seed), icon)
+    return render_background(color, seed)
 
 
 def encode_png(img) -> bytes:

@@ -7,6 +7,7 @@
 """
 import base64
 import io
+import math
 
 import httpx
 import pytest
@@ -86,12 +87,28 @@ def test_catalog_lists_every_colour_and_icon():
     assert cat["default_color"] in cover_art.PALETTE
     assert cat["default_icon"] in cover_art.ICONS
     for c in cat["colors"]:
-        assert c["hex"].startswith("#") and len(c["hex"]) == 7
+        for field in ("hex", "base"):
+            assert c[field].startswith("#") and len(c[field]) == 7
 
 
-def test_every_icon_has_a_glyph():
-    # Иконка без глифа молча рисовалась бы как пустое место на обложке.
-    assert set(cover_art._GLYPHS) == set(cover_art.ICONS)
+def test_background_colours_are_mid_tone_not_near_black():
+    """Обложка — графический баннер, а не тёмная AI-картинка: заливка обязана
+    быть насыщенным средним тоном. Почти чёрные значения тут уже были и давали
+    ровно тот «ночной» вид, от которого уходим."""
+    for slug, v in cover_art.PALETTE.items():
+        r, g, b = cover_art._rgb(v["base"])
+        luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        assert 55 < luma < 190, f"{slug}: заливка {v['base']} вне среднего диапазона"
+        # И это должен быть ЦВЕТ, а не серый.
+        assert max(r, g, b) - min(r, g, b) > 40, f"{slug}: заливка обесцвечена"
+
+
+def test_every_icon_has_a_decorative_motif():
+    # Мотив без описания дал бы модели пустую подсказку, и обложка предмета
+    # перестала бы отличаться от любой другой.
+    for slug, meta in cover_art.ICONS.items():
+        assert meta["motif"].strip(), f"нет мотива для {slug}"
+        assert meta["subject"].strip(), f"нет предмета для {slug}"
 
 
 def test_normalize_falls_back_instead_of_raising():
@@ -121,11 +138,20 @@ def test_prompt_is_one_style_across_subjects():
         for icon in cover_art.ICONS
     ]
     for p in prompts:
-        for required in ("no text", "no letters", "no words", "no people",
-                         "no photography", "no logos", "no watermarks",
-                         "no realistic 3d", "consistent design system",
-                         "negative space", "flat 2d"):
+        for required in (
+            # запреты
+            "no text", "no letters", "no words", "no people", "no photography",
+            "no logos", "no watermarks", "no 3d rendering", "no icons",
+            "never a large central symbol",
+            # сама дизайн-система
+            "one consistent design system", "flat minimal graphic banner",
+            "2 to 4 simple abstract decorative elements", "same colour",
+            "never near-black",
+        ):
             assert required in p, f"в промпте пропало «{required}»"
+        # Центр обязан оставаться пустым в КАЖДОМ промпте: туда клиент кладёт
+        # предметную иконку.
+        assert "centre of the frame must remain completely empty" in p
 
 
 def test_prompt_carries_chosen_colour_and_subject_motif():
@@ -182,21 +208,70 @@ def test_fallback_uses_the_chosen_colour():
     assert abs(dominant_hue("blue") - dominant_hue("orange")) > 40
 
 
-def test_icon_overlay_is_visible_on_a_light_background():
-    """Глиф рисуется поверх картинки от модели, а она может оказаться светлой.
-    Без тёмной подложки белый символ на ней бы исчез."""
-    light = Image.new("RGB", (768, 512), (245, 245, 245))
-    out = cover_art.apply_icon(light, "sigma")
-    centre = out.crop((768 // 2 - 90, round(512 * 0.44) - 90,
-                       768 // 2 + 90, round(512 * 0.44) + 90))
-    darkest, _ = centre.convert("L").getextrema()
-    assert darkest < 140, "глиф не читается на светлом фоне"
+def test_fallback_is_square():
+    img = cover_art.render_fallback_cover("blue", seed=1)
+    assert img.width == img.height, "обложку кропают под разные пропорции — нужен квадрат"
 
 
-def test_different_icons_produce_different_pictures():
+@pytest.mark.parametrize("color", list(cover_art.PALETTE))
+@pytest.mark.parametrize("seed", [0, 1, 7, 42])
+def test_fallback_leaves_the_centre_clear_for_the_icon(color, seed):
+    """Иконку рисует UI поверх обложки, поэтому центр кадра обязан оставаться
+    ровным полем цвета: пятно или дуга под иконкой превратили бы её в кашу.
+
+    Меряем разброс ВНУТРИ каждой строки: фон — вертикальный градиент, по
+    горизонтали он постоянен, поэтому любая нарисованная фигура (круг, дуга,
+    точка) сразу даёт всплеск, а сам градиент — нет.
+    """
+    img = cover_art.render_fallback_cover(color, seed=seed).convert("L")
+    cx = cy = img.width // 2
+    # Зона свободна по КРУГУ радиуса _CLEAR_CENTRE_RADIUS, а не по квадрату:
+    # углы вписанного квадрата лежат в 1.41 раза дальше от центра и по
+    # построению в чистую зону не входят. Иконке круга хватает с запасом —
+    # в него вписывается квадрат стороной 0.31 ширины кадра.
+    radius = img.width * cover_art._CLEAR_CENTRE_RADIUS
+    step = 4
+
+    worst = 0
+    for y in range(cy - round(radius), cy + round(radius), step):
+        row = [
+            img.getpixel((x, y))
+            for x in range(cx - round(radius), cx + round(radius), step)
+            if math.hypot(x - cx, y - cy) <= radius
+        ]
+        if len(row) > 1:
+            worst = max(worst, max(row) - min(row))
+
+    # Чистый градиент даёт 0 разброса внутри строки, поэтому любой ненулевой
+    # всплеск — это нарисованная фигура, заехавшая под иконку.
+    assert worst < 4, f"{color}/{seed}: в центре обложки что-то нарисовано ({worst})"
+
+
+def test_fallback_is_flat_and_light_enough_for_a_white_icon():
+    """Иконка в UI белая — фон под ней обязан быть достаточно тёмным, но не
+    чёрным, иначе баннер снова станет «ночным»."""
+    for color in cover_art.PALETTE:
+        img = cover_art.render_fallback_cover(color, seed=4)
+        cx = cy = img.width // 2
+        half = round(img.width * 0.12)
+        centre = img.crop((cx - half, cy - half, cx + half, cy + half)).convert("L")
+        pixels = list(centre.getdata())
+        mean = sum(pixels) / len(pixels)
+        assert 60 < mean < 185, f"{color}: центр обложки со средней яркостью {mean:.0f}"
+
+
+def test_different_colours_produce_different_backgrounds():
+    a = cover_art.render_fallback_cover("teal", seed=4).tobytes()
+    b = cover_art.render_fallback_cover("orange", seed=4).tobytes()
+    assert a != b
+
+
+def test_background_does_not_depend_on_the_icon():
+    """Фон рисуется только по цвету: предмет различается декоративным мотивом
+    в промпте и иконкой, которую накладывает UI, а не самим фолбэком."""
     a = cover_art.render_fallback_cover("teal", "sigma", seed=4).tobytes()
     b = cover_art.render_fallback_cover("teal", "dna", seed=4).tobytes()
-    assert a != b
+    assert a == b
 
 
 # ── Создание класса ─────────────────────────────────────────────────────────
@@ -273,11 +348,12 @@ def test_generate_cover_calls_openai_and_saves_result(client, teacher, storage, 
     assert data["cover_image"] and data["cover_image"] != before
 
 
-def test_generated_cover_gets_the_native_icon_composited(client, teacher, storage, monkeypatch):
-    """Иконку рисует код, а не модель, — иначе символ предмета выходил бы
-    нестабильным. Проверяем, что сохранённая картинка отличается от того, что
-    прислала «модель»."""
-    flat = _png_bytes(color=(20, 30, 50))
+def test_stored_cover_is_the_bare_background(client, teacher, storage, monkeypatch):
+    """Иконка в картинку НЕ впекается: её рисует UI поверх (см. докстринг
+    services/cover_art.py). Если фон от модели ровный, ровным он и должен
+    доехать до хранилища — появление там символа означало бы, что иконка снова
+    попала в изображение и клиентский оверлей ляжет на неё вторым слоем."""
+    flat = _png_bytes(color=(30, 90, 170))
     _patch_openai(monkeypatch, lambda url, kw: _openai_image_response(flat))
     cls = _make_class(client, teacher, cover_color="blue", cover_icon="sigma")
     storage.objects.clear()
@@ -287,9 +363,8 @@ def test_generated_cover_gets_the_native_icon_composited(client, teacher, storag
 
     stored = [v for k, v in storage.objects.items() if "thumbnail" not in k][0]
     with Image.open(io.BytesIO(stored)) as img:
-        # На плоской заливке единственное светлое пятно — наложенный глиф.
-        _, brightest = img.convert("L").getextrema()
-        assert brightest > 200
+        lo, hi = img.convert("L").getextrema()
+        assert hi - lo < 20, "в сохранённой обложке что-то нарисовано поверх фона"
 
 
 def test_generation_updates_appearance_when_client_picks_new_values(client, teacher, storage, monkeypatch):

@@ -1,15 +1,17 @@
-"""Генерация обложки класса: OpenAI Images API → иконка поверх → хранилище.
+"""Генерация фона обложки класса: OpenAI Images API → хранилище.
 
 Ключ OpenAI живёт только здесь и в routers/ai.py — на клиент он не уезжает
 никогда, генерация возможна исключительно через бэкенд.
 
-Модель: gpt-image-1-mini, quality="low", size=1536x1024 — ~$0.006 за обложку.
-Самый дешёвый актуальный image-эндпоинт OpenAI; низкое качество здесь не
-компромисс, а точное попадание в задачу: обложка — плоская абстрактная
-композиция без мелких деталей, показывается полосой ~200px высотой, и
-предметный символ всё равно рисуется кодом поверх (services/cover_art.py),
-а не моделью. Всё переопределяется окружением (COVER_IMAGE_MODEL/
-COVER_IMAGE_QUALITY/COVER_IMAGE_SIZE), если понадобится поднять качество.
+Модель отвечает ТОЛЬКО за фон. Предметная иконка не входит в картинку — её
+рисуют клиенты нативным компонентом поверх (см. докстринг services/cover_art.py).
+
+Модель: gpt-image-1-mini, quality="medium", size=1024x1024 — ~$0.011 за обложку.
+Medium, а не low: обложка — плоская графика с чистыми линиями и ровными
+краями, и на low модель заметно хуже держит композицию и аккуратность форм.
+Квадрат — потому что обложку кропают под очень разные пропорции.
+Всё переопределяется окружением (COVER_IMAGE_MODEL/COVER_IMAGE_QUALITY/
+COVER_IMAGE_SIZE).
 
 Главная гарантия модуля: build_cover() НИКОГДА не возвращает «нет обложки».
 Любой сбой — нет ключа, ошибка/таймаут/модерация OpenAI, исчерпан бюджет,
@@ -31,8 +33,8 @@ logger = logging.getLogger(__name__)
 OPENAI_IMAGES_URL = "https://api.openai.com/v1/images/generations"
 
 DEFAULT_MODEL = "gpt-image-1-mini"
-DEFAULT_QUALITY = "low"
-DEFAULT_SIZE = "1536x1024"
+DEFAULT_QUALITY = "medium"
+DEFAULT_SIZE = "1024x1024"
 
 # Генерация у image-моделей заметно медленнее чата; 120 с с запасом перекрывает
 # практический разброс, дальше клиенту честнее показать ошибку/фолбэк.
@@ -120,7 +122,12 @@ async def _request_background(color: str, icon: str, seed: int) -> tuple[bytes |
 
 
 def _compose_and_store(background: bytes | None, color: str, icon: str, seed: int) -> tuple[str, str, str]:
-    """Собирает финальную обложку и кладёт её в хранилище.
+    """Кладёт фон обложки в хранилище.
+
+    Иконка сюда не подмешивается: картинка — это чистый фон, поверх которого
+    клиенты рисуют предметную иконку своим компонентом. Байты от модели всё
+    равно проходят через Pillow — так они нормализуются (и заодно проверяются
+    на пригодность) ровно тем же путём, что и локальный фолбэк.
 
     Блокирующая (Pillow + сеть до R2) — вызывать только в пуле потоков,
     см. build_cover(). Возвращает (cover_url, thumbnail_url, source).
@@ -134,7 +141,7 @@ def _compose_and_store(background: bytes | None, color: str, icon: str, seed: in
         try:
             with Image.open(io.BytesIO(background)) as bg:
                 bg.load()
-                image = cover_art.apply_icon(bg, icon)
+                image = bg.convert("RGB")
             source = SOURCE_AI
         except Exception:
             # Модель ответила, но байты не открылись — это не повод оставить
@@ -143,7 +150,7 @@ def _compose_and_store(background: bytes | None, color: str, icon: str, seed: in
             image = None
 
     if image is None:
-        image = cover_art.render_fallback_cover(color, icon, seed)
+        image = cover_art.render_fallback_cover(color, seed=seed)
 
     stored = store_cover_bytes(cover_art.encode_png(image))
     if stored is None:

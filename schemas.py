@@ -337,8 +337,10 @@ class CoverGenerateResponse(BaseModel):
 
 class CoverColorOption(BaseModel):
     id: str
+    # Акцент бренда: свотч в пикере и цвет предметной иконки в UI.
     hex: str
-    deep: str
+    # Заливка фона обложки — из неё клиент строит превью до генерации.
+    base: str
 
 
 class CoverIconOption(BaseModel):
