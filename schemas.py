@@ -41,6 +41,9 @@ class UserResponse(BaseModel):
     full_name: Optional[str] = Field(default=None, max_length=200)
     org_type: str = "university"
     ai_unlimited: bool = False
+    # NULL у аккаунтов, зарегистрированных до migrations/022 — клиент показывает
+    # «—», а не выдумывает дату.
+    created_at: Optional[datetime] = None
     # False = аккаунт создан, но письмо не ушло (SMTP лёг). Клиент обязан сказать
     # об этом, иначе юзер ждёт код, которого не будет.
     email_sent: bool = True

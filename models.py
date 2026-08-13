@@ -175,6 +175,9 @@ class User(Base):
     # Подтверждён ли email кодом из письма. Существующие аккаунты мигрируются в
     # true (server_default), новые регистрации создаются с false.
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="true")
+    # Дата регистрации. NULL у аккаунтов, созданных до migrations/022: настоящей
+    # даты для них нет, и админка честно показывает «—» вместо даты миграции.
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=utcnow, nullable=True)
 
     posts: Mapped[list["Posts"]] = relationship(
         back_populates="user",

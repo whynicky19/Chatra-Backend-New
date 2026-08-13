@@ -123,6 +123,7 @@ nohup ./venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 > uvicorn.log 2>&1 
 | 016 | удаление фичи «AI-аватар преподавателя» (`DROP TABLE` для `teacher_avatars`/`avatar_lectures`/`avatar_lecture_slides`) | `psql … -f migrations/016_drop_avatar_tables.sql` |
 | 017 | `posts.position` — порядковый номер лекции внутри класса (для AI-репетитора, см. `routers/ai.py`) | `psql … -f migrations/017_posts_lecture_position.sql` |
 | **021** | `classes.cover_color/cover_icon/cover_source` — генерируемые обложки предметов (см. раздел «Генерируемые обложки предметов» ниже). Только добавляет колонки, существующие обложки не трогает | `psql … -f migrations/021_class_cover_appearance.sql` |
+| **022** | `users.created_at` — дата регистрации для админки. Без бэкфилла: у старых аккаунтов остаётся NULL и показывается «—» | `psql … -f migrations/022_users_created_at.sql` |
 | — | `user_blocks` — блок-лист (модерация UGC) | `python migrations/add_user_blocks.py` |
 | — | `reports` — жалобы на UGC | `python migrations/add_reports.py` |
 

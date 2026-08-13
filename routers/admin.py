@@ -157,6 +157,367 @@ def delete_user(
 
     return {"message": "User deleted"}
 
+def _last_activity_map(db: Session, user_ids) -> dict:
+    """Последнее действие пользователя.
+
+    У аккаунта нет last_seen (сессии не пишутся), поэтому берём максимум по
+    трём следам, которые остаются в БД: запрос к ИИ, опубликованный пост,
+    сданная работа. Это «последнее действие», а не «был онлайн» — так это и
+    подписано в интерфейсе.
+    """
+    from sqlalchemy import func
+
+    from models import Posts, Submission
+
+    ids = list(user_ids)
+    if not ids:
+        return {}
+    out: dict = {}
+
+    def _merge(rows):
+        for uid, ts in rows:
+            if ts and (uid not in out or ts > out[uid]):
+                out[uid] = ts
+
+    _merge(db.query(AiUsageLog.user_id, func.max(AiUsageLog.created_at))
+           .filter(AiUsageLog.user_id.in_(ids)).group_by(AiUsageLog.user_id).all())
+    _merge(db.query(Posts.user_id, func.max(Posts.created_at))
+           .filter(Posts.user_id.in_(ids)).group_by(Posts.user_id).all())
+    _merge(db.query(Submission.student_id, func.max(Submission.submitted_at))
+           .filter(Submission.student_id.in_(ids)).group_by(Submission.student_id).all())
+    return out
+
+
+def _ai_by_endpoint_rows(db: Session, *where) -> list:
+    """Расход по видам запросов для одного среза (пользователь / класс)."""
+    from sqlalchemy import desc, func
+
+    rows = (db.query(AiUsageLog.endpoint,
+                     func.coalesce(func.sum(AiUsageLog.total_tokens), 0),
+                     func.coalesce(func.sum(AiUsageLog.prompt_tokens), 0),
+                     func.coalesce(func.sum(AiUsageLog.completion_tokens), 0),
+                     func.count(AiUsageLog.id))
+            .filter(*where)
+            .group_by(AiUsageLog.endpoint)
+            .order_by(desc(func.sum(AiUsageLog.total_tokens)))
+            .all())
+    out = []
+    for endpoint, total, prompt, completion, requests in rows:
+        group = AI_ENDPOINT_GROUPS.get(endpoint, "other")
+        out.append({
+            "endpoint": endpoint,
+            "label": AI_ENDPOINT_LABELS.get(endpoint, endpoint),
+            "group": group,
+            "group_label": AI_GROUP_LABELS[group],
+            "total_tokens": int(total),
+            "prompt_tokens": int(prompt),
+            "completion_tokens": int(completion),
+            "request_count": int(requests),
+        })
+    return out
+
+
+def _ai_totals(db: Session, *where) -> dict:
+    from sqlalchemy import func
+
+    r = (db.query(func.coalesce(func.sum(AiUsageLog.total_tokens), 0),
+                  func.coalesce(func.sum(AiUsageLog.prompt_tokens), 0),
+                  func.coalesce(func.sum(AiUsageLog.completion_tokens), 0),
+                  func.count(AiUsageLog.id),
+                  func.min(AiUsageLog.created_at),
+                  func.max(AiUsageLog.created_at))
+         .filter(*where).one())
+    requests = int(r[3])
+    return {
+        "total_tokens": int(r[0]),
+        "prompt_tokens": int(r[1]),
+        "completion_tokens": int(r[2]),
+        "request_count": requests,
+        "avg_tokens": round(int(r[0]) / requests) if requests else 0,
+        "first_used": r[4].isoformat() if r[4] else None,
+        "last_used": r[5].isoformat() if r[5] else None,
+    }
+
+
+# ВАЖНО: объявлено до "/users/{user_id}" — иначе FastAPI попробует разобрать
+# "overview" как int и вернёт 422.
+@router.get("/users/overview")
+def get_users_overview(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_admin),
+):
+    """Список пользователей с агрегатами для админки.
+
+    Отдельно от `GET /users` (тот отдаёт чистый UserResponse и его читают
+    другие клиенты): здесь к каждому аккаунту сразу приложены расход токенов,
+    число классов и последнее действие. Иначе список на 50 человек означал бы
+    150 дополнительных запросов из браузера.
+    """
+    from sqlalchemy import func
+
+    from models import Class, class_members
+
+    org = current_user.org_type
+    users = db.query(User).filter(User.org_type == org).order_by(User.id).all()
+    ids = [u.id for u in users]
+
+    ai: dict = {}
+    classes_count: dict = {}
+    if ids:
+        for uid, tokens, requests in (
+            db.query(AiUsageLog.user_id,
+                     func.coalesce(func.sum(AiUsageLog.total_tokens), 0),
+                     func.count(AiUsageLog.id))
+            .filter(AiUsageLog.org_type == org, AiUsageLog.user_id.in_(ids))
+            .group_by(AiUsageLog.user_id).all()
+        ):
+            ai[uid] = (int(tokens), int(requests))
+        # Через join с classes: членство само по себе не знает про org_type.
+        for uid, cnt in (
+            db.query(class_members.c.user_id, func.count(func.distinct(class_members.c.class_id)))
+            .select_from(class_members)
+            .join(Class, Class.id == class_members.c.class_id)
+            .filter(Class.org_type == org, class_members.c.user_id.in_(ids))
+            .group_by(class_members.c.user_id).all()
+        ):
+            classes_count[uid] = int(cnt)
+    last = _last_activity_map(db, ids)
+
+    return [
+        {
+            "id": u.id,
+            "email": u.email,
+            "full_name": u.full_name,
+            "role": u.role,
+            "is_active": u.is_active,
+            "is_verified": u.is_verified,
+            "ai_unlimited": u.ai_unlimited,
+            "created_at": u.created_at.isoformat() if u.created_at else None,
+            "total_tokens": ai.get(u.id, (0, 0))[0],
+            "request_count": ai.get(u.id, (0, 0))[1],
+            "class_count": classes_count.get(u.id, 0),
+            "last_active": last[u.id].isoformat() if u.id in last else None,
+        }
+        for u in users
+    ]
+
+
+@router.get("/users/{user_id}")
+def get_user_detail(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_admin),
+):
+    """Карточка пользователя: профиль, расход ИИ, классы и учебная активность.
+
+    Одним запросом — чтобы модалка открывалась сразу целиком, а не догружала
+    четыре блока по очереди.
+    """
+    from sqlalchemy import func
+
+    from models import Assignment, Class, Grade, Posts, Submission, class_members
+    from services import ai_quota
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or user.org_type != current_user.org_type:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    org = current_user.org_type
+    mine = (AiUsageLog.org_type == org, AiUsageLog.user_id == user_id)
+
+    # ── Расход по классам этого пользователя ─────────────────────────────────
+    per_class: dict = {}
+    for class_id, tokens, requests in (
+        db.query(AiUsageLog.class_id,
+                 func.coalesce(func.sum(AiUsageLog.total_tokens), 0),
+                 func.count(AiUsageLog.id))
+        .filter(*mine).group_by(AiUsageLog.class_id).all()
+    ):
+        per_class[class_id] = (int(tokens), int(requests))
+
+    # ── Классы: где состоит + что создал ─────────────────────────────────────
+    member_ids = {r[0] for r in db.query(class_members.c.class_id)
+                  .filter(class_members.c.user_id == user_id).all()}
+    created_ids = {r[0] for r in db.query(Class.id)
+                   .filter(Class.created_by == user_id).all()}
+    classes = []
+    if member_ids | created_ids:
+        for cl in (db.query(Class)
+                   .filter(Class.id.in_(member_ids | created_ids), Class.org_type == org)
+                   .order_by(Class.name).all()):
+            tokens, requests = per_class.get(cl.id, (0, 0))
+            classes.append({
+                "id": cl.id,
+                "name": cl.name,
+                "role": "creator" if cl.id in created_ids else "member",
+                "cover_color": cl.cover_color,
+                "cover_icon": cl.cover_icon,
+                "cover_thumbnail": cl.cover_thumbnail,
+                "total_tokens": tokens,
+                "request_count": requests,
+            })
+    # Расход вне предметов (главный ассистент) — отдельной строкой, иначе он
+    # просто исчезает из карточки.
+    general_tokens, general_requests = per_class.get(None, (0, 0))
+
+    # ── Учебная активность ───────────────────────────────────────────────────
+    posts_count = db.query(func.count(Posts.id)).filter(Posts.user_id == user_id).scalar() or 0
+    submissions_count = (db.query(func.count(Submission.id))
+                         .filter(Submission.student_id == user_id).scalar() or 0)
+    graded = (db.query(func.count(Grade.id), func.avg(Grade.score))
+              .select_from(Grade)
+              .join(Submission, Submission.id == Grade.submission_id)
+              .filter(Submission.student_id == user_id).one())
+    assignments_created = (db.query(func.count(Assignment.id))
+                           .filter(Assignment.created_by == user_id).scalar() or 0)
+
+    last = _last_activity_map(db, [user_id])
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
+        "role": user.role,
+        "is_active": user.is_active,
+        "is_verified": user.is_verified,
+        "ai_unlimited": user.ai_unlimited,
+        "org_type": user.org_type,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "last_active": last[user_id].isoformat() if user_id in last else None,
+        "ai": {
+            **_ai_totals(db, *mine),
+            "by_endpoint": _ai_by_endpoint_rows(db, *mine),
+            # Дневная квота сообщений — то, по чему бэкенд реально отказывает в
+            # запросе (services/ai_quota.py). Токены к ней отношения не имеют.
+            "messages_today": ai_quota.messages_used_today(db, user_id),
+            "message_limit": ai_quota.daily_message_limit(),
+            "general_tokens": general_tokens,
+            "general_requests": general_requests,
+        },
+        "classes": classes,
+        "activity": {
+            "posts": int(posts_count),
+            "submissions": int(submissions_count),
+            "graded": int(graded[0] or 0),
+            "avg_score": round(float(graded[1]), 1) if graded[1] is not None else None,
+            "assignments_created": int(assignments_created),
+        },
+    }
+
+
+@router.get("/classes/{class_id}")
+def get_class_detail(
+    class_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_admin),
+):
+    """Карточка предмета: состав, потоки, содержимое и расход ИИ."""
+    from sqlalchemy import func
+
+    from models import Assignment, Cohort, Grade, Posts, Submission, cohort_students
+
+    obj = crud_classes.get_class(db, class_id)
+    if not obj or obj.org_type != current_user.org_type:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    org = current_user.org_type
+    scope = (AiUsageLog.org_type == org, AiUsageLog.class_id == class_id)
+
+    # ── Участники с их расходом внутри этого предмета ────────────────────────
+    members = crud_classes.get_members(db, class_id)
+    member_ids = [m.id for m in members]
+    per_user: dict = {}
+    for uid, tokens, requests in (
+        db.query(AiUsageLog.user_id,
+                 func.coalesce(func.sum(AiUsageLog.total_tokens), 0),
+                 func.count(AiUsageLog.id))
+        .filter(*scope).group_by(AiUsageLog.user_id).all()
+    ):
+        per_user[uid] = (int(tokens), int(requests))
+    last_seen = _last_activity_map(db, member_ids)
+    member_rows = sorted(
+        [{
+            "id": m.id,
+            "full_name": m.full_name,
+            "email": m.email,
+            "role": m.role,
+            "is_active": m.is_active,
+            "total_tokens": per_user.get(m.id, (0, 0))[0],
+            "request_count": per_user.get(m.id, (0, 0))[1],
+            "last_active": last_seen[m.id].isoformat() if m.id in last_seen else None,
+        } for m in members],
+        key=lambda r: -r["total_tokens"],
+    )
+
+    # ── Потоки (учебные годы) ────────────────────────────────────────────────
+    cohorts = []
+    for c in (db.query(Cohort).filter(Cohort.class_id == class_id)
+              .order_by(Cohort.academic_year.desc()).all()):
+        students = (db.query(func.count(cohort_students.c.student_id))
+                    .filter(cohort_students.c.cohort_id == c.id).scalar() or 0)
+        cohorts.append({
+            "id": c.id,
+            "academic_year": c.academic_year,
+            "status": c.status,
+            "student_count": int(students),
+            "start_date": c.start_date.isoformat() if c.start_date else None,
+        })
+
+    # ── Содержимое ───────────────────────────────────────────────────────────
+    assignments_total = (db.query(func.count(Assignment.id))
+                         .filter(Assignment.class_id == class_id).scalar() or 0)
+    assignments_active = (db.query(func.count(Assignment.id))
+                          .filter(Assignment.class_id == class_id,
+                                  Assignment.is_active.is_(True)).scalar() or 0)
+    # Лекции связаны с классом префиксом заголовка (crud/posts.py), отдельной
+    # колонки posts.class_id в схеме нет.
+    lectures = (db.query(func.count(Posts.id))
+                .filter(Posts.title.like(f"[LECTURE][{class_id}]%")).scalar() or 0)
+    submissions = (db.query(func.count(Submission.id))
+                   .select_from(Submission)
+                   .join(Assignment, Assignment.id == Submission.assignment_id)
+                   .filter(Assignment.class_id == class_id).scalar() or 0)
+    graded = (db.query(func.count(Grade.id), func.avg(Grade.score))
+              .select_from(Grade)
+              .join(Submission, Submission.id == Grade.submission_id)
+              .join(Assignment, Assignment.id == Submission.assignment_id)
+              .filter(Assignment.class_id == class_id).one())
+
+    creator = db.query(User).filter(User.id == obj.created_by).first()
+
+    return {
+        "id": obj.id,
+        "name": obj.name,
+        "description": obj.description,
+        "invite_code": obj.invite_code,
+        "created_at": obj.created_at.isoformat() if obj.created_at else None,
+        "cover_image": obj.cover_image,
+        "cover_thumbnail": obj.cover_thumbnail,
+        "cover_color": obj.cover_color,
+        "cover_icon": obj.cover_icon,
+        "teacher": obj.teacher,
+        "creator": {
+            "id": creator.id, "full_name": creator.full_name,
+            "email": creator.email, "role": creator.role,
+        } if creator else None,
+        "members": member_rows,
+        "member_count": len(member_rows),
+        "cohorts": cohorts,
+        "content": {
+            "assignments": int(assignments_total),
+            "assignments_active": int(assignments_active),
+            "lectures": int(lectures),
+            "submissions": int(submissions),
+            "graded": int(graded[0] or 0),
+            "avg_score": round(float(graded[1]), 1) if graded[1] is not None else None,
+        },
+        "ai": {
+            **_ai_totals(db, *scope),
+            "by_endpoint": _ai_by_endpoint_rows(db, *scope),
+        },
+    }
+
+
 @router.get("/classes/{class_id}/members", response_model=list[UserResponse])
 def get_class_members(
     class_id: int,
