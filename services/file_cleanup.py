@@ -59,10 +59,21 @@ def _r2_key_from_url(url: str) -> str | None:
         return None
     path = url.split("?", 1)[0].split("#", 1)[0]
     idx = path.find(_R2_MARKER)
-    if idx == -1:
-        return None
-    key = path[idx + len(_R2_MARKER):].strip("/")
-    return key or None
+    if idx != -1:
+        key = path[idx + len(_R2_MARKER):].strip("/")
+        return key or None
+    # Публичные категории (обложки классов) при заданном R2_PUBLIC_BASE_URL
+    # сохраняются в БД как ПРЯМАЯ ссылка на R2/CDN — "{public_base}/{key}", без
+    # префикса "/uploads/r2/" (см. services/storage/r2_storage.py: get_url).
+    # Без этой ветки такой URL не распознавался как объект хранилища вообще:
+    # удаление/замена обложки молча уходило в локальную ветку ниже, os.remove
+    # не находил файла — и НИ ОДНА обложка класса больше никогда не удалялась
+    # из R2 (утечка объектов, растущая с каждой перегенерацией).
+    public_base = (os.getenv("R2_PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if public_base and path.startswith(public_base + "/"):
+        key = path[len(public_base) + 1:].strip("/")
+        return key or None
+    return None
 
 
 def _invalidate_file_text_cache(file_path: str) -> None:

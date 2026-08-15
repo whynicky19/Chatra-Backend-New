@@ -512,9 +512,15 @@ def add_member(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_teacher),
 ):
-    obj = crud.get_class(db, class_id)
-    if not obj or obj.org_type != current_user.org_type:
-        raise HTTPException(status_code=404, detail="Класс не найден")
+    # SEC-2: зачислять и отчислять учеников вправе только владелец класса или
+    # админ. Раньше здесь стояла лишь org-проверка — любой преподаватель
+    # организации мог править состав ЧУЖОГО класса.
+    require_class_owner(db, class_id, current_user)
+    # Ученик обязан быть из той же организации: иначе он попадал в состав
+    # класса (и в его рейтинг/списки), не имея доступа к самому классу.
+    member = db.query(User).filter(User.id == body.user_id).first()
+    if not member or member.org_type != current_user.org_type:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
     _require_active_cohort_for_join(db, class_id)
     ok = crud.add_member(db, class_id, body.user_id)
     if not ok:
@@ -603,9 +609,8 @@ def remove_member(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_teacher),
 ):
-    obj = crud.get_class(db, class_id)
-    if not obj or obj.org_type != current_user.org_type:
-        raise HTTPException(status_code=404, detail="Класс не найден")
+    # SEC-2: см. add_member — состав класса меняет только его владелец/админ.
+    require_class_owner(db, class_id, current_user)
     crud.remove_member(db, class_id, user_id)
 
 

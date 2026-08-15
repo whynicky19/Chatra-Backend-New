@@ -9,9 +9,32 @@ from crud import posts as crud_posts
 from crud import classes as crud_classes
 from deps import get_current_user
 from models import Posts, User, post_enrollments
-from permissions import require_class_access, student_class_ids
+from permissions import require_class_access, require_class_owner, student_class_ids
 
 router = APIRouter(prefix="/posts", tags=["posts"])
+
+
+def _require_lecture_class_owner(db: Session, title: str, current_user) -> None:
+    """Лекция помечается классом прямо в заголовке ('[LECTURE][{class_id}] ...',
+    см. crud/posts.py) — и до этой проверки заголовок был единственным, что
+    привязывало пост к классу. Любой авторизованный пользователь (в том числе
+    студент, вообще не состоящий в классе) мог создать пост с таким заголовком
+    и подсунуть «лекцию» в ЛЮБОЙ класс организации: она показывалась всем
+    участникам в /posts/?class_id=... и уходила в RAG-индекс класса, откуда
+    её содержимое попадало в ответы ИИ-репетитора. Публиковать и править
+    материалы класса вправе только владелец класса (или админ)."""
+    m = crud_posts._LECTURE_TITLE_RE.match(title or "")
+    if not m:
+        return  # обычный пост, не привязан к классу — поведение как раньше
+    class_id = int(m.group(1))
+    if crud_classes.get_class(db, class_id) is None:
+        # Класса с таким id вообще нет: это легаси-разметка (в старых базах
+        # число в заголовке ссылалось на пост, а не на класс — см. коммент про
+        # assignments.class_id в models.py). Владельца тут не у кого спрашивать,
+        # а подсунуть материал в существующий класс так нельзя — оставляем
+        # прежнее поведение, чтобы не сломать правку исторических записей.
+        return
+    require_class_owner(db, class_id, current_user)
 
 
 def _get_post_or_404(db: Session, post_id: int) -> Posts:
@@ -52,6 +75,7 @@ def create_post(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    _require_lecture_class_owner(db, post.title, current_user)
     return crud_posts.create_new_post(db=db, title=post.title, body=_convert_body_cover(post.body), user_id=current_user.id)
 
 
@@ -149,4 +173,9 @@ def update_post(
     _check_post_org(db, existing, current_user)
     if existing.user_id != current_user.id and current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Not authorized")
+    # Автор поста != владелец класса: правкой заголовка обычный пост можно было
+    # превратить в лекцию произвольного класса (и переставить существующую
+    # лекцию в чужой класс). Проверяем и новый, и старый класс.
+    _require_lecture_class_owner(db, post.title, current_user)
+    _require_lecture_class_owner(db, existing.title, current_user)
     return crud_posts.update_post(db=db, post_id=post_id, title=post.title, body=_convert_body_cover(post.body))

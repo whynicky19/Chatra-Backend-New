@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from db import SessionLocal
 from crud import assignments as crud
 from crud import posts as crud_posts
-from models import Assignment, Deadline, Submission
+from models import Assignment, Deadline, Grade, Submission
 from services.ai_grader import (
     grade_submission as _ai_grade,
     grade_handwritten_submission as _ai_grade_handwritten,
@@ -278,6 +278,22 @@ async def _check_deadlines() -> None:
         # BE-2: сперва расшиваем зависшие в 'grading' сдачи (после падений).
         _reap_stale_grading(db)
 
+        # Только дедлайны, по которым РЕАЛЬНО есть что оценивать. Раньше цикл
+        # каждую минуту вытаскивал ВСЕ когда-либо истекшие дедлайны (их число
+        # растёт с каждым учебным годом и никогда не убывает) и делал по
+        # запросу сдач на каждый — при том, что _grade_batch для давно
+        # проверенных заданий сразу же выходил, ничего не делая. Поведение то
+        # же, работа — только по актуальной очереди.
+        pending_deadline_ids = (
+            db.query(Submission.deadline_id)
+            .outerjoin(Grade, Grade.submission_id == Submission.id)
+            .filter(
+                Submission.deadline_id.isnot(None),
+                Submission.status.in_(("submitted", "late")),
+                Grade.id.is_(None),
+            )
+            .distinct()
+        )
         expired_rows = (
             db.query(Deadline, Assignment)
             .join(Assignment, Assignment.id == Deadline.assignment_id)
@@ -285,6 +301,7 @@ async def _check_deadlines() -> None:
                 Deadline.is_published == True,
                 Deadline.due_date <= now,
                 Assignment.is_active == True,
+                Deadline.id.in_(pending_deadline_ids),
             )
             .all()
         )
@@ -296,11 +313,30 @@ async def _check_deadlines() -> None:
             )
             await _grade_batch(db, submissions, assignment)
 
-        all_assignments = crud.get_all_assignments(db)
-        expired_legacy = [
-            a for a in all_assignments
-            if a.deadline and a.deadline <= now and a.is_active
-        ]
+        # Легаси-ветка (сдачи без deadline_id, дата в deprecated
+        # assignments.deadline) — тот же приём: берём из БД только задания с
+        # непроверенными сдачами, а не весь список заданий организации
+        # целиком на каждой итерации.
+        pending_assignment_ids = (
+            db.query(Submission.assignment_id)
+            .outerjoin(Grade, Grade.submission_id == Submission.id)
+            .filter(
+                Submission.deadline_id.is_(None),
+                Submission.status.in_(("submitted", "late")),
+                Grade.id.is_(None),
+            )
+            .distinct()
+        )
+        expired_legacy = (
+            db.query(Assignment)
+            .filter(
+                Assignment.is_active == True,
+                Assignment.deadline.isnot(None),
+                Assignment.deadline <= now,
+                Assignment.id.in_(pending_assignment_ids),
+            )
+            .all()
+        )
         for assignment in expired_legacy:
             submissions = (
                 db.query(Submission)

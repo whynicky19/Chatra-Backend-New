@@ -16,6 +16,7 @@ from permissions import (
     require_class_access,
     require_active_cohort_access,
     require_assignment_owner,
+    require_class_owner,
     require_submission_class_owner,
     student_class_ids,
 )
@@ -140,6 +141,13 @@ def create_assignment(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_teacher),
 ):
+    # SEC-2: класс задания обязан принадлежать этому преподавателю. Без этой
+    # проверки любой преподаватель мог создать задание в ЧУЖОМ классе — и даже
+    # в классе другой организации (class_id приходил из тела запроса и нигде
+    # не сверялся). Правка и удаление того же задания уже требуют владения
+    # классом (require_assignment_owner ниже), так что создание было
+    # единственной дырой в этой цепочке.
+    require_class_owner(db, body.class_id, current_user)
     criteria_list = [c.model_dump() for c in body.criteria]
     obj = crud.create_assignment(
         db=db,

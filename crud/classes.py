@@ -94,11 +94,13 @@ def delete_class(db: Session, class_id: int) -> bool:
     file_urls: set[str] = set()
     # submissions.deadline_id ссылается на дедлайны без ON DELETE — обнуляем
     # заранее, иначе ForeignKeyViolation. Сами сдачи не трогаем: это история ученика.
+    # scalar_subquery(), а не subquery(): последний SQLAlchemy 2.0 принимает в
+    # IN() только с SAWarning про неявное приведение и перестанет принимать в 2.1.
     deadline_ids = (
         db.query(Deadline.id)
         .join(Cohort, Cohort.id == Deadline.cohort_id)
         .filter(Cohort.class_id == class_id)
-        .subquery()
+        .scalar_subquery()
     )
     db.query(Submission).filter(Submission.deadline_id.in_(deadline_ids)).update(
         {Submission.deadline_id: None}, synchronize_session=False

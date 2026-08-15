@@ -49,12 +49,22 @@ def issue_code(db: Session, email: str, org_type: str, purpose: str) -> str:
 def verify_code(db: Session, email: str, org_type: str, purpose: str, code: str) -> bool:
     """Проверяет код. При успехе удаляет запись (одноразовость). При ошибке
     инкрементирует счётчик попыток; после MAX_ATTEMPTS код становится мёртвым."""
+    # Берём самый свежий код, а не scalar_one_or_none(): уникального индекса на
+    # (email, org_type, purpose) в схеме нет, и две параллельные выдачи кода
+    # (двойной тап по «Отправить код» — оба запроса проходят delete до вставок)
+    # оставляют ДВЕ строки. scalar_one_or_none() в этом случае кидал
+    # MultipleResultsFound → 500 на подтверждении, и пользователь не мог
+    # войти, пока обе записи не протухнут. Актуален последний выданный код —
+    # именно он в письме.
     row = db.execute(
-        select(models.EmailCode).where(
+        select(models.EmailCode)
+        .where(
             models.EmailCode.email == email,
             models.EmailCode.org_type == org_type,
             models.EmailCode.purpose == purpose,
         )
+        .order_by(models.EmailCode.created_at.desc(), models.EmailCode.id.desc())
+        .limit(1)
     ).scalar_one_or_none()
 
     if row is None:

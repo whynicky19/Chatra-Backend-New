@@ -12,14 +12,16 @@ from db import get_db
 from deps import get_current_user
 from models import DeviceToken
 from utils.time import utcnow
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/push", tags=["Push"])
 
 
 class TokenRegister(BaseModel):
     token: str
-    platform: Optional[str] = None  # android | ios
+    # device_tokens.platform — String(16): в Postgres более длинное значение
+    # роняет INSERT (StringDataRightTruncation → 500), поэтому режем на входе.
+    platform: Optional[str] = Field(default=None, max_length=16)  # android | ios
 
 
 class TokenUnregister(BaseModel):

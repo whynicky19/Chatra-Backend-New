@@ -10,9 +10,21 @@ from sqlalchemy.orm import Session
 from db import get_db
 from deps import get_current_user
 from models import NotificationState
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import Annotated
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
+
+# Колонка notification_states.notif_key — String(64). Postgres эту длину
+# ЖЁСТКО проверяет (SQLite — нет): более длинный ключ от клиента доезжал до
+# INSERT и падал StringDataRightTruncation, то есть 500 на рядовом запросе.
+# Отбиваем валидацией на входе (понятный 422), а не исключением драйвера.
+# Реальный ключ всегда короткий: '{kind}:{ref_id}'.
+NOTIF_KEY_MAX_LEN = 64
+NotifKey = Annotated[str, Field(min_length=1, max_length=NOTIF_KEY_MAX_LEN)]
+# «Прочитать всё» приходит списком от клиента: без границы это неограниченное
+# число upsert'ов в одном запросе.
+MAX_READ_ALL_KEYS = 500
 
 
 class NotifStateResponse(BaseModel):
@@ -22,13 +34,13 @@ class NotifStateResponse(BaseModel):
 
 
 class NotifStateUpdate(BaseModel):
-    notif_key: str
+    notif_key: NotifKey
     read: Optional[bool] = None
     dismissed: Optional[bool] = None
 
 
 class NotifReadAll(BaseModel):
-    keys: List[str]
+    keys: Annotated[List[NotifKey], Field(max_length=MAX_READ_ALL_KEYS)]
 
 
 def _get_or_create(db: Session, user_id: int, notif_key: str) -> NotificationState:
