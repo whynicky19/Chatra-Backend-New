@@ -20,9 +20,9 @@ router = APIRouter(tags=["Cohorts"])
 def _get_owned_class(db: Session, class_id: int, current_user) -> Class:
     obj = db.query(Class).filter(Class.id == class_id).first()
     if not obj or obj.org_type != current_user.org_type:
-        raise HTTPException(status_code=404, detail="Класс не найден")
+        raise HTTPException(status_code=404, detail="Предмет не найден")
     if current_user.role != "admin" and obj.created_by != current_user.id:
-        raise HTTPException(status_code=403, detail="Только владелец класса")
+        raise HTTPException(status_code=403, detail="Только владелец предмета")
     return obj
 
 

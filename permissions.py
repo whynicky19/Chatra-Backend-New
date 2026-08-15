@@ -16,12 +16,12 @@ def require_class_owner(db: Session, class_id: int, current_user) -> Class:
     и удаляет ЧУЖИЕ классы (см. SEC-2). Возвращает класс."""
     cls = db.query(Class).filter(Class.id == class_id).first()
     if not cls or cls.org_type != current_user.org_type:
-        raise HTTPException(status_code=404, detail="Класс не найден")
+        raise HTTPException(status_code=404, detail="Предмет не найден")
     if current_user.role == "admin" or cls.created_by == current_user.id:
         return cls
     raise HTTPException(
         status_code=403,
-        detail="Только владелец класса или администратор может это изменить",
+        detail="Только владелец предмета или администратор может это изменить",
     )
 
 
@@ -62,7 +62,7 @@ def require_class_access(db: Session, class_id: int, current_user) -> None:
     if crud_cohorts.is_member_of_any_cohort(db, class_id, current_user.id):
         return
     if not is_class_member(db, class_id, current_user.id):
-        raise HTTPException(status_code=403, detail="Вы не состоите в этом классе")
+        raise HTTPException(status_code=403, detail="Вы не состоите в этом предмете")
 
 
 def student_class_ids(db: Session, user_id: int, org_type: str) -> set:
@@ -105,7 +105,7 @@ def require_active_cohort_access(db: Session, class_id: int, current_user) -> No
     if cohort is not None:
         raise HTTPException(
             status_code=403,
-            detail="Класс доступен только для чтения: ваш учебный год в архиве",
+            detail="Предмет доступен только для чтения: ваш учебный год в архиве",
         )
     # Не в потоках, но в легаси class_members и активного потока у класса нет
     # вовсе — база без бэкфилла, ведём себя по-старому.
@@ -113,4 +113,4 @@ def require_active_cohort_access(db: Session, class_id: int, current_user) -> No
         db, class_id, current_user.id
     ):
         return
-    raise HTTPException(status_code=403, detail="Вы не состоите в этом классе")
+    raise HTTPException(status_code=403, detail="Вы не состоите в этом предмете")

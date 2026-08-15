@@ -115,7 +115,7 @@ def _require_cohort_of_class(db: Session, obj: Class, cohort_id: int, current_us
     """Просмотр произвольного (в т.ч. архивного) потока — только владелец
     класса или админ; обычные ученики чужие потоки и архивы не видят."""
     if not (current_user.role == "admin" or obj.created_by == current_user.id):
-        raise HTTPException(status_code=403, detail="Только владелец класса может просматривать потоки")
+        raise HTTPException(status_code=403, detail="Только владелец предмета может просматривать потоки")
     cohort = crud_cohorts.get_cohort(db, cohort_id)
     if not cohort or cohort.class_id != obj.id:
         raise HTTPException(status_code=404, detail="Поток не найден")
@@ -282,7 +282,7 @@ def get_class(
 ):
     obj = crud.get_class(db, class_id)
     if not obj or obj.org_type != current_user.org_type:
-        raise HTTPException(status_code=404, detail="Класс не найден")
+        raise HTTPException(status_code=404, detail="Предмет не найден")
     is_archived = (
         crud_cohorts.is_archived_for_user(db, class_id, current_user.id)
         if current_user.role == "student"
@@ -443,7 +443,7 @@ def get_members(
     (только владелец класса или админ)."""
     obj = crud.get_class(db, class_id)
     if not obj or obj.org_type != current_user.org_type:
-        raise HTTPException(status_code=404, detail="Класс не найден")
+        raise HTTPException(status_code=404, detail="Предмет не найден")
     # SEC-4: студент видит участников только своего класса, а не любого по ID.
     require_class_access(db, class_id, current_user)
     if cohort_id is not None:
@@ -462,9 +462,9 @@ def rejoinable_students(
     администратору или владельцу класса. Возврат делает POST /{id}/members."""
     obj = crud.get_class(db, class_id)
     if not obj or obj.org_type != current_user.org_type:
-        raise HTTPException(status_code=404, detail="Класс не найден")
+        raise HTTPException(status_code=404, detail="Предмет не найден")
     if not (current_user.role == "admin" or obj.created_by == current_user.id):
-        raise HTTPException(status_code=403, detail="Только администратор или владелец класса")
+        raise HTTPException(status_code=403, detail="Только администратор или владелец предмета")
 
     active = crud_cohorts.get_active_cohort(db, class_id)
     active_ids = set(crud_cohorts.get_cohort_student_ids(db, active.id)) if active else set()
@@ -536,17 +536,17 @@ def join_class(
 ):
     obj = crud.get_class(db, class_id)
     if not obj:
-        raise HTTPException(status_code=404, detail="Класс не найден")
+        raise HTTPException(status_code=404, detail="Предмет не найден")
 
     if obj.org_type != current_user.org_type:
-        raise HTTPException(status_code=403, detail="Нельзя вступить в класс другой организации")
+        raise HTTPException(status_code=403, detail="Нельзя вступить в предмет другой организации")
 
     _guard_self_rejoin(db, class_id, current_user)
     _require_active_cohort_for_join(db, class_id)
     ok = crud.add_member(db, class_id, current_user.id)
     if not ok:
         raise HTTPException(status_code=400, detail="Не удалось вступить")
-    return {"message": "Вы вступили в класс"}
+    return {"message": "Вы вступили в предмет"}
 
 
 @router.post("/join-by-code", response_model=schemas.ClassResponse, status_code=status.HTTP_200_OK)
@@ -581,9 +581,9 @@ def regenerate_code(
 ):
     obj = crud.get_class(db, class_id)
     if not obj or obj.org_type != current_user.org_type:
-        raise HTTPException(status_code=404, detail="Класс не найден")
+        raise HTTPException(status_code=404, detail="Предмет не найден")
     if not _can_view_invite_code(obj, current_user):
-        raise HTTPException(status_code=403, detail="Только владелец класса или администратор может обновить код приглашения")
+        raise HTTPException(status_code=403, detail="Только владелец предмета или администратор может обновить код приглашения")
 
     obj = crud.regenerate_invite_code(db, class_id)
     return schemas.InviteCodeResponse(invite_code=obj.invite_code)
@@ -597,9 +597,9 @@ def leave_class(
 ):
     obj = crud.get_class(db, class_id)
     if not obj or obj.org_type != current_user.org_type:
-        raise HTTPException(status_code=404, detail="Класс не найден")
+        raise HTTPException(status_code=404, detail="Предмет не найден")
     crud.remove_member(db, class_id, current_user.id)
-    return {"message": "Вы покинули класс"}
+    return {"message": "Вы покинули предмет"}
 
 
 @router.delete("/{class_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -627,7 +627,7 @@ def class_rating(
     (только владелец класса или админ)."""
     obj = crud.get_class(db, class_id)
     if not obj or obj.org_type != current_user.org_type:
-        raise HTTPException(status_code=404, detail="Класс не найден")
+        raise HTTPException(status_code=404, detail="Предмет не найден")
     # SEC-4: рейтинг чужого класса по прямому ID больше не раскрывается.
     require_class_access(db, class_id, current_user)
     if cohort_id is not None:
