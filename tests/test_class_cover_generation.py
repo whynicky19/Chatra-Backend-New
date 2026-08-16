@@ -193,6 +193,9 @@ def test_prompt_is_one_style_across_subjects():
             # сама дизайн-система
             "apple-like", "16:9", "one smooth gradient",
             "wide, dim glow",
+            # Глубокий — не чёрный: без этого модель уводила углы в черноту и
+            # обложка выходила погашенной, на что и жаловались.
+            "never black, near-black or washed out to grey",
             # Центр не выжигаем: модель ставила туда прожектор и обложка
             # превращалась в фонарик в темноте.
             "never a bright spotlight", "never a white-hot core",
@@ -379,18 +382,22 @@ def test_fallback_is_a_16_9_frame():
     assert abs(img.width / img.height - 16 / 9) < 0.01
 
 
-def test_fallback_is_dark_premium():
-    """Вся коллекция — тёмный premium: светлый фолбэк выбивался бы из неё
-    сильнее, чем любая разница в тематике."""
+def test_fallback_is_deep_but_not_dark():
+    """Вся коллекция — глубокий premium: светлый фолбэк выбивался бы из неё
+    сильнее, чем любая разница в тематике.
+
+    Нижняя граница поднята вместе с коридором экспозиции: на прежних 12 сюда
+    проходил почти чёрный прямоугольник, а именно на это и жаловались —
+    «обложки тёмные». Цвет и свечение обязаны читаться без всматривания.
+    """
     for color in cover_art.PALETTE:
         img = cover_art.render_fallback_cover(color, seed=6).convert("L")
         small = img.resize((64, 36))
         pixels = list(small.get_flattened_data() if hasattr(small, "get_flattened_data")
                       else small.getdata())
         mean = sum(pixels) / len(pixels)
-        assert mean < 90, f"{color}: обложка слишком светлая ({mean:.0f})"
-        # И не чёрный прямоугольник: цвет и свечение должны читаться.
-        assert mean > 12, f"{color}: обложка ушла в чёрное ({mean:.0f})"
+        assert mean < 95, f"{color}: обложка слишком светлая ({mean:.0f})"
+        assert mean > 42, f"{color}: обложка ушла в темноту ({mean:.0f})"
 
 
 def test_fallback_centre_is_calmer_than_the_edges():
@@ -1045,13 +1052,13 @@ def test_ai_usage_list_carries_names_too(client, db_session, teacher, storage, m
 
 
 # ── Экспозиция ──────────────────────────────────────────────────────────────
-def _lit_cover(mean_target=(24, 42, 62), spot=150):
+def _lit_cover(mean_target=(30, 54, 80), spot=230):
     """Кадр «как у модели в плохой день»: цветное поле и яркое пятно в центре.
 
-    spot=150 повторяет реальный худший замер по продакшену (средняя яркость
-    ~92 из 255, центр в 4.3 раза светлее углов) — на нём нормализация обязана
-    сходиться. Совсем выжженный кадр проверяется отдельно, там работает уже
-    порог EXPOSURE_MAX_DIP.
+    Значения подобраны так, чтобы кадр гарантированно выходил за верх коридора
+    (средняя яркость выше EXPOSURE_MEAN_MAX) и нёс прожектор — центр больше чем
+    втрое светлее углов. На нём нормализация обязана сходиться. Совсем выжженный
+    кадр проверяется отдельно, там работает уже порог EXPOSURE_MAX_DIP.
     """
     from PIL import Image, ImageDraw, ImageFilter
 
@@ -1067,17 +1074,21 @@ def _lit_cover(mean_target=(24, 42, 62), spot=150):
 
 
 def test_exposure_is_pulled_into_the_collection_band():
-    """Промпт просит тусклый ровный свет, но модель соблюдает это через раз:
-    у первой партии средняя яркость гуляла 77-92, а центр был в 3.6-4.2 раза
-    светлее углов. Итог доводится арифметикой, иначе соседние обложки в
-    каталоге выглядят по-разному проэкспонированными."""
+    """Промпт просит ровный свет, но модель соблюдает это через раз: у первой
+    партии средняя яркость гуляла 77-92, а центр был в 3.6-4.2 раза светлее
+    углов. Итог доводится арифметикой, иначе соседние обложки в каталоге
+    выглядят по-разному проэкспонированными."""
     before = cover_art._exposure_stats(_lit_cover())
     after = cover_art._exposure_stats(cover_art.normalize_exposure(_lit_cover()))
 
     assert before[0] > cover_art.EXPOSURE_MEAN_MAX          # исходник светлый
     assert before[1] / before[2] > 3                         # и с прожектором
     assert after[0] <= cover_art.EXPOSURE_MEAN_MAX + 1
-    assert after[1] / after[2] <= cover_art.EXPOSURE_CENTRE_RATIO + 0.3
+    # Допуск шире, чем «идеальное» отношение: фикстура специально стоит у
+    # верхнего края (центр в четыре раза светлее углов), а гашение середины
+    # ограничено EXPOSURE_MAX_DIP — до 2.2 такой прожектор и не должен доезжать,
+    # иначе в середине останется дыра.
+    assert after[1] / after[2] <= cover_art.EXPOSURE_CENTRE_RATIO + 0.5
 
 
 def test_exposure_never_burns_a_hole_in_the_centre():

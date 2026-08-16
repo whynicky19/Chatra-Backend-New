@@ -3,7 +3,7 @@
 
 Обложка — это ДВА независимых слоя, и разделение принципиально:
 
-  1. фон — тёмный premium-баннер 16:9 (генерирует OpenAI, см. services/
+  1. фон — глубокий premium-баннер 16:9 (генерирует OpenAI, см. services/
      cover_generator.py; при любом сбое — локальный render_background);
   2. главный символ предмета — НЕ часть картинки. Его рисуют клиенты поверх
      фона нативным компонентом (components/classes/SubjectCover.vue на вебе,
@@ -15,8 +15,13 @@
 одной толщины линии и одного стиля во всех предметах, его можно перекрасить или
 заменить без перегенерации всех обложек.
 
-Визуальный ориентир — тёмный premium / Apple-like: глубокий выбранный цвет с
-мягким градиентом, много свободного пространства, мягкое свечение и глубина.
+Визуальный ориентир — глубокий premium / Apple-like: насыщенный выбранный цвет
+с мягким градиентом, много свободного пространства, мягкое свечение и глубина.
+«Глубокий» здесь — НЕ «чёрный»: первая версия системы была выкручена в темноту
+(промпт просил near-black по углам, коридор экспозиции резал среднюю яркость до
+58 из 255), и обложки выходили почти чёрными прямоугольниками, на которых не
+читались ни цвет, ни графика. Цвет обязан быть виден в каждой точке кадра,
+включая углы; ориентир средней яркости — примерно четверть шкалы, а не десятая.
 Тематика предмета живёт в ФОНЕ: тонкие полупрозрачные линии, сетки, волны,
 частицы и другая геометрия, встроенные в градиент и уходящие в него, а не набор
 отдельных картинок. Главный акцент обложки — символ, который кладёт UI, поэтому
@@ -27,7 +32,8 @@
     получались нарядными, но каждая жила своей жизнью, коллекции не было;
   • светлая пастель и чистые полосы под иконку — выглядело как SaaS-дашборд;
   • композиция без спокойной середины — белый символ терялся в декоре.
-Отсюда нынешний набор правил: темно, тонко, тематично, с пустой серединой.
+Отсюда нынешний набор правил: глубокий цвет (но не чернота), тонко, тематично,
+с пустой серединой.
 """
 import colorsys
 import logging
@@ -67,52 +73,64 @@ SUBJECT_MAX_LEN = 60
 # ink   — цвет символа, когда он рисуется В ТОН. Сейчас клиенты рисуют его
 #         белым (см. ICON_ON_ARTWORK), но значение оставлено: пикер подсвечивает
 #         им выбранный символ.
-# prompt — как описать цвет модели словами. Не один тон, а ГЛУБИНА: тёмная
-#         основа плюс более светлые оттенки той же семьи для свечения. Слова
-#         deep/dark здесь намеренно: обложка теперь тёмная premium, и без них
-#         модель уводит фон в яркую заливку. Hex-коды image-модель понимает
-#         плохо, названия — надёжно.
+# prompt — как описать цвет модели словами. Не один тон, а ГЛУБИНА: насыщенная
+#         основа плюс более светлые оттенки той же семьи для свечения. Hex-коды
+#         image-модель понимает плохо, названия — надёжно.
+#         Формулировки специально держатся В СРЕДНЕЙ части шкалы. Здесь стояло
+#         «near-black … in the corners» и «only a faint halo» — модель читала
+#         это буквально и отдавала почти чёрный кадр, в котором выбранный цвет
+#         угадывался разве что по краю свечения. Теперь угол — это тёмный, но
+#         явно цветной тон, поле — светящийся насыщенный цвет, а ореол назван
+#         отчётливым, а не еле заметным.
 PALETTE: dict[str, dict[str, str]] = {
     "blue": {
         "hex": "#0A84FF", "base": "#3B82F6", "ink": "#1D4ED8",
-        "prompt": "deep midnight blue — near-black navy in the corners, rich cobalt "
-                  "in the field, with only a faint sky-blue halo and a hint of pale azure",
+        "prompt": "deep cobalt blue — dark but clearly blue navy in the corners, "
+                  "luminous cobalt filling the field, lit by a distinct sky-blue halo "
+                  "and highlights of pale azure",
     },
     "purple": {
         "hex": "#8B5CF6", "base": "#7C5CE6", "ink": "#6D28D9",
-        "prompt": "deep midnight violet — near-black plum in the corners, rich purple "
-                  "in the field, with only a faint lavender halo and a hint of pale lilac",
+        "prompt": "deep violet — dark but clearly purple plum in the corners, "
+                  "luminous violet filling the field, lit by a distinct lavender halo "
+                  "and highlights of pale lilac",
     },
     "green": {
         "hex": "#22C55E", "base": "#12A970", "ink": "#047857",
-        "prompt": "deep forest emerald — near-black pine in the corners, rich emerald "
-                  "in the field, with only a faint mint halo and a hint of pale seafoam",
+        "prompt": "deep emerald green — dark but clearly green pine in the corners, "
+                  "luminous emerald filling the field, lit by a distinct mint halo "
+                  "and highlights of pale seafoam",
     },
     "orange": {
         "hex": "#F97316", "base": "#F4842B", "ink": "#C2410C",
-        "prompt": "deep ember orange — near-black burnt umber in the corners, rich amber "
-                  "in the field, with only a faint apricot halo and a hint of pale golden",
+        "prompt": "deep ember orange — dark but clearly orange burnt umber in the "
+                  "corners, luminous amber filling the field, lit by a distinct apricot "
+                  "halo and highlights of pale golden",
     },
     "red": {
         "hex": "#EF4444", "base": "#E4534F", "ink": "#B91C1C",
-        "prompt": "deep crimson — near-black maroon in the corners, rich warm red "
-                  "in the field, with only a faint coral halo and a hint of pale rose",
+        "prompt": "deep crimson — dark but clearly red maroon in the corners, "
+                  "luminous warm red filling the field, lit by a distinct coral halo "
+                  "and highlights of pale rose",
     },
     "pink": {
         "hex": "#EC4899", "base": "#E8559C", "ink": "#BE185D",
-        "prompt": "deep magenta — near-black wine in the corners, rich fuchsia "
-                  "in the field, with only a faint pink halo and a hint of pale petal",
+        "prompt": "deep magenta — dark but clearly pink wine in the corners, "
+                  "luminous fuchsia filling the field, lit by a distinct pink halo "
+                  "and highlights of pale petal",
     },
     # Фирменный бирюзовый Chatra (C.teal в lib/theme/app_theme.dart).
     "teal": {
         "hex": "#00B1C9", "base": "#12A2B5", "ink": "#0E7490",
-        "prompt": "deep ocean teal — near-black petrol in the corners, rich teal "
-                  "in the field, with only a faint turquoise halo and a hint of pale aqua",
+        "prompt": "deep ocean teal — dark but clearly teal petrol in the corners, "
+                  "luminous teal filling the field, lit by a distinct turquoise halo "
+                  "and highlights of pale aqua",
     },
     "indigo": {
         "hex": "#6366F1", "base": "#5A5FE0", "ink": "#4338CA",
-        "prompt": "deep indigo — near-black ink blue in the corners, rich indigo "
-                  "in the field, with only a faint periwinkle halo and a hint of pale cornflower",
+        "prompt": "deep indigo — dark but clearly indigo ink blue in the corners, "
+                  "luminous indigo filling the field, lit by a distinct periwinkle halo "
+                  "and highlights of pale cornflower",
     },
     # Дальше — расширение набора: в вузе и школе направлений много, восьми
     # цветов на каталог не хватало. Цвета клиентам ничего не стоят (это
@@ -120,25 +138,29 @@ PALETTE: dict[str, dict[str, str]] = {
     # которых нужен глиф в обоих клиентах.
     "gold": {
         "hex": "#EAB308", "base": "#B38C22", "ink": "#854D0E",
-        "prompt": "deep antique gold — near-black bistre in the corners, rich ochre "
-                  "in the field, with only a faint amber halo and a hint of pale straw",
+        "prompt": "deep antique gold — dark but clearly golden bistre in the corners, "
+                  "luminous ochre filling the field, lit by a distinct amber halo "
+                  "and highlights of pale straw",
     },
     "lime": {
         "hex": "#84CC16", "base": "#6FA81B", "ink": "#3F6212",
-        "prompt": "deep olive lime — near-black moss in the corners, rich olive green "
-                  "in the field, with only a faint lime halo and a hint of pale chartreuse",
+        "prompt": "deep olive lime — dark but clearly olive moss in the corners, "
+                  "luminous olive green filling the field, lit by a distinct lime halo "
+                  "and highlights of pale chartreuse",
     },
     "bronze": {
         "hex": "#C2763A", "base": "#B4703C", "ink": "#7C2D12",
-        "prompt": "deep bronze — near-black sepia in the corners, rich warm bronze "
-                  "in the field, with only a faint copper halo and a hint of pale sand",
+        "prompt": "deep bronze — dark but clearly bronze sepia in the corners, "
+                  "luminous warm bronze filling the field, lit by a distinct copper halo "
+                  "and highlights of pale sand",
     },
     # Нейтральный вариант коллекции: не «серый по недосмотру», а осознанный
     # графитовый — для направлений, которым цветной акцент не идёт.
     "slate": {
         "hex": "#7C8BA5", "base": "#64748B", "ink": "#334155",
-        "prompt": "deep graphite — near-black charcoal in the corners, cool slate grey "
-                  "in the field, with only a faint steel-blue halo and a hint of pale silver",
+        "prompt": "deep graphite — dark but clearly grey charcoal in the corners, "
+                  "luminous cool slate grey filling the field, lit by a distinct "
+                  "steel-blue halo and highlights of pale silver",
     },
 }
 
@@ -629,7 +651,8 @@ def catalog() -> dict:
 # потом — ограничения, каждое ровно по одному разу.
 _BASE_STYLE = (
     "Design the background of a course cover for a premium educational "
-    "application: a dark, elegant, Apple-like graphic in a wide 16:9 frame. "
+    "application: a deep, richly coloured, elegant, Apple-like graphic in a "
+    "wide 16:9 frame. "
 
     # 1. Что рисуем — первым и с обязательным покрытием кадра.
     # Название приходит от преподавателя и печатать его на картинке нельзя:
@@ -661,10 +684,15 @@ _BASE_STYLE = (
     "complete objects into a scene or a collage, and never draw a row of "
     "icons. "
 
-    # 3. Цвет и свет.
+    # 3. Цвет и свет. Здесь стояло только «darkest at the corners» — модель
+    # доводила углы до чёрного, и обложка выглядела погашенной. Теперь у
+    # темноты явно назван предел: угол тёмный, но это по-прежнему цвет.
     "Colour: {color}. Fill the frame with one smooth gradient of this single "
-    "colour family, darkest at the corners. Light it with a wide, dim glow "
-    "behind the middle: soft and evenly spread, never a bright spotlight, "
+    "colour family, darkest at the corners — but the colour must stay clearly "
+    "visible everywhere, even the darkest corner is a deep tint of it, never "
+    "black, near-black or washed out to grey. Light it with a wide, dim glow "
+    "behind the middle: it lifts the whole frame to a comfortable mid-deep "
+    "brightness, soft and evenly spread, never a bright spotlight, "
     "never a white-hot core, no neon and no glare. "
 
     # 4. Центр под символ.
@@ -675,9 +703,9 @@ _BASE_STYLE = (
     "artwork is cropped there. "
 
     # 5. Коллекция.
-    "Every cover in this collection shares one style: the same darkness, the "
-    "same soft light, the same thin-line drawing. Only the colour and the "
-    "subject of the drawing change. "
+    "Every cover in this collection shares one style: the same depth of "
+    "colour, the same soft light, the same thin-line drawing. Only the colour "
+    "and the subject of the drawing change. "
 
     # 6. Запреты — один короткий список в конце.
     "Never draw text, letters, numbers, subject names or logos; never draw the "
@@ -740,6 +768,28 @@ def _rgb(hex_color: str) -> tuple[int, int, int]:
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
+def _luma(rgb: tuple[int, int, int]) -> float:
+    """Воспринимаемая яркость (те же веса, что у Pillow в convert("L"))."""
+    r, g, b = rgb
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+# Цвета палитры сами по себе разной яркости: индиго (#5A5FE0, luma ~108) заметно
+# темнее золота (#B38C22, luma ~140). На одних и тех же коэффициентах фолбэк
+# индиго выходил вдвое темнее оранжевого — коллекция расползалась именно по той
+# оси, из-за которой обложки и назвали тёмными. Поэтому яркость базы приводим к
+# общему ориентиру, а множитель ограничиваем: полное выравнивание выбелило бы
+# тёмные цвета в пастель и стёрло разницу между ними.
+_TARGET_BASE_LUMA = 135.0
+_BASE_LUMA_MIN_K = 0.80
+_BASE_LUMA_MAX_K = 1.35
+
+
+def _base_light_scale(rgb: tuple[int, int, int]) -> float:
+    return min(_BASE_LUMA_MAX_K,
+               max(_BASE_LUMA_MIN_K, _TARGET_BASE_LUMA / max(1.0, _luma(rgb))))
+
+
 def _shift(rgb: tuple[int, int, int], *, light: float = 1.0, sat: float = 1.0):
     """Осветлить/затемнить и подкрутить насыщенность в HLS — линейное
     умножение RGB уводит оттенок, а нам нужен тот же цвет другой яркости."""
@@ -777,16 +827,31 @@ def fit_cover_frame(img):
 
 
 # ── Экспозиция ──────────────────────────────────────────────────────────────
-# Коридор яркости, одинаковый для всей коллекции. Цифры не из головы: у первой
-# партии сгенерированных обложек средняя яркость гуляла 77-92 из 255, а центр
-# был в 3.6-4.2 раза светлее углов — «фонарик в темноте». После правок промпта
-# стало 49 и 2.9-3.1, но это всё ещё просьба к модели, а не гарантия: соседние
-# обложки в каталоге обязаны выглядеть одинаково проэкспонированными, поэтому
-# итог доводится здесь арифметикой.
-EXPOSURE_MEAN_MAX = 58.0    # выше — обложка «светлая», выбивается из коллекции
-EXPOSURE_MEAN_MIN = 22.0    # ниже — почти чёрный прямоугольник
+# Коридор яркости, одинаковый для всей коллекции. Соседние обложки в каталоге
+# обязаны выглядеть одинаково проэкспонированными, и промпт этого не гарантирует
+# (модель соблюдает свет через раз), поэтому итог доводится здесь арифметикой.
+#
+# Границы коридора подняты: прежние 58/22 из 255 задумывались против «фонарика
+# в темноте» у первой партии, но заодно гасили нормальные обложки — всё, что
+# светлее 23% шкалы, принудительно темнело, а почти чёрный кадр (mean ~25)
+# считался нормой и проходил насквозь. В каталоге это читалось как «обложки
+# тёмные»: цвет и тонкая графика на них просто не различались.
+#
+# Теперь коридор описывает глубокий, но живой кадр: примерно от 17% до 32%
+# шкалы. Верх по-прежнему держит коллекцию в одном тоне и срезает прожектор,
+# низ стал рабочим — тёмный ответ модели теперь ПОДНИМАЕТСЯ, а не принимается
+# как есть.
+EXPOSURE_MEAN_MAX = 82.0    # выше — обложка «светлая», выбивается из коллекции
+EXPOSURE_MEAN_MIN = 44.0    # ниже — цвет и графика тонут в темноте
 EXPOSURE_CENTRE_RATIO = 2.2  # во сколько раз центр вправе быть светлее углов
 EXPOSURE_MAX_DIP = 0.45      # сильнее середину не гасим ни при каком исходнике
+
+# Пределы одного шага яркости. Вниз — не больше чем вдвое (иначе засвеченный
+# кадр превращается в грязь), вверх — до 2.2×: подъём с прежних 1.6 нужен,
+# чтобы кадр с mean ~20 доезжал до коридора за один проход, а не оставался
+# тёмным «почти по правилам».
+EXPOSURE_MAX_DARKEN = 0.5
+EXPOSURE_MAX_LIFT = 2.2
 
 
 def _exposure_stats(img) -> tuple[float, float, float]:
@@ -819,10 +884,13 @@ def normalize_exposure(img):
       1. гасим «прожектор»: если центр светлее углов больше чем в
          EXPOSURE_CENTRE_RATIO раз, накладываем широкий радиальный
          множитель — центр темнеет, края остаются как были;
-      2. подгоняем общую яркость в коридор [MEAN_MIN, MEAN_MAX].
+      2. подгоняем общую яркость в коридор [MEAN_MIN, MEAN_MAX] — и вниз, и
+         ВВЕРХ: тёмный ответ модели поднимается, иначе обложка остаётся
+         чёрным прямоугольником «по правилам».
 
-    Ослабление ограничено (не больше чем вдвое), чтобы совсем засвеченный кадр
-    не превратился в грязь: лучше слегка светлая обложка, чем испорченная.
+    Шаг ограничен в обе стороны (EXPOSURE_MAX_DARKEN/EXPOSURE_MAX_LIFT): совсем
+    засвеченный кадр не должен превратиться в грязь, а совсем чёрный — в серый
+    шум из вытянутых теней.
     Картинка, уже попадающая в коридор, возвращается нетронутой — локальный
     фолбэк проходит эту функцию насквозь.
     """
@@ -857,9 +925,11 @@ def normalize_exposure(img):
 
     # 2. Общая яркость.
     if mean > EXPOSURE_MEAN_MAX:
-        img = ImageEnhance.Brightness(img).enhance(max(0.5, EXPOSURE_MEAN_MAX / mean))
+        img = ImageEnhance.Brightness(img).enhance(
+            max(EXPOSURE_MAX_DARKEN, EXPOSURE_MEAN_MAX / mean))
     elif 1.0 < mean < EXPOSURE_MEAN_MIN:
-        img = ImageEnhance.Brightness(img).enhance(min(1.6, EXPOSURE_MEAN_MIN / mean))
+        img = ImageEnhance.Brightness(img).enhance(
+            min(EXPOSURE_MAX_LIFT, EXPOSURE_MEAN_MIN / mean))
     return img
 
 
@@ -889,12 +959,12 @@ def _radial_mask(cx: float, cy: float, radius: float, softness: float = 1.0):
 
 
 def render_background(color: str, seed: int | None = None):
-    """Локальный фон в том же визуальном языке, что и AI-версия: тёмный
+    """Локальный фон в том же визуальном языке, что и AI-версия: глубокий
     premium-градиент выбранного цвета, мягкое свечение к середине, тонкие
     полупрозрачные линии, дуги и частицы по краям, спокойный центр.
 
     Тематики предмета здесь нет намеренно: её приносит модель. Фолбэк должен
-    оставаться нейтральным членом той же коллекции — темнота, мягкость и
+    оставаться нейтральным членом той же коллекции — глубина цвета, мягкость и
     пустая середина у него ровно те же, что у сгенерированной обложки.
 
     Используется, когда генерация недоступна (нет ключа, ошибка/таймаут
@@ -907,12 +977,19 @@ def render_background(color: str, seed: int | None = None):
     base = _rgb(PALETTE[color]["base"])
     rng = random.Random(seed)
 
-    # Глубина цвета: почти чёрный угол, насыщенное поле, светлый ореол и
-    # почти белая линия — всё внутри одной семьи (HLS-сдвиг не уводит тон).
-    night = _shift(base, light=0.17, sat=1.10)
-    field = _shift(base, light=0.42, sat=1.05)
-    glow = _shift(base, light=0.92, sat=0.80)
-    line = _shift(base, light=1.30, sat=0.50)
+    # Глубина цвета: тёмный (но цветной!) угол, насыщенное поле, светлый ореол
+    # и почти белая линия — всё внутри одной семьи (HLS-сдвиг не уводит тон).
+    #
+    # Коэффициенты подняты вместе с коридором экспозиции: на 0.17/0.42 фолбэк
+    # давал среднюю яркость около 29 из 255 — цвет угадывался только у самого
+    # свечения, а тонкая графика по краям пропадала в темноте. Фолбэк обязан
+    # попадать в тот же коридор, что и AI-версия, иначе normalize_exposure
+    # начнёт его переосветлять (см. EXPOSURE_MEAN_MIN).
+    k = _base_light_scale(base)
+    night = _shift(base, light=0.32 * k, sat=1.10)
+    field = _shift(base, light=0.75 * k, sat=1.05)
+    glow = _shift(base, light=1.05 * k, sat=0.80)
+    line = _shift(base, light=1.40, sat=0.45)
 
     # Диагональный градиент night → field: считаем мелко и растягиваем.
     flip = rng.random() < 0.5
@@ -933,14 +1010,19 @@ def render_background(color: str, seed: int | None = None):
     gy = 0.5 + rng.uniform(-0.07, 0.07)
     halo = Image.new("RGB", (COVER_WIDTH, COVER_HEIGHT), glow)
     img = Image.composite(halo, img, _radial_mask(gx, gy, rng.uniform(0.85, 1.05)).point(
-        lambda v: round(v * 0.24)))
+        lambda v: round(v * 0.28)))
 
-    # Виньетка — та самая premium-глубина: углы уходят в почти чёрный. Кладём
-    # её ДО тонкой графики: наоборот она гасила линии до полной невидимости —
+    # Виньетка — та самая premium-глубина: углы уходят в тень. Кладём её ДО
+    # тонкой графики: наоборот она гасила линии до полной невидимости —
     # «тонкие и полупрозрачные» не значит «которых нет».
-    vignette = _radial_mask(0.5, 0.5, 1.35, softness=0.75).point(lambda v: 255 - round(v * 0.80))
-    dark = Image.new("RGB", (COVER_WIDTH, COVER_HEIGHT), _shift(base, light=0.08, sat=1.0))
-    img = Image.composite(dark, img, vignette.point(lambda v: round(v * 0.55)))
+    #
+    # Ослаблена (было 0.80/0.55 поверх почти чёрного 0.08): виньетка съедала
+    # треть кадра в черноту, и обложка читалась как тёмный прямоугольник с
+    # пятном света посередине. Теперь угол — тень выбранного цвета, а не тень
+    # вообще.
+    vignette = _radial_mask(0.5, 0.5, 1.35, softness=0.75).point(lambda v: 255 - round(v * 0.62))
+    dark = Image.new("RGB", (COVER_WIDTH, COVER_HEIGHT), _shift(base, light=0.22 * k, sat=1.0))
+    img = Image.composite(dark, img, vignette.point(lambda v: round(v * 0.42)))
 
     # Тонкая графика по краям: пара длинных дуг, несколько прямых и редкие
     # частицы. Всё полупрозрачное и подальше от центра — фон вторичен.
