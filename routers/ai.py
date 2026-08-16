@@ -12,7 +12,8 @@ from services.rate_limit import RateLimiter
 from services import ai_quota
 from sqlalchemy.orm import Session
 
-from models import AiMessage, AiThread, Class as ClassModel
+from crud.posts import _LECTURE_TITLE_RE, _LECTURE_TITLE_STRIP_RE
+from models import AiMessage, AiThread, Annotation, Class as ClassModel, Posts
 from permissions import require_class_access
 from utils.time import utcnow
 
@@ -119,6 +120,14 @@ class ChatRequest(BaseModel):
     # Клиентский идентификатор запроса — используется только для отмены
     # (см. /chat/cancel и _pop_cancelled), на сам ответ ИИ не влияет.
     request_id: Optional[str] = None
+    # Вопрос по выделенному фрагменту лекции («Спросить AI» в просмотрщике).
+    # Либо id сохранённого выделения, либо сам фрагмент с указанием лекции —
+    # источник сервер разбирает сам (см. _fragment_context), клиентскому
+    # тексту про «лекцию N, стр. M» не доверяем.
+    annotation_id: Optional[int] = None
+    lecture_id: Optional[int] = None
+    lecture_page: Optional[int] = None
+    quote: Optional[str] = None
 
 
 class CancelChatRequest(BaseModel):
@@ -162,6 +171,65 @@ def _check_class_access(db: Session, class_id: int, current_user) -> None:
     if not cls or cls.org_type != current_user.org_type:
         raise HTTPException(status_code=404, detail="Предмет не найден")
     require_class_access(db, class_id, current_user)
+
+
+# Фрагмент лекции, про который спрашивает пользователь: где он в материалах
+# и что именно выделено. Клиент присылает id выделения (или сам текст с
+# lecture_id) — а не готовую формулировку: только так сервер знает, из какой
+# лекции и страницы взят фрагмент, и может проверить, что лекция вообще из
+# этого класса.
+MAX_QUOTE_CHARS = 2000
+
+
+def _fragment_context(db: Session, body: "ChatRequest", current_user) -> Optional[str]:
+    """Системный блок с источником выделения или None, если его не передали."""
+    quote = (body.quote or "").strip()
+    lecture_id = body.lecture_id
+    page = body.lecture_page
+
+    if body.annotation_id is not None:
+        row = (
+            db.query(Annotation)
+            .filter(
+                Annotation.id == body.annotation_id,
+                Annotation.user_id == current_user.id,
+            )
+            .first()
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Выделение не найдено")
+        quote = row.selected_text
+        lecture_id = row.lecture_id
+        page = row.page
+
+    if not quote or lecture_id is None:
+        return None
+
+    post = db.query(Posts).filter(Posts.id == lecture_id).first()
+    if post is None:
+        raise HTTPException(status_code=404, detail="Лекция не найдена")
+
+    m = _LECTURE_TITLE_RE.match(post.title or "")
+    lecture_class_id = int(m.group(1)) if m else None
+    # Лекция обязана быть из того же класса, что и чат: иначе фрагмент чужого
+    # предмета уехал бы в контекст этого.
+    if lecture_class_id is None or lecture_class_id != body.class_id:
+        raise HTTPException(
+            status_code=400, detail="Лекция не относится к этому предмету"
+        )
+
+    title = _LECTURE_TITLE_STRIP_RE.sub("", post.title or "").strip()
+    where = f'лекции «{title}»' if title else f"лекции #{post.id}"
+    if page:
+        where += f", страница {page}"
+    return (
+        "Пользователь спрашивает про конкретный фрагмент, который он выделил "
+        f"в материалах предмета — {where} (id лекции: {post.id}). Отвечай "
+        "именно про этот фрагмент, в контексте этой лекции, а не про предмет "
+        "вообще. Если фрагмент непонятен без окружающего материала — опирайся "
+        "на материалы этой лекции ниже.\n\nВыделенный фрагмент:\n"
+        f"«{quote[:MAX_QUOTE_CHARS]}»"
+    )
 
 
 def _get_owned_thread(db: Session, user_id: int, thread_id: int) -> AiThread:
@@ -317,6 +385,7 @@ async def ai_chat(
     # body.lecture_context (deprecated, приходит от клиента и игнорируется).
     server_lecture_context = ""
     requested_lecture_number: Optional[int] = None
+    fragment_context: Optional[str] = None
     if body.class_id is None:
         if body.thread_id is None:
             raise HTTPException(
@@ -332,6 +401,7 @@ async def ai_chat(
         )
     else:
         _check_class_access(db, body.class_id, current_user)
+        fragment_context = _fragment_context(db, body, current_user)
         # RAG вместо client-side lecture_context: ищем релевантные чанки по
         # ПОСЛЕДНЕМУ вопросу пользователя (не по всей истории — история
         # может увести embedding-запрос в сторону от текущего вопроса) и
@@ -344,6 +414,11 @@ async def ai_chat(
                 (m for m in reversed(body.messages) if m.role == "user"), None
             )
             query_text = _content_to_text(last_user_msg.content) if last_user_msg else ""
+            # Спросили про выделенный фрагмент — ищем материалы по нему, а не
+            # только по фразе «объясни этот фрагмент», в которой нет ни одного
+            # слова из самой лекции.
+            if body.quote:
+                query_text = f"{body.quote}\n{query_text}"
             from services import rag_search
             chunks, requested_lecture_number = await rag_search.search_class_materials(
                 db, body.class_id, current_user.org_type, query_text,
@@ -426,6 +501,11 @@ async def ai_chat(
         )})
     else:
         payload["messages"].insert(0, {"role": "system", "content": math_instruction})
+
+    # Идёт первым в списке: источник фрагмента важнее общих инструкций и не
+    # должен потеряться среди материалов класса.
+    if fragment_context:
+        payload["messages"].insert(0, {"role": "system", "content": fragment_context})
 
     try:
         async with httpx.AsyncClient(timeout=90.0) as client:

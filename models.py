@@ -600,3 +600,57 @@ class Report(Base):
     )
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class Annotation(Base):
+    """Выделение текста в материале лекции: цвет, заметка и место в тексте.
+
+    Общая сущность для приложения и сайта — выделение, сделанное на телефоне,
+    должно открыться на сайте и наоборот, поэтому хранится на сервере, а не в
+    локальном хранилище клиента.
+
+    Про позицию. Экраны и рендереры у клиентов разные (PDF в pdf.js на сайте,
+    свой текст лекции в приложении), поэтому никаких координат/пикселей: место
+    описывается ТОЛЬКО текстом — смещения start_offset/end_offset в потоке
+    текста «поверхности» (страница PDF, тело лекции) плюс якорь по самому
+    тексту (prefix/selected_text/suffix, как TextQuoteSelector из W3C Web
+    Annotation). Смещения дают точное попадание, когда документ отрисован так
+    же, а prefix/suffix позволяют найти фрагмент заново, если разметка
+    разъехалась (другой рендерер, другая версия файла) — без этого выделение
+    молча «съезжало» бы на соседний текст.
+
+    surface_key = страница PDF (1..N) либо 0 для документов без страниц
+    (тело лекции, docx, txt) — вместе с file_index задаёт поверхность внутри
+    лекции.
+    """
+    __tablename__ = "annotations"
+    __table_args__ = (
+        Index("ix_annotations_user_lecture", "user_id", "lecture_id"),
+        Index("ix_annotations_user_updated", "user_id", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Пост-лекция, к которой относится выделение. CASCADE: удалили лекцию —
+    # выделениям в ней не на что ссылаться.
+    lecture_id: Mapped[int] = mapped_column(
+        ForeignKey("posts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Класс лекции — по нему проверяется доступ и собирается контекст для ИИ.
+    class_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    # Индекс вложения внутри лекции; -1 — текст самой лекции (у него файла нет).
+    file_index: Mapped[int] = mapped_column(Integer, nullable=False, default=-1)
+    page: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    selected_text: Mapped[str] = mapped_column(Text, nullable=False)
+    prefix: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    suffix: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    start_offset: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    end_offset: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    color: Mapped[str] = mapped_column(String(16), nullable=False, default="yellow")
+    comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )

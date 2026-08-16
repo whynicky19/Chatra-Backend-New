@@ -19,7 +19,7 @@ from services.file_urls import sign_uploads_in_text, verify_signature
 from services.storage import StorageError, get_storage_service, is_public_key
 from db import engine
 from models import Base
-from routers import auth, admin, users, posts, uploads, ai, notifications, push, moderation
+from routers import auth, admin, users, posts, uploads, ai, notifications, push, moderation, annotations
 from routers.assignments import router as assignments_router
 from routers.classes import router as classes_router, rating_router
 from routers.cohorts import router as cohorts_router
@@ -137,6 +137,7 @@ app.include_router(posts.router, prefix="/api")
 app.include_router(uploads.router, prefix="/api")
 app.include_router(ai.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
+app.include_router(annotations.router, prefix="/api")
 app.include_router(push.router, prefix="/api")
 app.include_router(assignments_router, prefix="/api")
 app.include_router(classes_router, prefix="/api")
