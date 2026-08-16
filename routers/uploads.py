@@ -177,7 +177,10 @@ async def get_file_text(
 # .docx уже открывается на клиенте через docx-preview — сюда попадает только
 # старый бинарный .doc (и .rtf заодно, раз конвертер уже есть), для которых
 # в браузере нет разумной клиентской библиотеки.
-_OFFICE_PREVIEW_EXTS = {"ppt", "pptx", "doc", "rtf"}
+# docx здесь тоже есть, хотя сайт рисует его сам (docx-preview): в приложении
+# своего рендерера docx нет, а PDF-версия открывается в общем просмотрщике —
+# с выделениями и заметками, как у остальных материалов.
+_OFFICE_PREVIEW_EXTS = {"ppt", "pptx", "doc", "docx", "rtf"}
 
 
 def _convert_office_to_pdf(content: bytes, ext: str) -> bytes:
