@@ -124,11 +124,20 @@ _FILE_TEXT_CACHE_MAX = 256
 def _verify_signed_upload_url(url: str) -> str:
     """Проверяет подпись файлового URL (SEC-6: без этого любой авторизованный
     вытащил бы чужой файл по угаданному пути) и возвращает file_path (без базы
-    и query). Бросает HTTPException при недопустимом/просроченном URL."""
-    from services.url_safety import is_safe_fetch_url
-    if not is_safe_fetch_url(url):
-        raise HTTPException(status_code=400, detail="Недопустимый URL файла")
+    и query). Бросает HTTPException при недопустимом/просроченном URL.
 
+    Хост в переданном URL НЕ проверяется намеренно. Подпись считается только от
+    пути файла, а клиенты законно подменяют хост на свой apiBase: мобильное
+    приложение (fixUrl в api_service.dart) и сайт (composables/useFileUrl.ts)
+    делают это, чтобы файлы открывались с телефона и из туннеля, где домен
+    APP_BASE_URL не резолвится. Раньше такой URL получал 400 «Недопустимый URL
+    файла» — из-за этого Word и презентации не открывались в приложении вовсе.
+
+    От SSRF защищает не хост запроса, а сама подпись: путь без валидной
+    подписи сюда не проходит, а качать файл вызывающий код обязан по адресу,
+    собранному из APP_BASE_URL (см. signed_source_url ниже), а не по тому, что
+    пришло от клиента.
+    """
     from urllib.parse import urlparse, parse_qs, unquote
     from services.file_urls import verify_signature
     parsed = urlparse(url)
@@ -152,6 +161,15 @@ def _verify_signed_upload_url(url: str) -> str:
     return file_path
 
 
+def _signed_source_url(file_path: str) -> str:
+    """Свежая подписанная ссылка на свой же файл — по ней сервер и качает.
+    Никогда не ходим по адресу, который прислал клиент (он мог подменить хост)."""
+    from services.file_urls import sign_upload_url
+    from urllib.parse import quote
+    base = os.getenv("APP_BASE_URL", "http://localhost:8000").rstrip("/")
+    return sign_upload_url(f"{base}/api/uploads/{quote(file_path)}")
+
+
 @router.get("/utils/file-text")
 async def get_file_text(
     url: str,
@@ -166,7 +184,7 @@ async def get_file_text(
         _file_text_cache.move_to_end(file_path)
         return {"text": cached}
     from services.ai_grader import _fetch_file_text
-    text = await _fetch_file_text(url)
+    text = await _fetch_file_text(_signed_source_url(file_path))
     if text:
         _file_text_cache[file_path] = text
         if len(_file_text_cache) > _FILE_TEXT_CACHE_MAX:
@@ -174,13 +192,35 @@ async def get_file_text(
     return {"text": text}
 
 
-# .docx уже открывается на клиенте через docx-preview — сюда попадает только
-# старый бинарный .doc (и .rtf заодно, раз конвертер уже есть), для которых
-# в браузере нет разумной клиентской библиотеки.
-# docx здесь тоже есть, хотя сайт рисует его сам (docx-preview): в приложении
-# своего рендерера docx нет, а PDF-версия открывается в общем просмотрщике —
-# с выделениями и заметками, как у остальных материалов.
+# .doc/.rtf/.ppt/.pptx — форматы, для которых в браузере нет разумного
+# рендерера. docx здесь тоже есть, хотя сайт рисует его сам (docx-preview):
+# в приложении своего рендерера docx нет, а PDF-версия открывается в общем
+# просмотрщике — с выделениями и заметками, как у остальных материалов.
 _OFFICE_PREVIEW_EXTS = {"ppt", "pptx", "doc", "docx", "rtf"}
+
+# LibreOffice ищем не только в PATH: uvicorn, запущенный не из интерактивной
+# оболочки (launchd, IDE, systemd), не видит /opt/homebrew/bin, и конвертация
+# падала с «LibreOffice не установлен» на машине, где он стоит.
+_SOFFICE_CANDIDATES = (
+    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    "/opt/homebrew/bin/soffice",
+    "/usr/local/bin/soffice",
+    "/usr/bin/soffice",
+    "/usr/bin/libreoffice",
+    "/snap/bin/libreoffice",
+)
+
+
+def _soffice_path() -> str:
+    """Путь к soffice: сначала PATH, затем обычные места установки."""
+    import shutil
+    found = shutil.which("soffice") or shutil.which("libreoffice")
+    if found:
+        return found
+    for candidate in _SOFFICE_CANDIDATES:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return "soffice"  # пусть упадёт с понятной ошибкой ниже
 
 
 def _convert_office_to_pdf(content: bytes, ext: str) -> bytes:
@@ -196,7 +236,7 @@ def _convert_office_to_pdf(content: bytes, ext: str) -> bytes:
         try:
             result = subprocess.run(
                 [
-                    "soffice", "--headless", "--norestore", "--convert-to", "pdf",
+                    _soffice_path(), "--headless", "--norestore", "--convert-to", "pdf",
                     "--outdir", tmpdir, src,
                 ],
                 capture_output=True, timeout=60,
@@ -235,8 +275,7 @@ async def get_preview_pdf(
     storage = get_storage_service()
 
     if not await run_in_threadpool(storage.exists, cache_key):
-        from services.file_urls import sign_upload_url
-        signed_source = sign_upload_url(url)
+        signed_source = _signed_source_url(file_path)
         import httpx
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(signed_source)
