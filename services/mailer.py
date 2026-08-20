@@ -1,119 +1,243 @@
-"""Отправка транзакционных писем через SMTP (Brevo и совместимые).
+"""Отправка транзакционных писем через Brevo HTTP API.
 
-Конфигурация из окружения (.env):
-  SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS  — параметры SMTP-провайдера;
-  SMTP_FROM        — адрес отправителя (напр. noreply@chatra.kz);
-  SMTP_FROM_NAME   — имя отправителя (по умолчанию 'Chatra').
+Конфигурация из окружения:
 
-Если SMTP не сконфигурирован (нет SMTP_HOST) — письмо не отправляется, код
-пишется в лог (dev-режим, чтобы флоу работал до подключения Brevo). При
-OTP_DEBUG=1 код дополнительно возвращается в ответе API (только для разработки
-и тестов — в проде НЕ включать)."""
+    BREVO_API_KEY   — API key Brevo
+    SMTP_FROM      — подтверждённый email отправителя
+    SMTP_FROM_NAME — имя отправителя (по умолчанию Chatra)
+
+Необходимые зависимости:
+    httpx
+
+Для разработки можно включить:
+    OTP_DEBUG=1
+
+Тогда dev-код дополнительно возвращается API там, где это предусмотрено
+бэкендом.
+"""
+
 import logging
 import os
-import smtplib
-import ssl
-import time
-from email.message import EmailMessage
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
+BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 
-def smtp_configured() -> bool:
-    return bool(os.getenv("SMTP_HOST", "").strip())
+
+def brevo_configured() -> bool:
+    """Проверяет, настроен ли Brevo API."""
+    return bool(os.getenv("BREVO_API_KEY", "").strip())
 
 
 def otp_debug() -> bool:
+    """DEV-режим для тестирования OTP."""
     return os.getenv("OTP_DEBUG", "").strip() == "1"
 
 
-def send_email(to: str, subject: str, text_body: str, html_body: str | None = None) -> bool:
-    """Best-effort отправка. Возвращает True, если письмо ушло; False — если
-    SMTP не настроен или отправка не удалась (код при этом уже в логе)."""
-    if not smtp_configured():
-        logger.warning("SMTP не настроен — письмо для %s не отправлено. Тема: %s", to, subject)
+def send_email(
+    to: str,
+    subject: str,
+    text_body: str,
+    html_body: str | None = None,
+) -> bool:
+    """Отправляет письмо через Brevo HTTP API.
+
+    Возвращает:
+        True  — письмо успешно принято Brevo.
+        False — конфигурация отсутствует или отправка не удалась.
+    """
+
+    api_key = os.getenv("BREVO_API_KEY", "").strip()
+
+    if not api_key:
+        logger.warning(
+            "BREVO_API_KEY не настроен — письмо для %s не отправлено. "
+            "Тема: %s",
+            to,
+            subject,
+        )
         return False
 
-    host = os.getenv("SMTP_HOST").strip()
-    port = int(os.getenv("SMTP_PORT", "587"))
-    user = os.getenv("SMTP_USER", "").strip()
-    password = os.getenv("SMTP_PASS", "").strip()
-    from_addr = os.getenv("SMTP_FROM", user or "noreply@chatra.app").strip()
-    from_name = os.getenv("SMTP_FROM_NAME", "Chatra").strip()
+    from_addr = os.getenv(
+        "SMTP_FROM",
+        "noreply@chatra.app",
+    ).strip()
 
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = f"{from_name} <{from_addr}>"
-    msg["To"] = to
-    msg.set_content(text_body)
+    from_name = os.getenv(
+        "SMTP_FROM_NAME",
+        "Chatra",
+    ).strip()
+
+    payload = {
+        "sender": {
+            "name": from_name,
+            "email": from_addr,
+        },
+        "to": [
+            {
+                "email": to,
+            }
+        ],
+        "subject": subject,
+        "textContent": text_body,
+    }
+
     if html_body:
-        msg.add_alternative(html_body, subtype="html")
+        payload["htmlContent"] = html_body
 
-    def _deliver() -> None:
-        if port == 465:
-            with smtplib.SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=10) as s:
-                if user:
-                    s.login(user, password)
-                s.send_message(msg)
-        else:
-            with smtplib.SMTP(host, port, timeout=10) as s:
-                s.starttls(context=ssl.create_default_context())
-                if user:
-                    s.login(user, password)
-                s.send_message(msg)
+    headers = {
+        "accept": "application/json",
+        "api-key": api_key,
+        "content-type": "application/json",
+    }
 
-    # Повторяем только временные отказы (4.x.x, обычно rate limit).
-    # Постоянные (5.x.x — нет ящика, отказ авторизации) повторять бессмысленно.
-    delays = (2, 8)
-    for attempt in range(len(delays) + 1):
-        try:
-            _deliver()
-            return True
-        except smtplib.SMTPResponseException as e:
-            transient = 400 <= e.smtp_code < 500
-            if not transient or attempt == len(delays):
-                logger.error(
-                    "Письмо на %s не отправлено (%s, код %s): %s",
-                    to,
-                    "временная ошибка, попытки исчерпаны" if transient else "постоянная ошибка",
-                    e.smtp_code,
-                    e.smtp_error,
-                )
-                return False
-            logger.warning(
-                "Временный отказ SMTP для %s (код %s), повтор через %d с",
-                to, e.smtp_code, delays[attempt],
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.post(
+                BREVO_API_URL,
+                headers=headers,
+                json=payload,
             )
-            time.sleep(delays[attempt])
-        except Exception as e:
-            logger.error("Ошибка отправки письма на %s: %s", to, e)
-            return False
-    return False
+
+        if 200 <= response.status_code < 300:
+            logger.info(
+                "Письмо успешно отправлено через Brevo на %s",
+                to,
+            )
+            return True
+
+        logger.error(
+            "Brevo не отправил письмо на %s. "
+            "HTTP %s: %s",
+            to,
+            response.status_code,
+            response.text[:1000],
+        )
+        return False
+
+    except httpx.TimeoutException:
+        logger.error(
+            "Таймаут при обращении к Brevo API для %s",
+            to,
+        )
+        return False
+
+    except httpx.RequestError as e:
+        logger.error(
+            "Ошибка соединения с Brevo API для %s: %s",
+            to,
+            e,
+        )
+        return False
+
+    except Exception as e:
+        logger.exception(
+            "Неожиданная ошибка отправки письма на %s: %s",
+            to,
+            e,
+        )
+        return False
 
 
-def send_code_email(to: str, code: str, purpose: str) -> bool:
-    """Письмо с 6-значным кодом. purpose: 'verify' | 'reset'."""
+def send_code_email(
+    to: str,
+    code: str,
+    purpose: str,
+) -> bool:
+    """Отправляет письмо с 6-значным кодом.
+
+    purpose:
+        verify — подтверждение email
+        reset  — сброс пароля
+    """
+
     if purpose == "reset":
         subject = "Сброс пароля Chatra"
-        intro = "Вы запросили сброс пароля. Введите код в приложении:"
+        intro = (
+            "Вы запросили сброс пароля. "
+            "Введите этот код в приложении:"
+        )
     else:
         subject = "Подтверждение email в Chatra"
-        intro = "Добро пожаловать в Chatra! Введите код для подтверждения email:"
+        intro = (
+            "Добро пожаловать в Chatra! "
+            "Введите этот код для подтверждения email:"
+        )
 
     text_body = (
         f"{intro}\n\n"
         f"    {code}\n\n"
-        f"Код действует 10 минут. Если вы не запрашивали это письмо — проигнорируйте его."
+        "Код действует 10 минут. "
+        "Если вы не запрашивали это письмо — проигнорируйте его."
     )
-    html_body = f"""\
-<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:440px;margin:0 auto;padding:24px;color:#1a1a1a">
-  <h2 style="margin:0 0 8px">Chatra</h2>
-  <p style="color:#555;font-size:15px;line-height:1.5">{intro}</p>
-  <div style="font-size:34px;font-weight:800;letter-spacing:8px;text-align:center;
-              background:#f4f5f7;border-radius:14px;padding:20px 0;margin:18px 0;color:#111">{code}</div>
-  <p style="color:#888;font-size:13px;line-height:1.5">Код действует 10 минут. Если вы не запрашивали это письмо, просто проигнорируйте его.</p>
-</div>"""
-    # Всегда логируем код в dev (без SMTP), чтобы флоу можно было пройти вручную.
-    if not smtp_configured():
-        logger.warning("[DEV] Код %s для %s (%s)", code, to, purpose)
-    return send_email(to, subject, text_body, html_body)
+
+    html_body = f"""
+<div style="
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    max-width:440px;
+    margin:0 auto;
+    padding:24px;
+    color:#1a1a1a;
+">
+    <h2 style="margin:0 0 8px;">Chatra</h2>
+
+    <p style="
+        color:#555;
+        font-size:15px;
+        line-height:1.5;
+    ">
+        {intro}
+    </p>
+
+    <div style="
+        font-size:34px;
+        font-weight:800;
+        letter-spacing:8px;
+        text-align:center;
+        background:#f4f5f7;
+        border-radius:14px;
+        padding:20px 0;
+        margin:18px 0;
+        color:#111;
+    ">
+        {code}
+    </div>
+
+    <p style="
+        color:#888;
+        font-size:13px;
+        line-height:1.5;
+    ">
+        Код действует 10 минут.
+        Если вы не запрашивали это письмо,
+        просто проигнорируйте его.
+    </p>
+</div>
+"""
+
+    # Для локальной разработки.
+    if not brevo_configured():
+        logger.warning(
+            "[DEV] Brevo не настроен. Код %s для %s (%s)",
+            code,
+            to,
+            purpose,
+        )
+        return False
+
+    if otp_debug():
+        logger.warning(
+            "[OTP_DEBUG] Код %s для %s (%s)",
+            code,
+            to,
+            purpose,
+        )
+
+    return send_email(
+        to=to,
+        subject=subject,
+        text_body=text_body,
+        html_body=html_body,
+    )
