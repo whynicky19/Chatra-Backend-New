@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# ---- Builder: compile/install Python deps into an isolated prefix ----
+# ---- Builder ----
 FROM python:3.12-slim AS builder
 
 WORKDIR /app
@@ -10,22 +10,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# ---- Runtime: slim image with only what's needed to run the app ----
+# ---- Runtime ----
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Shared libs needed at runtime by opencv/easyocr/torch (headless, no X11).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libglib2.0-0 \
         libgl1 \
         libgomp1 \
         curl \
+        libreoffice \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd -r app && useradd -r -g app -d /app app
+    && groupadd -r app \
+    && useradd -r -g app -d /app app
 
 COPY --from=builder /install /usr/local
 
