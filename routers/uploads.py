@@ -2,7 +2,7 @@ import os
 import logging
 import tempfile
 from collections import OrderedDict
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 from deps import get_current_user
@@ -254,6 +254,29 @@ def _convert_office_to_pdf(content: bytes, ext: str) -> bytes:
             return f.read()
 
 
+def _prewarm_office_preview(file_path: str, ext: str, content: bytes) -> None:
+    """Фоновая конвертация Office → PDF сразу после загрузки файла.
+
+    Первый запрос preview-pdf для нового файла иначе занимает 5-15 секунд
+    (холодный старт soffice + скачивание исходника из R2 + обратный PUT):
+    пользователь смотрит на спиннер «конвертация…». Здесь байты исходника
+    уже в памяти (их только что загрузили), поэтому конвертируем сразу и
+    кладём в тот же кэш R2 с тем же ключом — к моменту открытия файла
+    GET /utils/preview-pdf отвечает мгновенно. Ошибки не роняем: превью
+    просто сконвертируется лениво при первом запросе."""
+    import hashlib
+    cache_key = f"{PREVIEW_CATEGORY}/{hashlib.sha256(file_path.encode()).hexdigest()}.pdf"
+    try:
+        storage = get_storage_service()
+        if storage.exists(cache_key):
+            return
+        pdf_bytes = _convert_office_to_pdf(content, ext)
+        storage.upload(pdf_bytes, cache_key, "application/pdf")
+        logger.info("Preview prewarmed: %s", file_path)
+    except Exception as e:
+        logger.warning("Preview prewarm failed for %s: %s", file_path, e)
+
+
 @router.get("/utils/preview-pdf")
 async def get_preview_pdf(
     url: str,
@@ -301,6 +324,7 @@ DEFAULT_CATEGORY = "attachments"
 async def upload_file(
     file: UploadFile = File(...),
     category: str = Form(DEFAULT_CATEGORY),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     current_user=Depends(get_current_user),
 ):
     if not file.filename:
@@ -359,5 +383,16 @@ async def upload_file(
         )
     except StorageError as e:
         raise HTTPException(status_code=502, detail=f"Не удалось загрузить файл в хранилище: {e}")
+
+    # Word/презентации конвертируем в PDF в фоне, пока файл « свежий»:
+    # байты уже здесь, и к первому открытию превью будет готово.
+    if ext in _OFFICE_PREVIEW_EXTS:
+        from urllib.parse import urlparse, unquote
+        prefix = "/api/uploads/"
+        path = urlparse(file_url).path
+        if path.startswith(prefix):
+            background_tasks.add_task(
+                _prewarm_office_preview, unquote(path[len(prefix):]), ext, content,
+            )
 
     return JSONResponse(content={"file_url": file_url, "filename": file.filename})
