@@ -66,6 +66,7 @@ PyYAML==6.0.3
 regex==2026.4.4
 requests==2.33.1
 rsa==4.9.1
+sentry-sdk[fastapi]==2.19.2
 s3transfer==0.19.2
 scikit-image==0.26.0
 scipy==1.17.1
