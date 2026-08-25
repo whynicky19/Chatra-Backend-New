@@ -1,10 +1,6 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-# Sentry — до всех остальных импортов, чтобы ловить исключения и на старте.
-from services.monitoring import init_monitoring
-init_monitoring()
-
 import asyncio
 import logging
 import os
@@ -289,11 +285,3 @@ def serve_upload(
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-
-# Тестовый эндпоинт для проверки Sentry/Telegram-алертов. Активен ТОЛЬКО при
-# SENTRY_TEST_MODE=1 в окружении — в обычном проде вернёт 404 и ничего не сломает.
-if os.getenv("SENTRY_TEST_MODE") == "1":
-    @app.get("/api/__sentry_test")
-    def sentry_test():
-        raise RuntimeError("SENTRY TEST: тестовое исключение backend")
