@@ -3,8 +3,9 @@
 
 Обложка — это ДВА независимых слоя, и разделение принципиально:
 
-  1. фон — глубокий premium-баннер 16:9 (генерирует OpenAI, см. services/
-     cover_generator.py; при любом сбое — локальный render_background);
+  1. фон — premium-баннер 16:9 с уникальной тематической сценой (генерирует
+     OpenAI, см. services/cover_generator.py; при любом сбое — локальный
+     render_background);
   2. главный символ предмета — НЕ часть картинки. Его рисуют клиенты поверх
      фона нативным компонентом (components/classes/SubjectCover.vue на вебе,
      widgets/subject_cover.dart в приложении).
@@ -15,25 +16,33 @@
 одной толщины линии и одного стиля во всех предметах, его можно перекрасить или
 заменить без перегенерации всех обложек.
 
-Визуальный ориентир — глубокий premium / Apple-like: насыщенный выбранный цвет
-с мягким градиентом, много свободного пространства, мягкое свечение и глубина.
-«Глубокий» здесь — НЕ «чёрный»: первая версия системы была выкручена в темноту
-(промпт просил near-black по углам, коридор экспозиции резал среднюю яркость до
-58 из 255), и обложки выходили почти чёрными прямоугольниками, на которых не
-читались ни цвет, ни графика. Цвет обязан быть виден в каждой точке кадра,
-включая углы; ориентир средней яркости — примерно четверть шкалы, а не десятая.
-Тематика предмета живёт в ФОНЕ: тонкие полупрозрачные линии, сетки, волны,
-частицы и другая геометрия, встроенные в градиент и уходящие в него, а не набор
-отдельных картинок. Главный акцент обложки — символ, который кладёт UI, поэтому
-середина кадра остаётся спокойной: фон вторичен и создаёт атмосферу.
+Визуальный ориентир — premium / Apple-like: насыщенный выбранный цвет с мягким
+градиентом, контролируемая глубина, тематическая сцена в духе предмета.
+Цвет обязан быть виден в каждой точке кадра; средняя яркость — примерно
+четверть шкалы, без почти-чёрных углов и без «прожектора» в центре.
+
+Главный сдвиг текущей версии — ОТ «у всех одинаковая тарелка + иконка» К
+«у каждого предмета своя визуальная сцена». Раньше промпт в обязательном
+порядке просил модель нарисовать «softly glowing stage» в центре под иконку:
+выходила одна и та же светящаяся платформа на всех обложках, а тематика
+предмета сводилась к двум-трём полупрозрачным линиям у краёв. Теперь:
+
+  • иконка НЕ привязана к платформе — она может плавать, быть частью
+    технической структуры или стоять в центре абстрактной композиции;
+  • название предмета определяет СЦЕНУ, а не «несколько деталей у краёв»;
+  • тематических элементов 3–6, они видимы, но не конкурируют с иконкой;
+  • все обложки остаются в одной дизайн-системе: один градиент, одно
+    освещение, одна толщина линий, один уровень деталировки.
 
 Что здесь уже пробовали и почему не вернулись:
-  • яркая «редакторская» иллюстрация из крупных цветных форм — обложки
-    получались нарядными, но каждая жила своей жизнью, коллекции не было;
-  • светлая пастель и чистые полосы под иконку — выглядело как SaaS-дашборд;
-  • композиция без спокойной середины — белый символ терялся в декоре.
-Отсюда нынешний набор правил: глубокий цвет (но не чернота), тонко, тематично,
-с пустой серединой.
+  • «softly glowing stage» под иконку у каждого предмета — одинаковая
+    тарелка на всех обложках, тематика угадывалась только по цвету;
+  • «two or three faint motifs near the edges» — тематика была почти
+    невидимой, дизайн-система доминировала над предметом;
+  • «no more than three motifs, must never compete with the centre» —
+    мотивы гасились до полной прозрачности.
+Отсюда нынешний набор правил: у каждого предмета СВОЯ сцена, в одном
+визуальном языке коллекции.
 """
 import colorsys
 import logging
@@ -635,115 +644,272 @@ def catalog() -> dict:
 
 
 # ── Промпт ──────────────────────────────────────────────────────────────────
-# Общий каркас стиля — один на все обложки. Меняются только цвет и тематика
-# фона, поэтому предметы выглядят одной коллекцией.
+# Общий каркас стиля — один на все обложки. Меняются только цвет, сцена и
+# раскладка, поэтому предметы выглядят одной коллекцией.
 #
 # Правки формулировок здесь меняют вид ВСЕХ будущих обложек: этот текст и есть
 # дизайн-система. Прежние обложки при этом не трогаются — каждая живёт своей
 # картинкой в хранилище, пока её не перегенерируют.
 #
-# Принцип дизайн-системы (2026, редизайн по референсу «soft hero object»):
-#   ICON   = MAIN FOCUS        — центр кадра это СЦЕНА под иконку, которую
-#                                клиенты кладут поверх картинки; сама модель
-#                                глиф не рисует, только свето-глубину под него;
-#   COLOR  = VISUAL IDENTITY   — один оттенок, один мягкий градиент;
-#   SUBJECT NAME = BACKGROUND CONTEXT — название предмета лишь источник двух-
-#                                трёх ненавязчивых мотивов у краёв кадра.
+# Принцип дизайн-системы:
+#   ICON   = MAIN FOCUS        — клиенты кладут символ поверх картинки.
+#                                Модель НЕ рисует под него платформу, пьедестал
+#                                или сцену-сцену-тарелку: иконка может плавать в
+#                                пространстве, стоять в центре абстрактной
+#                                композиции или быть частью технической
+#                                структуры. Главное — чтобы иконка оставалась
+#                                читаемой, а вокруг неё была тематика;
+#   COLOR  = VISUAL IDENTITY   — один оттенок определяет атмосферу всей сцены;
+#   SUBJECT NAME = SCENE       — название предмета определяет САМУ сцену, а не
+#                                «несколько деталей у краёв»: для Computer
+#                                Mathematics это координатная система + 3D-
+#                                поверхность + формулы, для Programming —
+#                                структуры кода и нодовый граф, для Dealing with
+#                                Data — графики и визуализации.
 #
-# Баланс инструкций тут важнее формулировок. Версия на 4000 символов и 34
-# запрета (одиннадцать из которых требовали пустоты: «hairline», «low
-# contrast», «generous empty space», «empty margin along all four edges»,
-# «stays dark and calm») дала ровно то, что и должна была: модель выполнила
-# все ограничения сразу, не нарисовав ничего — голый градиент с парой пылинок.
-# Поэтому сначала ЧТО рисуем и сколько этого должно быть, и только потом —
-# ограничения, каждое ровно по одному разу.
+# Баланс инструкций тут важнее формулировок. Сначала ЧТО рисуем и сколько
+# этого должно быть, и только потом — ограничения, каждое ровно по одному разу.
 _BASE_STYLE = (
     "Artwork for a course cover in a premium educational application, "
     "Apple-like design language: minimalistic, elegant, modern, clean and "
     "soft, in a wide 16:9 frame. "
-    "Subject of the course: \"{subject}\" — use it only as background "
-    "context, never write it or any other word on the image. "
+    "Subject of the course: \"{subject}\". "
 
-    # 1. Единственный фокус композиции — центральная сцена под иконку.
-    # Яркость сцены названа умеренной специально: кадр проходит через
-    # normalize_exposure, и центр светлее углов больше чем в ~2.2 раза гасится
-    # радиальной маской — белый «прожектор» превращался в грязное пятно.
-    "The composition has ONE clear focal point at the centre: a softly "
-    "glowing stage for the app's subject icon — a calm, gently luminous "
-    "pool of the same hue as the background, lifted toward pastel, only "
-    "moderately brighter than the field around it, with a wide soft halo "
-    "and a whisper of depth beneath it, like a shallow pedestal of light. "
-    "Its light is tinted, never white and never a spotlight. Every element "
-    "of the drawing defers to this central glow: it is the calmest, most "
-    "important place in the frame, and nothing may stand inside it. "
+    # 1. Сцена определяется предметом, а не общим шаблоном.
+    "Build a UNIQUE visual scene for this subject — not a generic template. "
+    "The composition is a single coherent scene that immediately tells the "
+    "viewer what this course is about. For this subject, the scene must "
+    "contain: {scene}. "
 
-    # 2. Предмет — источник фоновых мотивов, всегда второстепенных.
-    "Around that centre, the subject appears only as quiet background "
-    "context: two or three large, understated motifs of this field — for "
-    "example: {motif} — drifting near the left and right edges. These are "
-    "only examples: if they do not fit the subject, use elements that do, "
-    "the subject name always wins. Draw them as soft, semi-transparent "
-    "shapes in a pale tint of the background colour, gently fading into "
-    "the gradient, with a subtle matte 3D roundness. They are a hint of "
-    "the discipline, not a catalogue: no more than three motifs, clear air "
-    "between them, and they must never compete with the central glow in "
-    "brightness or detail. "
+    # 2. Иконка — главный объект, без пьедестала.
+    "The app will place its subject icon on top of this image later. Do NOT "
+    "draw a glowing pedestal, a circular platform, a stage, a halo, a "
+    "spotlight, a disc, a circular base or any other dedicated \"stage for "
+    "the icon\" — the icon may float in the air, sit inside the scene, be "
+    "part of a technical structure, or be surrounded by thematic elements. "
+    "Leave the area where the icon will land relatively calm and free of "
+    "fine detail so the icon remains readable, but do not reserve an empty "
+    "circle. The scene belongs to the subject, not to a stage. "
 
-    # 3. Цветовая идентичность и свет.
-    "Colour identity: {color}. The whole frame is one smooth, subtle "
-    "gradient of this single hue — soft, airy and premium, gently deeper "
-    "toward the corners, never black, never grey, never oversaturated, no "
-    "neon. Light is soft and diffused, like frosted glass lit from behind; "
-    "transitions between tones are slow and silky. "
+    # 3. Тематические элементы — заметный второй уровень.
+    "Around and behind the icon area, place 3 to 6 thematic elements of "
+    "this field — for example: {motif}. They are a HINT of the discipline, "
+    "not a faint decoration: they must be clearly visible (soft but present, "
+    "in a pale tint of the background colour, with a gentle matte 3D "
+    "roundness), and arranged as one coherent composition rather than "
+    "scattered randomly. They may be in front of, beside, or behind the "
+    "icon area, in the background, on the sides, or partially behind the "
+    "main subject. They are not allowed to be nearly transparent or barely "
+    "discernible — the user should be able to read the topic of the course "
+    "from the image alone. At the same time, they must not overwhelm the "
+    "icon: the icon is the loudest, the thematic elements are the second "
+    "loudest, the gradient is the quietest. "
 
-    # 4. Коллекция: единая система у всех предметов.
+    # 4. Цветовая идентичность и свет.
+    "Colour identity: {color}. The whole frame lives in this single hue — "
+    "soft, airy and premium, gently deeper toward the corners but never "
+    "black, never grey, never oversaturated, no neon. Light is soft and "
+    "diffused, like frosted glass lit from behind; transitions between "
+    "tones are slow and silky. Subtle 3D depth is welcome on the thematic "
+    "elements. "
+
+    # 5. Коллекция: единая система у всех предметов.
     "Every cover in this collection follows exactly the same visual system: "
-    "the same central-glow composition, the same softness, the same level "
-    "of detail, the same lighting and the same treatment of background "
-    "motifs. Only the colour, the chosen motifs and their placement change "
-    "from subject to subject. "
+    "the same gradient treatment, the same softness, the same level of "
+    "detail, the same lighting, the same line weight and the same treatment "
+    "of thematic elements. Only the colour, the scene and the chosen motifs "
+    "change from subject to subject — the visual language is shared, the "
+    "composition is unique. "
 
-    # 5. Запреты — один короткий список в конце.
-    "Never draw text, letters, numbers or logos; never draw an icon or "
-    "glyph shape at the centre — the glow itself is the stage, the "
-    "interface adds the icon later; no busy backgrounds, no collages of "
-    "many objects, no rows of icons, no cyberpunk or techno style, no "
-    "strong neon, no clutter in the corners, no photographic stock-image "
-    "look, no people or characters."
+    # 6. Запреты — один короткий список в конце.
+    "Never draw text, letters, numbers, formulas-as-text, logos or labels; "
+    "never draw an icon or glyph shape at the centre — the interface adds "
+    "the icon later; no cyberpunk or techno style, no strong neon, no "
+    "photographic stock-image look, no people or characters, no busy "
+    "collage of many unrelated objects."
 )
 
-# Варианты раскладки для Regenerate — куда сместить свет и где собрались
-# мотивы. Центральная сцена остаётся свободной в каждом варианте: это условие
-# читаемости иконки, а не одна из альтернатив.
-_COMPOSITIONS = (
-    "Layout: two motifs balance each other at the lower left and upper right "
-    "edges, the central glow sits just above centre.",
-    "Layout: one large motif half-fades beyond the right edge, a smaller "
-    "echo answers it near the lower left, the glow centred.",
-    "Layout: the motifs drift as a loose arc through the upper third, the "
-    "glow rests slightly below centre.",
-    "Layout: the motifs sit far apart at opposite edges, linked by one long "
-    "thin horizon line passing behind the central glow.",
-    "Layout: the motifs are small and scattered like distant constellations "
-    "in the outer thirds, the middle of the frame almost entirely calm air.",
+# Per-subject композиции: что именно должно быть в кадре, помимо общей
+# тематики из SUBJECT_MOTIFS / ICONS. Здесь — КОНКРЕТНЫЕ сцены, которые
+# модель должна построить, когда название предмета совпадает с ключом.
+# Порядок важен: срабатывает первое совпадение, узкие темы выше общих.
+SUBJECT_SCENES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("computer math", "computer mathematics", "computer science math",
+      "computational math", "вычислительн математи", "машинн обуч",
+      "machine learning", "ml ", "deep learning", "нейронн"),
+     "a clear 3D coordinate system in perspective, a smooth mathematical "
+     "surface (a wave or paraboloid) cutting through the middle, several "
+     "data points or nodes floating on the surface, two or three thin "
+     "graph axes, faint plotted curves, and a couple of geometric grid "
+     "planes in the background"),
+    (("math", "матем", "matem", "algebra", "алгебр", "calculus", "матан",
+      "тригоном", "trigonometr", "геометр", "geometr"),
+     "a large coordinate grid in perspective, a prominent plotted function "
+     "curve, a triangle or circle construction with a marked angle, and "
+     "faint additional graph axes receding into the background"),
+    (("программир", "programming", "informatik", "информатик", "coding",
+      "кодинг", "python", "java", "algorithm", "алгоритм", "разработк",
+      "software", "backend", "бэкенд", "devops"),
+     "a soft node graph with several connected nodes, a few abstract code "
+     "block shapes (rounded rectangles suggesting code windows), long thin "
+     "connection lines between them, a terminal-like rectangle, and a "
+     "subtle flow of data along one of the paths"),
+    (("веб-дизайн", "веб дизайн", "web design", "web-design", "ui/ux",
+      "ui ux", "юай", "вёрстк", "верстк", "frontend", "фронтенд", "html",
+      "css"),
+     "an abstract wireframe of a web page (header, hero block, two content "
+     "cards), a few thin layout grid lines, a couple of UI component "
+     "outlines, and a soft vector path flowing across the frame"),
+    (("data", "данных", "данные", "dealing with data", "анализ данных",
+      "data analysis", "data science", "дата сайнс", "analyt"),
+     "a prominent bar chart or histogram, an overlaid line chart with a "
+     "clear trend, a small data table grid in the background, scattered "
+     "data points connected by faint lines, and a partial donut or pie "
+     "chart off to one side"),
+    (("базы данных", "database", "databases", "sql"),
+     "a stack of cylindrical database discs, a relational table grid with a "
+     "few rows and columns, connecting arrows between tables, and a small "
+     "query tree branching into the background"),
+    (("статист", "statist", "вероят", "probability"),
+     "a clear bell-shaped distribution curve over a histogram, a scatter "
+     "plot with a fitted line, a small probability tree, and a faint "
+     "regression grid"),
+    (("физик", "fizik", "physics", "механик", "mechanic", "оптик",
+      "термодинам", "электродинам", "квант", "quantum"),
+     "concentric wave interference rings, several orbital paths around a "
+     "central point, particle trails curving through the field, and a "
+     "faint field-line diagram in the background"),
+    (("хими", "himi", "chem", "органическая", "неорганическ"),
+     "a large molecular lattice made of connected hexagonal rings, a "
+     "laboratory flask silhouette, several bonded atom nodes, and a faint "
+     "dissolving particle trail"),
+    (("биолог", "biolog", "анатом", "anatom", "ботаник", "зоолог",
+      "эколог", "ecolog", "генетик", "genetic", "микробиолог"),
+     "a soft double-helix DNA strand curving across the frame, a few cell "
+     "membrane outlines, branching organic structures, and a microscope "
+     "circle framing part of the scene"),
+    (("астроном", "astronom", "космос", "space", "вселенн"),
+     "concentric orbital ellipses, a planet with a ring, a constellation "
+     "line pattern, a small star field, and a faint celestial chart in the "
+     "background"),
+    (("географ", "geograph", "картограф", "геолог", "geolog", "краевед"),
+     "a partial globe or arc of meridians, several terrain contour lines, "
+     "a coastline outline, and a topographic pattern fading into the "
+     "background"),
+    (("медиц", "medic", "здоров", "health", "сестринск", "nursing",
+      "фармац", "pharma"),
+     "a clear ECG / pulse waveform across the frame, a soft anatomical "
+     "outline, a few cell-structure circles, and a molecular chain in the "
+     "background"),
+    (("истори", "history", "археолог", "archaeolog", "культуролог"),
+     "a classical column silhouette, an arch outline, a faint old-map "
+     "contour, and an artifact silhouette (a vase or amphora) on one side"),
+    (("литератур", "literature", "поэз", "poetry", "чтение"),
+     "an open book silhouette with layered pages, ruled text blocks "
+     "suggested by thin horizontal lines, a quill stroke curving above, "
+     "and a faint ornamental frame in the background"),
+    (("англ", "english", "немецк", "german", "deutsch", "французск",
+      "french", "испанск", "spanish", "китайск", "chinese", "казахск",
+      "qazaq", "тілі", "язык", "language", "лингвист", "linguist",
+      "грамматик", "grammar", "речь", "speaking"),
+     "flowing script-like strokes, a ruled writing line, abstract phonetic "
+     "marks, and a ribbon of text suggestion in the background"),
+    (("эконом", "econom", "финанс", "finance", "бизнес", "business",
+      "бухгалт", "accounting", "маркетинг", "marketing", "менеджмент",
+      "management", "предпринимат"),
+     "a candlestick chart, a trend line, plotted axes, and a small bar "
+     "chart off to one side, all reading as a market dashboard"),
+    (("прав", "law", "юрид", "legal", "конституц"),
+     "balanced scale outlines, a columned facade, paragraph marks reduced "
+     "to faint geometry, and a seal circle as a backdrop"),
+    (("психолог", "psycholog", "философ", "philosoph", "социолог",
+      "sociolog", "политолог", "полит", "politic", "govern", "обществозн"),
+     "interconnected thought nodes, concentric mind circles, mirrored "
+     "silhouetted geometry, and soft branching links between them"),
+    (("инженер", "engineer", "электротехн", "схемотехн", "робот", "robot",
+      "черчен", "drafting", "механотрон", "cad"),
+     "a technical blueprint background, circuit traces, gear outlines, "
+     "dimension lines, and an orthographic projection of a simple object"),
+    (("музык", "music", "вокал", "vocal", "гитар", "фортепиан", "хор",
+      "сольфедж"),
+     "a clear five-line music staff with a few notes, a soft sound wave, "
+     "rhythmic pulses along the bottom, and equaliser bars on one side"),
+    (("фотограф", "photograph", "кино", "cinema", "видео", "video",
+      "монтаж"),
+     "an aperture-blade circle, a focus ring, a rule-of-thirds grid, and "
+     "a light-ray diagram fanning out from one corner"),
+    (("журналист", "journalism", "сми", "media", "редактир", "editorial",
+      "пиар", "pr "),
+     "broadcast waves, a newspaper column grid, signal arcs, and headline "
+     "rules reduced to thin lines"),
+    (("кулинар", "culinary", "повар", "cooking", "кондитер", "пищев",
+      "общепит"),
+     "utensil outlines, a recipe grid, steam curves rising from a plate, "
+     "and a plated-composition circle"),
+    (("шве", "мода", "fashion", "sewing", "текстиль", "textile", "крой",
+      "костюм"),
+     "pattern-cutting lines, stitch dashes, a fabric drape curve, and a "
+     "measurement grid in the background"),
+    (("автодел", "автомоб", "automotive", "автомехан", "двигател", "engine"),
+     "an engine schematic, gear trains, a chassis blueprint outline, and "
+     "road-line perspective reduced to thin geometry"),
+    (("авиац", "aviation", "пилот", "самолёт", "самолет", "aerospace",
+      "космонавт"),
+     "an airfoil profile, flight-path arcs, airflow streamlines, and a "
+     "navigation grid in the background"),
+    (("агроном", "agricult", "сельск", "земледел", "животновод", "farming"),
+     "a field grid, growth curves, a root system silhouette, irrigation "
+     "lines, and a seasonal cycle circle"),
+    (("архитект", "architect", "строител", "construct", "черчение",
+      "геодез"),
+     "a floor plan, an elevation drawing, construction grids, a compass "
+     "arc, and dimension lines"),
+    (("искусств", "art", "живопис", "painting", "рисован", "drawing",
+      "скульпт", "график", "graphic", "дизайн", "design"),
+     "brush strokes, a colour-wheel arc, composition guides, a golden-"
+     "ratio spiral, and a canvas grid"),
+    (("физкультур", "физическая культура", "sport", "спорт", "фитнес",
+      "тренир"),
+     "motion trails, field markings, trajectory arcs, a stopwatch circle, "
+     "and stadium geometry in the background"),
 )
 
-# Варианты раскладки для Regenerate — куда сместить свет и где собрать
-# тематику. Середина остаётся спокойной в каждом варианте: это не «тоже
-# направление», а условие читаемости символа.
+
+def resolve_scene(subject: str | None) -> str:
+    """Конкретная сцена, которую модель должна построить под название предмета.
+
+    Источник — название класса. Если ни одна тема в SUBJECT_SCENES не
+    совпала, возвращаем общую формулировку: «тематические элементы этого
+    поля, в виде уникальной сцены». Это лучше, чем пустой плейсхолдер: модель
+    всё равно получает из SUBJECT_MOTIFS список мотивов символа и соберёт
+    композицию из них.
+    """
+    low = (subject or "").strip().lower()
+    if low:
+        for keys, scene in SUBJECT_SCENES:
+            if any(k in low for k in keys):
+                return scene
+    return ("a single coherent scene built from the thematic elements of "
+            "this field, arranged as a real composition rather than a "
+            "scattered decoration")
+
+
+# Варианты раскладки для Regenerate — куда сместить сцену и мотивы. Середина
+# остаётся спокойной в каждом варианте: это условие читаемости иконки, а не
+# одна из альтернатив.
 _COMPOSITIONS = (
-    "Layout: the drawing runs across the frame as a wide diagonal band from "
-    "the lower left to the upper right, the glow sits just right of centre.",
-    "Layout: the drawing forms a loose, irregular grid over the whole frame, "
-    "the glow sits just left of centre.",
-    "Layout: the drawing radiates outward from behind the central area towards "
+    "Layout: the scene runs as a wide diagonal band from the lower left to "
+    "the upper right; the icon area sits just right of centre.",
+    "Layout: the scene forms a loose, irregular grid over the whole frame; "
+    "the icon area sits just left of centre.",
+    "Layout: the scene radiates outward from behind the icon area towards "
     "all four corners.",
-    "Layout: the drawing fills both sides of the frame and is joined across "
-    "the top and the bottom by long thin lines.",
-    "Layout: the drawing runs as long horizontal bands through the upper and "
-    "the lower thirds, the glow spread wide across the middle.",
-    "Layout: the drawing is scattered evenly like a constellation, its parts "
-    "linked by long faint lines.",
+    "Layout: the scene fills both sides of the frame and is joined across "
+    "the top and the bottom by long thin lines; the icon area is centred.",
+    "Layout: the scene runs as long horizontal bands through the upper and "
+    "the lower thirds; the icon area is in the calm middle band.",
+    "Layout: the scene is scattered evenly like a constellation, its parts "
+    "linked by long faint lines; the icon area sits over the calmest patch.",
 )
 
 
@@ -751,8 +917,8 @@ def build_prompt(color: str, icon: str, seed: int | None = None,
                  subject: str | None = None) -> str:
     """Единый промпт Chatra под выбранные цвет, символ и предмет.
 
-    subject — название класса: и тема фона, и источник примеров тематических
-    элементов (resolve_motif). Преподаватель по-прежнему выбирает только цвет и
+    subject — название класса: источник и сцены (resolve_scene), и тематических
+    мотивов (resolve_motif). Преподаватель по-прежнему выбирает только цвет и
     символ; символ участвует в тематике лишь как запасной вариант, когда
     название ничего не говорит о предмете — иначе колба на «Physics» тянула бы
     в фон химию. Пустое название заменяется предметом по умолчанию для
@@ -770,6 +936,7 @@ def build_prompt(color: str, icon: str, seed: int | None = None,
         _BASE_STYLE.format(
             color=PALETTE[color]["prompt"],
             subject=topic,
+            scene=resolve_scene(topic),
             motif=resolve_motif(topic, icon),
         ),
         rng.choice(_COMPOSITIONS),
@@ -857,12 +1024,14 @@ def fit_cover_frame(img):
 # как есть.
 EXPOSURE_MEAN_MAX = 82.0    # выше — обложка «светлая», выбивается из коллекции
 EXPOSURE_MEAN_MIN = 44.0    # ниже — цвет и графика тонут в темноте
-# Центральная сцена под иконку — НАМЕРЕННАЯ часть нового дизайна (см. промпт:
-# «softly glowing stage»), поэтому порог «прожектора» поднят: свечение в
-# центре вправе быть заметно ярче углов. Старые 2.2 давили лёгкое свечение
-# до грязно-серого пятна посреди кадра.
-EXPOSURE_CENTRE_RATIO = 3.6
-EXPOSURE_MAX_DIP = 0.30     # сильнее середину не гасим ни при каком исходнике
+# Центральный «прожектор» под иконку больше НЕ часть дизайна (см. промпт:
+# «do NOT draw a glowing pedestal, a circular platform…»). Если модель по
+# привычке всё-таки нарисует яркое пятно в центре, приглушаем его мягко:
+# старые 3.6× гасили весь кадр и оставляли серое кольцо. Теперь порог
+# выше, а суммарное затемнение ниже — прожектор пригаснет ровно настолько,
+# чтобы не выжигать иконку, и сцена останется.
+EXPOSURE_CENTRE_RATIO = 5.5
+EXPOSURE_MAX_DIP = 0.18     # сильнее середину не гасим ни при каком исходнике
 
 # Пределы одного шага яркости. Вниз — не больше чем вдвое (иначе засвеченный
 # кадр превращается в грязь), вверх — до 2.2×: подъём с прежних 1.6 нужен,
@@ -976,14 +1145,563 @@ def _radial_mask(cx: float, cy: float, radius: float, softness: float = 1.0):
     return mask.resize((COVER_WIDTH, COVER_HEIGHT), Image.BICUBIC)
 
 
-def render_background(color: str, seed: int | None = None):
-    """Локальный фон в том же визуальном языке, что и AI-версия: глубокий
-    premium-градиент выбранного цвета, мягкое свечение к середине, тонкие
-    полупрозрачные линии, дуги и частицы по краям, спокойный центр.
+# Каталог локальных тематических сцен. Каждая сцена — набор рисуемых
+# примитивов, привязанных к якорям в нормализованных координатах (0..1) и
+# цветам палитры. Бэкенд рисует это тем же движком, что и графику, чтобы
+# фолбэк и AI-версия жили в одном визуальном языке. Сцены подключаются по
+# подстроке из SUBJECT_SCENES: ключи совпадают один в один, чтобы поведение
+# фолбэка повторяло поведение промпта.
+def _scene_math(rng, draw, W, H, line, soft, ink, line_w, hairline):
+    """Координатная сетка + 3D-поверхность + кривая + геометрия."""
+    # Координатная сетка в перспективе: уходит в правый верх.
+    horizon = rng.uniform(0.32, 0.40)
+    for i in range(7):
+        t = i / 6
+        # Вертикали сходятся в точку схода у горизонта.
+        x_top = W * (0.30 + 0.40 * t)
+        x_bot = W * (0.05 + 0.90 * t)
+        draw.line((x_bot, H * 0.95, x_top, H * horizon),
+                  fill=(*line, 70), width=hairline)
+    for i in range(5):
+        y = H * (horizon + (1 - horizon) * (i / 4))
+        draw.line((0, y, W, y), fill=(*line, 55), width=hairline)
 
-    Тематики предмета здесь нет намеренно: её приносит модель. Фолбэк должен
-    оставаться нейтральным членом той же коллекции — глубина цвета, мягкость и
-    пустая середина у него ровно те же, что у сгенерированной обложки.
+    # 3D-поверхность (волна): две сдвинутые синусоиды + изолинии.
+    for offset, alpha in ((0.0, 90), (0.18, 65), (-0.18, 65)):
+        pts = []
+        for i in range(48):
+            x = W * (0.04 + 0.92 * i / 47)
+            y = H * (0.58
+                     + 0.16 * (1 if offset == 0 else 1)
+                     * (i / 47 - 0.5) * 2
+                     + 0.08 * (i / 47 - 0.5) * (i / 47 - 0.5) * 4
+                     + offset)
+            pts.append((x, y))
+        for a, b in zip(pts, pts[1:]):
+            draw.line((a, b), fill=(*soft, alpha), width=hairline)
+
+    # Плавная математическая кривая в верхней половине.
+    pts = []
+    for i in range(60):
+        x = W * (0.06 + 0.88 * i / 59)
+        u = (i / 59) * 4 - 2
+        y = H * (0.40 - 0.10 * (u * 0.4 + 0.4 * (u ** 3) / 6))
+        pts.append((x, y))
+    for a, b in zip(pts, pts[1:]):
+        draw.line((a, b), fill=(*ink, 120), width=max(hairline, round(line_w)))
+
+    # Несколько точек данных на поверхности.
+    for _ in range(6):
+        x = rng.uniform(0.20, 0.80) * W
+        y = H * (0.56 + rng.uniform(-0.06, 0.10))
+        r = rng.uniform(3.5, 6.0)
+        draw.ellipse((x - r, y - r, x + r, y + r), fill=(*ink, 180))
+    # Треугольник / окружность — геометрическая конструкция слева.
+    cx, cy, rr = W * 0.12, H * 0.78, H * 0.08
+    draw.ellipse((cx - rr, cy - rr, cx + rr, cy + rr),
+                 outline=(*line, 95), width=hairline)
+
+
+def _scene_code(rng, draw, W, H, line, soft, ink, line_w, hairline):
+    """Нодовый граф + блоки кода + соединительные линии."""
+    # Узлы графа.
+    nodes = [
+        (W * 0.18, H * 0.30),
+        (W * 0.42, H * 0.22),
+        (W * 0.70, H * 0.34),
+        (W * 0.30, H * 0.62),
+        (W * 0.58, H * 0.58),
+        (W * 0.82, H * 0.62),
+    ]
+    # Соединительные линии со смещением — поток данных.
+    edges = [(0, 1), (1, 2), (1, 3), (2, 4), (3, 4), (4, 5), (0, 3), (2, 5)]
+    for i, j in edges:
+        x1, y1 = nodes[i]
+        x2, y2 = nodes[j]
+        mx = (x1 + x2) / 2 + rng.uniform(-20, 20)
+        my = (y1 + y2) / 2 + rng.uniform(-20, 20)
+        draw.line((x1, y1, mx, my, x2, y2), fill=(*line, 110), width=hairline)
+    # Узлы — кружки разного размера.
+    for x, y in nodes:
+        r = rng.uniform(8, 14)
+        draw.ellipse((x - r, y - r, x + r, y + r),
+                     outline=(*ink, 200), width=max(hairline, 2), fill=(*soft, 60))
+        r2 = r * 0.35
+        draw.ellipse((x - r2, y - r2, x + r2, y + r2), fill=(*ink, 220))
+
+    # Блок «кода» в нижней части — узкое окно со строками.
+    bx, by, bw, bh = W * 0.12, H * 0.80, W * 0.32, H * 0.12
+    draw.rounded_rectangle((bx, by, bx + bw, by + bh), radius=8,
+                           outline=(*line, 120), width=hairline)
+    for i in range(4):
+        ly = by + bh * (0.25 + i * 0.18)
+        lw = bw * rng.uniform(0.35, 0.75)
+        draw.line((bx + 10, ly, bx + 10 + lw, ly),
+                  fill=(*soft, 130), width=hairline)
+
+
+def _scene_data(rng, draw, W, H, line, soft, ink, line_w, hairline):
+    """Бар-чарт + линейный график + точки + мини-таблица."""
+    # Оси.
+    ox, oy = W * 0.10, H * 0.78
+    ax, ay = W * 0.55, H * 0.30
+    draw.line((ox, oy, ax, oy), fill=(*line, 140), width=hairline)
+    draw.line((ox, oy, ox, ay), fill=(*line, 140), width=hairline)
+    # Бары.
+    n = 6
+    for i in range(n):
+        bx = ox + (ax - ox) * (0.10 + 0.80 * (i + 0.5) / n)
+        bh_ = max(8.0, (oy - ay) * rng.uniform(0.30, 0.85))
+        top = oy - bh_
+        draw.rectangle((bx - 14, top, bx + 14, oy),
+                       fill=(*soft, 160), outline=(*ink, 80), width=hairline)
+    # Линейный график.
+    pts = []
+    for i in range(20):
+        x = ox + (ax - ox) * (0.05 + 0.90 * i / 19)
+        y = oy - (ay - oy) * rng.uniform(0.20, 0.85)
+        pts.append((x, y))
+    for a, b in zip(pts, pts[1:]):
+        draw.line((a, b), fill=(*ink, 220), width=max(hairline, round(line_w)))
+    for x, y in pts[::3]:
+        r = 3
+        draw.ellipse((x - r, y - r, x + r, y + r), fill=(*ink, 230))
+
+    # Мини-таблица справа сверху.
+    tx, ty, tw, th = W * 0.62, H * 0.10, W * 0.30, H * 0.18
+    cols, rows = 4, 3
+    for c in range(cols + 1):
+        x = tx + tw * c / cols
+        draw.line((x, ty, x, ty + th), fill=(*line, 110), width=hairline)
+    for r in range(rows + 1):
+        y = ty + th * r / rows
+        draw.line((tx, y, tx + tw, y), fill=(*line, 110), width=hairline)
+    # Несколько точек данных в ячейках.
+    for _ in range(7):
+        x = tx + tw * rng.uniform(0.05, 0.95)
+        y = ty + th * rng.uniform(0.10, 0.90)
+        r = rng.uniform(2.0, 3.5)
+        draw.ellipse((x - r, y - r, x + r, y + r), fill=(*ink, 200))
+
+
+def _scene_physics(rng, draw, W, H, line, soft, ink, line_w, hairline):
+    """Волновая интерференция + орбиты + следы частиц."""
+    cx, cy = W * 0.5, H * 0.5
+    # Концентрические кольца интерференции.
+    for i, r in enumerate((H * 0.18, H * 0.26, H * 0.34, H * 0.42, H * 0.50)):
+        a = 150 - i * 18
+        draw.ellipse((cx - r, cy - r, cx + r, cy + r),
+                     outline=(*line, a), width=hairline)
+    # Орбиты под углом — эллипсы.
+    for r_x, r_y, a in ((0.42, 0.16, 60), (0.38, 0.12, 35), (0.46, 0.20, 80)):
+        draw.ellipse((cx - W * r_x, cy - H * r_y, cx + W * r_x, cy + H * r_y),
+                     outline=(*soft, a), width=hairline)
+    # Следы частиц: короткие дуги.
+    for _ in range(8):
+        x1 = rng.uniform(0.05, 0.95) * W
+        y1 = rng.uniform(0.10, 0.90) * H
+        ang = rng.uniform(0, 360)
+        L = rng.uniform(60, 160)
+        x2 = x1 + L * (1 if ang < 180 else -1) * 0.5
+        y2 = y1 + L * 0.3 * (1 if ang < 90 or ang > 270 else -1)
+        draw.line((x1, y1, x2, y2), fill=(*ink, 150), width=hairline)
+
+
+def _scene_chemistry(rng, draw, W, H, line, soft, ink, line_w, hairline):
+    """Молекулярная решётка + гексагоны + атомы + колба."""
+    # Гексагональная решётка.
+    rr = H * 0.07
+    dx = rr * 1.732
+    dy = rr * 1.5
+    for row in range(-1, 7):
+        for col in range(-1, 9):
+            cx = W * 0.18 + col * dx + (row % 2) * dx * 0.5
+            cy = H * 0.12 + row * dy
+            pts = []
+            for k in range(6):
+                ang = (3.14159 / 3) * k
+                pts.append((cx + rr * 0.9 * (1 if k % 2 == 0 else 0.55) *
+                            (1 if k < 3 else -1 if k == 3 else (-1 if k == 4 else 0)),
+                            cy + rr * 0.9 * (0 if k % 2 == 0 else 0.95) *
+                            (1 if k in (1, 2) else -1)))
+            for a, b in zip(pts, pts[1:] + [pts[0]]):
+                draw.line((a, b), fill=(*line, 90), width=hairline)
+            r2 = rr * 0.18
+            draw.ellipse((cx - r2, cy - r2, cx + r2, cy + r2),
+                         fill=(*ink, 170))
+    # Силуэт колбы снизу.
+    fx, fy = W * 0.78, H * 0.78
+    draw.polygon([(fx - 10, fy - H * 0.30), (fx + 10, fy - H * 0.30),
+                  (fx + 30, fy), (fx + 30, fy + H * 0.06),
+                  (fx - 30, fy + H * 0.06), (fx - 30, fy)],
+                 outline=(*soft, 140), width=hairline)
+
+
+def _scene_biology(rng, draw, W, H, line, soft, ink, line_w, hairline):
+    """Двойная спираль ДНК + клеточные мембраны.
+
+    Две синусоиды, сдвинутые по фазе на π, идут вдоль кадра и пересекаются
+    «перемычками» через равные промежутки — классическая схема двойной
+    спирали. Сверху и снизу — концентрические окружности (клеточные
+    мембраны / митохондрии).
+    """
+    # Двойная спираль.
+    steps = 110
+    amp = H * 0.16          # амплитуда колебаний по Y
+    margin_x = W * 0.10
+    span = W - 2 * margin_x
+    # Полные периоды вдоль спирали: чем больше, тем «туже» витки.
+    turns = 2.4
+    pts_a, pts_b = [], []
+    for i in range(steps):
+        t = i / (steps - 1)
+        x = margin_x + span * t
+        phase = t * turns * 2 * 3.14159
+        y = H * 0.52 + amp * (1 if (phase / 3.14159) % 2 < 1 else -1) * 0
+        # Чистая синусоида: y = H*0.5 + amp * sin(phase)
+        y_a = H * 0.52 + amp * (0.6 * (i % 6) / 3 - 0.6) if False else (H * 0.52 + amp * (1 if (i // 4) % 2 == 0 else -1) * 0.55)
+        y_b = H * 0.52 - (y_a - H * 0.52)
+        pts_a.append((x, y_a))
+        pts_b.append((x, y_b))
+    for a, b in zip(pts_a, pts_a[1:]):
+        draw.line((a, b), fill=(*ink, 220), width=line_w)
+    for a, b in zip(pts_b, pts_b[1:]):
+        draw.line((a, b), fill=(*soft, 200), width=line_w)
+    # Перемычки между нитями.
+    step = max(4, steps // 14)
+    for i in range(0, steps, step):
+        draw.line((pts_a[i], pts_b[i]), fill=(*line, 160), width=hairline)
+    # Узлы на перемычках — «азотистые основания».
+    for i in range(0, steps, step):
+        for p in (pts_a[i], pts_b[i]):
+            r = 3
+            draw.ellipse((p[0] - r, p[1] - r, p[0] + r, p[1] + r),
+                         fill=(*ink, 230))
+
+    # Клеточные мембраны — две пары концентрических окружностей.
+    for cx, cy, r in ((W * 0.14, H * 0.18, H * 0.10),
+                      (W * 0.86, H * 0.82, H * 0.10)):
+        draw.ellipse((cx - r, cy - r, cx + r, cy + r),
+                     outline=(*line, 180), width=hairline)
+        r2 = r * 0.55
+        draw.ellipse((cx - r2, cy - r2, cx + r2, cy + r2),
+                     outline=(*soft, 150), width=hairline)
+
+
+def _scene_astronomy(rng, draw, W, H, line, soft, ink, line_w, hairline):
+    """Орбиты + планета с кольцом + созвездие + звёздное поле."""
+    cx, cy = W * 0.72, H * 0.55
+    for r_x, r_y, a in ((0.32, 0.12, 70), (0.26, 0.09, 55), (0.20, 0.07, 40)):
+        draw.ellipse((cx - W * r_x, cy - H * r_y, cx + W * r_x, cy + H * r_y),
+                     outline=(*line, a), width=hairline)
+    pr = H * 0.10
+    draw.ellipse((cx - pr, cy - pr, cx + pr, cy + pr),
+                 fill=(*soft, 200), outline=(*ink, 220), width=hairline)
+    # Кольцо планеты — узкий эллипс.
+    draw.ellipse((cx - pr * 1.8, cy - pr * 0.35, cx + pr * 1.8, cy + pr * 0.35),
+                 outline=(*ink, 180), width=hairline)
+    # Звёзды.
+    for _ in range(28):
+        x = rng.uniform(0.02, 0.45) * W
+        y = rng.uniform(0.05, 0.95) * H
+        r = rng.uniform(1.4, 3.0)
+        draw.ellipse((x - r, y - r, x + r, y + r), fill=(*ink, 220))
+    # Созвездие.
+    pts = [(W * 0.12, H * 0.22), (W * 0.20, H * 0.30), (W * 0.18, H * 0.42),
+           (W * 0.28, H * 0.36)]
+    for a, b in zip(pts, pts[1:]):
+        draw.line((a, b), fill=(*line, 130), width=hairline)
+    for x, y in pts:
+        r = 3.5
+        draw.ellipse((x - r, y - r, x + r, y + r), fill=(*ink, 240))
+
+
+def _scene_history(rng, draw, W, H, line, soft, ink, line_w, hairline):
+    """Колонна + арка + контур старой карты + артефакт."""
+    # Колонна.
+    px = W * 0.78
+    draw.rectangle((px - 14, H * 0.18, px + 14, H * 0.78),
+                   outline=(*soft, 160), width=hairline)
+    for i in range(6):
+        ly = H * (0.20 + i * 0.10)
+        draw.line((px - 18, ly, px + 18, ly), fill=(*line, 110), width=hairline)
+    # Арка слева.
+    ax, ay, ar = W * 0.22, H * 0.42, H * 0.18
+    draw.pieslice((ax - ar, ay - ar, ax + ar, ay + ar), 180, 360,
+                  outline=(*soft, 160), width=hairline)
+    draw.line((ax - ar, ay, ax - ar, ay + ar * 0.9),
+              fill=(*soft, 160), width=hairline)
+    draw.line((ax + ar, ay, ax + ar, ay + ar * 0.9),
+              fill=(*soft, 160), width=hairline)
+    # Контур «карты» — набор дуг.
+    for _ in range(3):
+        cx0 = rng.uniform(0.30, 0.55) * W
+        cy0 = rng.uniform(0.70, 0.90) * H
+        r0 = rng.uniform(H * 0.05, H * 0.10)
+        a0 = rng.uniform(0, 360)
+        draw.arc((cx0 - r0, cy0 - r0, cx0 + r0, cy0 + r0), a0, a0 + 180,
+                 fill=(*line, 120), width=hairline)
+
+
+def _scene_literature(rng, draw, W, H, line, soft, ink, line_w, hairline):
+    """Открытая книга + страницы + перо + орнамент."""
+    # Открытая книга — два треугольника страниц.
+    cx, cy = W * 0.5, H * 0.62
+    bw, bh = W * 0.50, H * 0.28
+    draw.polygon([(cx - bw / 2, cy - bh / 2), (cx, cy - bh / 2 + 8),
+                  (cx, cy + bh / 2), (cx - bw / 2, cy + bh / 2)],
+                 outline=(*soft, 180), width=hairline)
+    draw.polygon([(cx + bw / 2, cy - bh / 2), (cx, cy - bh / 2 + 8),
+                  (cx, cy + bh / 2), (cx + bw / 2, cy + bh / 2)],
+                 outline=(*soft, 180), width=hairline)
+    # Линии текста.
+    for i in range(6):
+        ly = cy - bh / 2 + 14 + i * 10
+        for side in (-1, 1):
+            x0 = cx + side * 6
+            x1 = cx + side * (bw / 2 - 12) * rng.uniform(0.5, 0.95)
+            draw.line((x0, ly, x1, ly), fill=(*ink, 130), width=hairline)
+    # Перо.
+    for i in range(10):
+        t = i / 9
+        x = W * 0.18 + W * 0.40 * t
+        y = H * 0.22 + H * 0.08 * (t * t)
+        r = max(2, 8 * (1 - t))
+        draw.ellipse((x - r, y - r, x + r, y + r),
+                     outline=(*ink, 180), width=hairline)
+
+
+def _scene_languages(rng, draw, W, H, line, soft, ink, line_w, hairline):
+    """Скриптовая лента + линейка письма + фонемы-штрихи."""
+    # Главная «лента» скрипта — плавная волна. Амплитуда постепенно растёт
+    # к центру и спадает к краям, чтобы лента не выходила за кадр.
+    pts = []
+    steps = 90
+    base_y = H * 0.55
+    amp_max = H * 0.10
+    for i in range(steps):
+        x = W * 0.05 + W * 0.90 * i / (steps - 1)
+        t = i / (steps - 1)
+        envelope = 4 * t * (1 - t)        # 0 по краям, 1 в середине
+        y = base_y + amp_max * envelope * ((i % 4) - 1.5) / 1.5
+        pts.append((x, y))
+    for a, b in zip(pts, pts[1:]):
+        draw.line((a, b), fill=(*ink, 220), width=line_w)
+
+    # Линейка письма — три горизонтальные линии.
+    for i in range(3):
+        ly = H * (0.30 + i * 0.12)
+        draw.line((W * 0.05, ly, W * 0.95, ly),
+                  fill=(*line, 140), width=hairline)
+    # Короткие скриптовые штрихи вдоль линейки.
+    for _ in range(14):
+        x = rng.uniform(0.06, 0.94) * W
+        ly = H * (0.30 + rng.uniform(0, 0.24))
+        L = rng.uniform(30, 80)
+        ang = rng.uniform(-0.4, 0.4)
+        x2 = x + L * (1 if (1 - ang * ang) > 0.5 else -1) * 0.7
+        y2 = ly + L * ang
+        draw.line((x, ly, x2, y2), fill=(*soft, 170), width=hairline)
+
+
+def _scene_business(rng, draw, W, H, line, soft, ink, line_w, hairline):
+    """Свечной график + тренд + оси + мини-бары."""
+    ox, oy = W * 0.10, H * 0.80
+    ax, ay = W * 0.92, H * 0.20
+    draw.line((ox, oy, ax, oy), fill=(*line, 130), width=hairline)
+    draw.line((ox, oy, ox, ay), fill=(*line, 130), width=hairline)
+    n = 9
+    for i in range(n):
+        cx0 = ox + (ax - ox) * (0.05 + 0.90 * (i + 0.5) / n)
+        rng_h = (oy - ay) * rng.uniform(0.30, 0.85)
+        top = min(oy - 4, oy - rng_h)
+        bot = max(ay + 4, top + 4)
+        hi = max(ay + 2, top - rng.uniform(10, 30))
+        lo = min(oy - 2, bot + rng.uniform(10, 30))
+        draw.line((cx0, hi, cx0, lo), fill=(*line, 160), width=hairline)
+        draw.rectangle((cx0 - 8, top, cx0 + 8, bot),
+                       fill=(*soft, 170), outline=(*ink, 100), width=hairline)
+    # Трендовая линия.
+    pts = []
+    for i in range(20):
+        x = ox + (ax - ox) * (0.05 + 0.90 * i / 19)
+        y = oy - (oy - ay) * (0.20 + 0.55 * i / 19
+                              + rng.uniform(-0.05, 0.05))
+        pts.append((x, y))
+    for a, b in zip(pts, pts[1:]):
+        draw.line((a, b), fill=(*ink, 220), width=max(hairline, round(line_w)))
+
+
+def _scene_music(rng, draw, W, H, line, soft, ink, line_w, hairline):
+    """Нотный стан + ноты + звуковая волна + эквалайзер."""
+    # Стан.
+    top = H * 0.36
+    for i in range(5):
+        y = top + i * (H * 0.05)
+        draw.line((W * 0.08, y, W * 0.92, y), fill=(*line, 150), width=hairline)
+    # Скрипичный ключ — стилизованная завитушка.
+    kx, ky = W * 0.14, top + H * 0.10
+    draw.ellipse((kx - 18, ky - 12, kx + 18, ky + 18),
+                 outline=(*ink, 220), width=max(hairline, 2))
+    draw.line((kx + 10, ky + 10, kx + 12, ky + H * 0.12),
+              fill=(*ink, 220), width=max(hairline, 2))
+    # Ноты.
+    for i in range(5):
+        nx = W * (0.30 + 0.12 * i)
+        ny = top + (i % 4) * (H * 0.05) + rng.uniform(-8, 8)
+        draw.ellipse((nx - 8, ny - 6, nx + 8, ny + 6),
+                     fill=(*ink, 230))
+        draw.line((nx + 8, ny - 2, nx + 8, ny - H * 0.10),
+                  fill=(*ink, 230), width=max(hairline, 2))
+    # Эквалайзер снизу.
+    for i in range(14):
+        bx = W * 0.10 + i * (W * 0.06)
+        bh_ = H * rng.uniform(0.05, 0.18)
+        draw.rectangle((bx, H * 0.85 - bh_, bx + W * 0.03, H * 0.85),
+                       fill=(*soft, 180), width=hairline)
+
+
+def _scene_art(rng, draw, W, H, line, soft, ink, line_w, hairline):
+    """Мазки + цветовой круг + спираль + холст-сетка."""
+    # Цветовой круг.
+    cx, cy, r = W * 0.78, H * 0.30, H * 0.16
+    for i in range(12):
+        a0 = i * 30
+        a1 = a0 + 28
+        draw.pieslice((cx - r, cy - r, cx + r, cy + r), a0, a1,
+                      outline=(*line, 100), width=hairline)
+    # Спираль золотого сечения.
+    pts = []
+    for i in range(120):
+        t = i / 119
+        ang = t * 6.28 * 2.5
+        rad = H * 0.04 * (1.618 ** (t * 4))
+        x = W * 0.30 + rad * (1 if i % 3 != 1 else 0.6) * (1 if i % 2 == 0 else -1)
+        y = H * 0.62 + rad * (1 if i % 3 != 1 else 0.6) * (1 if (i // 2) % 2 == 0 else -1)
+        pts.append((x, y))
+    for a, b in zip(pts, pts[1:]):
+        draw.line((a, b), fill=(*ink, 170), width=hairline)
+    # Мазки.
+    for _ in range(7):
+        x1 = rng.uniform(0.05, 0.60) * W
+        y1 = rng.uniform(0.10, 0.30) * H
+        x2 = x1 + rng.uniform(40, 100)
+        y2 = y1 + rng.uniform(20, 60)
+        draw.line((x1, y1, x2, y2),
+                  fill=(*soft, 140), width=max(2, round(line_w * 1.2)))
+
+
+def _scene_generic_motifs(rng, draw, W, H, line, soft, ink, line_w, hairline):
+    """Запасной набор мотивов, когда ни одна сцена не подошла.
+
+    Раньше это была основная графика: 2–3 дуги, 3–5 линий, россыпь точек.
+    Теперь это только фолбэк, и он сделан чуть насыщеннее, чем был — иначе
+    «обложка без темы» выглядит беднее «обложки с темой». 4 дуги, 6 линий,
+    24 точки, разбросанные по краям.
+    """
+    for _ in range(4):
+        r = rng.uniform(0.55, 1.15) * H
+        cx = rng.choice((rng.uniform(-0.25, 0.12), rng.uniform(0.88, 1.25))) * W
+        cy = rng.uniform(-0.2, 1.2) * H
+        start = rng.uniform(0, 360)
+        draw.arc((cx - r, cy - r, cx + r, cy + r), start,
+                 start + rng.uniform(50, 130),
+                 fill=(*line, 130), width=hairline)
+    for _ in range(6):
+        y = rng.uniform(0.04, 0.96)
+        if 0.40 < y < 0.60:
+            continue
+        x0 = rng.choice((rng.uniform(-0.12, 0.10), rng.uniform(0.55, 0.80)))
+        draw.line((x0 * W, y * H, (x0 + rng.uniform(0.22, 0.45)) * W,
+                   (y + rng.uniform(-0.05, 0.05)) * H),
+                  fill=(*line, 110), width=hairline)
+    for _ in range(24):
+        x, y = rng.random(), rng.random()
+        if 0.32 < x < 0.68 and 0.32 < y < 0.68:
+            continue
+        r = rng.uniform(1.8, 4.5)
+        draw.ellipse((x * W - r, y * H - r, x * W + r, y * H + r),
+                     fill=(*line, 170))
+
+
+# Маршрутизатор сцен: ключевая подстрока → рисующая функция. Подстроки
+# совпадают с SUBJECT_SCENES, чтобы поведение фолбэка повторяло поведение
+# промпта. Сверху вниз: сначала узкие темы, потом общие.
+_SCENE_ROUTES: tuple[tuple[tuple[str, ...], callable], ...] = (
+    (("data", "данных", "данные", "dealing with data", "анализ данных",
+      "data analysis", "data science", "дата сайнс", "analyt"),
+     _scene_data),
+    (("computer math", "computer mathematics", "computer science math",
+      "computational math", "вычислительн математи", "машинн обуч",
+      "machine learning", "ml ", "deep learning", "нейронн",
+      "math", "матем", "matem", "algebra", "алгебр", "calculus", "матан",
+      "тригоном", "trigonometr", "геометр", "geometr"),
+     _scene_math),
+    (("программир", "programming", "informatik", "информатик", "coding",
+      "кодинг", "python", "java", "algorithm", "алгоритм", "разработк",
+      "software", "backend", "бэкенд", "devops", "веб-дизайн", "веб дизайн",
+      "web design", "ui/ux", "frontend", "фронтенд", "html", "css"),
+     _scene_code),
+    (("статист", "statist", "вероят", "probability"),
+     _scene_data),
+    (("базы данных", "database", "databases", "sql"),
+     _scene_data),
+    (("физик", "fizik", "physics", "механик", "mechanic", "оптик",
+      "термодинам", "электродинам", "квант", "quantum"),
+     _scene_physics),
+    (("хими", "himi", "chem", "органическая", "неорганическ"),
+     _scene_chemistry),
+    (("биолог", "biolog", "анатом", "anatom", "ботаник", "зоолог",
+      "эколог", "ecolog", "генетик", "genetic", "микробиолог"),
+     _scene_biology),
+    (("астроном", "astronom", "космос", "space", "вселенн"),
+     _scene_astronomy),
+    (("истори", "history", "археолог", "archaeolog", "культуролог"),
+     _scene_history),
+    (("литератур", "literature", "поэз", "poetry", "чтение"),
+     _scene_literature),
+    (("англ", "english", "немецк", "german", "deutsch", "французск",
+      "french", "испанск", "spanish", "китайск", "chinese", "казахск",
+      "qazaq", "тілі", "язык", "language", "лингвист", "linguist",
+      "грамматик", "grammar", "речь", "speaking"),
+     _scene_languages),
+    (("эконом", "econom", "финанс", "finance", "бизнес", "business",
+      "бухгалт", "accounting", "маркетинг", "marketing", "менеджмент",
+      "management", "предпринимат"),
+     _scene_business),
+    (("музык", "music", "вокал", "vocal", "гитар", "фортепиан", "хор",
+      "сольфедж"),
+     _scene_music),
+    (("искусств", "art", "живопис", "painting", "рисован", "drawing",
+      "скульпт", "график", "graphic", "дизайн", "design"),
+     _scene_art),
+)
+
+
+def _pick_scene(subject: str):
+    """Возвращает функцию-сцену по названию предмета. Без совпадения — общий
+    набор мотивов: тогда обложка хоть и одинаковая, но единственная в
+    каталоге (название предмета не подошло ни к одной теме)."""
+    low = (subject or "").strip().lower()
+    if low:
+        for keys, fn in _SCENE_ROUTES:
+            if any(k in low for k in keys):
+                return fn
+    return _scene_generic_motifs
+
+
+def render_background(color: str, seed: int | None = None,
+                      subject: str | None = None):
+    """Локальный фон в том же визуальном языке, что и AI-версия: глубокий
+    premium-градиент выбранного цвета и тематическая сцена по названию
+    предмета.
+
+    Здесь НЕТ центрального свечения / платформы / «тарелки»: иконка
+    накладывается сверху клиентом, и у неё нет сцены-подложки — она
+    работает на любой части кадра. Сцена рисуется per-subject функциями
+    выше (_scene_math, _scene_code, _scene_data и т.д.), чтобы фолбэк
+    для «Computer Mathematics» и для «Programming» отличался так же
+    заметно, как и AI-версии.
 
     Используется, когда генерация недоступна (нет ключа, ошибка/таймаут
     OpenAI, исчерпан бюджет), и при создании класса — чтобы обложка была
@@ -997,19 +1715,14 @@ def render_background(color: str, seed: int | None = None):
 
     # Глубина цвета: тёмный (но цветной!) угол, насыщенное поле, светлый ореол
     # и почти белая линия — всё внутри одной семьи (HLS-сдвиг не уводит тон).
-    #
-    # Коэффициенты подняты вместе с коридором экспозиции: на 0.17/0.42 фолбэк
-    # давал среднюю яркость около 29 из 255 — цвет угадывался только у самого
-    # свечения, а тонкая графика по краям пропадала в темноте. Фолбэк обязан
-    # попадать в тот же коридор, что и AI-версия, иначе normalize_exposure
-    # начнёт его переосветлять (см. EXPOSURE_MEAN_MIN).
     k = _base_light_scale(base)
     night = _shift(base, light=0.32 * k, sat=1.10)
-    field = _shift(base, light=0.75 * k, sat=1.05)
-    glow = _shift(base, light=1.05 * k, sat=0.80)
-    line = _shift(base, light=1.40, sat=0.45)
+    field = _shift(base, light=0.78 * k, sat=1.05)
+    line = _shift(base, light=1.35, sat=0.55)
+    soft = _shift(base, light=1.10, sat=0.75)
+    ink = _shift(base, light=1.55, sat=0.35)
 
-    # Диагональный градиент night → field: считаем мелко и растягиваем.
+    # Диагональный градиент night → field.
     flip = rng.random() < 0.5
     small = Image.new("RGB", (64, 64))
     px = small.load()
@@ -1020,77 +1733,45 @@ def render_background(color: str, seed: int | None = None):
             px[xx, yy] = tuple(round(night[i] + (field[i] - night[i]) * t) for i in range(3))
     img = small.resize((COVER_WIDTH, COVER_HEIGHT), Image.BICUBIC).convert("RGB")
 
-    # Свет у середины — источник глубины, а не прожектор: широкий и тусклый.
-    # Узкое яркое пятно здесь уже было и выжигало центр, из-за чего обложка
-    # выглядела как фонарик в темноте. Смещаем слабо: символ ложится по
-    # центру, и уводить свет далеко от него нельзя.
-    gx = 0.5 + rng.uniform(-0.09, 0.09)
-    gy = 0.5 + rng.uniform(-0.07, 0.07)
-    halo = Image.new("RGB", (COVER_WIDTH, COVER_HEIGHT), glow)
-    img = Image.composite(halo, img, _radial_mask(gx, gy, rng.uniform(0.85, 1.05)).point(
-        lambda v: round(v * 0.28)))
+    # Мягкая виньетка: углы чуть темнее, но не «провал в черноту» — раньше
+    # виньетка + центральный glow вместе делали «тарелку». Сейчас glow
+    # убран, и виньетка сведена к лёгкому затемнению краёв.
+    vignette = _radial_mask(0.5, 0.5, 1.35, softness=0.75).point(lambda v: 255 - round(v * 0.42))
+    dark = Image.new("RGB", (COVER_WIDTH, COVER_HEIGHT), _shift(base, light=0.30 * k, sat=1.0))
+    img = Image.composite(dark, img, vignette.point(lambda v: round(v * 0.32)))
 
-    # Виньетка — та самая premium-глубина: углы уходят в тень. Кладём её ДО
-    # тонкой графики: наоборот она гасила линии до полной невидимости —
-    # «тонкие и полупрозрачные» не значит «которых нет».
+    # Тематическая сцена — на отдельный RGBA-слой, чтобы размыть края у
+    # линий и не оставлять алиасинга от ImageDraw.
     #
-    # Ослаблена (было 0.80/0.55 поверх почти чёрного 0.08): виньетка съедала
-    # треть кадра в черноту, и обложка читалась как тёмный прямоугольник с
-    # пятном света посередине. Теперь угол — тень выбранного цвета, а не тень
-    # вообще.
-    vignette = _radial_mask(0.5, 0.5, 1.35, softness=0.75).point(lambda v: 255 - round(v * 0.62))
-    dark = Image.new("RGB", (COVER_WIDTH, COVER_HEIGHT), _shift(base, light=0.22 * k, sat=1.0))
-    img = Image.composite(dark, img, vignette.point(lambda v: round(v * 0.42)))
-
-    # Тонкая графика по краям: пара длинных дуг, несколько прямых и редкие
-    # частицы. Всё полупрозрачное и подальше от центра — фон вторичен.
-    shapes = Image.new("RGBA", (COVER_WIDTH, COVER_HEIGHT), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(shapes)
-    hairline = max(2, round(COVER_HEIGHT * 0.0026))
-
-    def far_from_centre(x: float, y: float) -> bool:
-        return abs(x - 0.5) > 0.23 or abs(y - 0.5) > 0.26
-
-    for _ in range(rng.randint(2, 3)):
-        r = rng.uniform(0.55, 1.15) * COVER_HEIGHT
-        cx = rng.choice((rng.uniform(-0.25, 0.12), rng.uniform(0.88, 1.25))) * COVER_WIDTH
-        cy = rng.uniform(-0.2, 1.2) * COVER_HEIGHT
-        start = rng.uniform(0, 360)
-        draw.arc((cx - r, cy - r, cx + r, cy + r), start, start + rng.uniform(50, 130),
-                 fill=(*line, rng.randint(105, 150)), width=hairline)
-
-    for _ in range(rng.randint(3, 5)):
-        y = rng.uniform(0.04, 0.96)
-        if not far_from_centre(0.5, y):
-            continue
-        x0 = rng.choice((rng.uniform(-0.12, 0.10), rng.uniform(0.55, 0.80)))
-        draw.line((x0 * COVER_WIDTH, y * COVER_HEIGHT,
-                   (x0 + rng.uniform(0.22, 0.45)) * COVER_WIDTH,
-                   (y + rng.uniform(-0.05, 0.05)) * COVER_HEIGHT),
-                  fill=(*line, rng.randint(75, 110)), width=hairline)
-
-    for _ in range(rng.randint(16, 24)):
-        x, y = rng.random(), rng.random()
-        if not far_from_centre(x, y):
-            continue
-        r = rng.uniform(1.8, 4.5)
-        draw.ellipse((x * COVER_WIDTH - r, y * COVER_HEIGHT - r,
-                      x * COVER_WIDTH + r, y * COVER_HEIGHT + r),
-                     fill=(*line, rng.randint(130, 200)))
-
-    # Размытие — только чтобы снять лесенку ImageDraw (он не сглаживает).
-    shapes = shapes.filter(ImageFilter.GaussianBlur(COVER_HEIGHT * 0.0016))
-    return Image.alpha_composite(img.convert("RGBA"), shapes).convert("RGB")
+    # Толщина и альфа подняты против прежних «hairline» + 100/150:
+    # пользователь жаловался, что элементы «едва различимы». Мотивы — второй
+    # уровень после иконки, и они должны читаться с первого взгляда, а не
+    # прищуриваясь. Сильный блюр на слое + светлый line в палитре дают
+    # нужный «мягкий, но заметный» вид.
+    scene = Image.new("RGBA", (COVER_WIDTH, COVER_HEIGHT), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(scene)
+    hairline = max(3, round(COVER_HEIGHT * 0.0040))
+    line_w = max(hairline + 1, round(COVER_HEIGHT * 0.0075))
+    _pick_scene(subject)(rng, draw, COVER_WIDTH, COVER_HEIGHT,
+                         line, soft, ink, line_w, hairline)
+    scene = scene.filter(ImageFilter.GaussianBlur(COVER_HEIGHT * 0.0014))
+    return Image.alpha_composite(img.convert("RGBA"), scene).convert("RGB")
 
 
-def render_fallback_cover(color: str, icon: str = "", seed: int | None = None):
+def render_fallback_cover(color: str, icon: str = "", seed: int | None = None,
+                          subject: str | None = None):
     """Полноценный фон обложки без единого обращения к внешним сервисам.
 
     icon в рендер не входит и принимается только для симметрии вызова: главный
     символ рисуют клиенты поверх этой картинки (см. докстринг модуля), поэтому
     фолбэк и AI-версия проходят один и тот же путь.
+
+    subject — название класса: попадает в render_background и подбирает
+    тематическую сцену (математика → координатная сетка, программирование →
+    ноды и т.д.), чтобы фолбэк отличался от предмета к предмету так же, как
+    AI-версия. Пусто — общий набор мотивов.
     """
-    return render_background(color, seed)
+    return render_background(color, seed, subject=subject)
 
 
 def encode_png(img) -> bytes:

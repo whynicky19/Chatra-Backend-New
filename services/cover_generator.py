@@ -128,7 +128,8 @@ async def _request_background(color: str, icon: str, seed: int,
     return raw, data.get("usage") or {}
 
 
-def _compose_and_store(background: bytes | None, color: str, icon: str, seed: int) -> tuple[str, str, str]:
+def _compose_and_store(background: bytes | None, color: str, icon: str,
+                       seed: int, subject: str | None = None) -> tuple[str, str, str]:
     """Приводит фон к кадру 16:9 и кладёт его в хранилище.
 
     Символ сюда не подмешивается: картинка — это чистый фон, поверх которого
@@ -163,7 +164,7 @@ def _compose_and_store(background: bytes | None, color: str, icon: str, seed: in
             image = None
 
     if image is None:
-        image = cover_art.render_fallback_cover(color, seed=seed)
+        image = cover_art.render_fallback_cover(color, seed=seed, subject=subject)
 
     stored = store_cover_bytes(cover_art.encode_png(image))
     if stored is None:
@@ -205,17 +206,22 @@ async def build_cover(color: str, icon: str, seed: int | None = None,
     # Pillow и загрузка в R2 блокируют — в async-эндпоинте они встали бы
     # поперёк event loop и подвесили остальные запросы воркера.
     cover_url, thumb_url, source = await run_in_threadpool(
-        _compose_and_store, background, color, icon, seed
+        _compose_and_store, background, color, icon, seed, subject
     )
     return cover_url, thumb_url, source, usage
 
 
-def build_fallback_cover(color: str, icon: str, seed: int | None = None) -> tuple[str, str, str]:
+def build_fallback_cover(color: str, icon: str, seed: int | None = None,
+                         subject: str | None = None) -> tuple[str, str, str]:
     """Только локальный рендер, без обращения к OpenAI (~30 мс).
 
     Используется при создании класса: обложка есть сразу и бесплатно, а
     AI-версию клиент запрашивает следующим шагом явной кнопкой. Так класс
     не может появиться без обложки, даже если генерацию потом отменят.
+
+    subject — название класса: попадает в render_background и подбирает
+    тематическую сцену.
     """
     return _compose_and_store(None, cover_art.normalize_color(color),
-                              cover_art.normalize_icon(icon), seed or 0)
+                              cover_art.normalize_icon(icon), seed or 0,
+                              subject=subject)

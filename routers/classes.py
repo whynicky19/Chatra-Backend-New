@@ -217,7 +217,8 @@ def create_class(
     color = cover_art.normalize_color(body.cover_color)
     icon = cover_art.normalize_icon(body.cover_icon)
     try:
-        cover_image, cover_thumbnail, source = cover_generator.build_fallback_cover(color, icon)
+        cover_image, cover_thumbnail, source = cover_generator.build_fallback_cover(
+            color, icon, subject=body.name)
     except cover_generator.CoverStorageError:
         # Хранилище недоступно — класс всё равно создаём: без обложки он
         # полностью работоспособен, а UI отрисует градиент по цвету (клиенты
@@ -329,7 +330,8 @@ def update_class(
         color = cover_art.normalize_color(data.get("cover_color", obj.cover_color))
         icon = cover_art.normalize_icon(data.get("cover_icon", obj.cover_icon))
         try:
-            cover_image, cover_thumbnail, source = cover_generator.build_fallback_cover(color, icon)
+            cover_image, cover_thumbnail, source = cover_generator.build_fallback_cover(
+                color, icon, subject=data.get("name", obj.name))
             data["cover_image"] = cover_image
             data["cover_thumbnail"] = cover_thumbnail
             data["cover_source"] = source
