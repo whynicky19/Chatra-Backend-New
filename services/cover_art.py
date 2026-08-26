@@ -642,76 +642,90 @@ def catalog() -> dict:
 # дизайн-система. Прежние обложки при этом не трогаются — каждая живёт своей
 # картинкой в хранилище, пока её не перегенерируют.
 #
+# Принцип дизайн-системы (2026, редизайн по референсу «soft hero object»):
+#   ICON   = MAIN FOCUS        — центр кадра это СЦЕНА под иконку, которую
+#                                клиенты кладут поверх картинки; сама модель
+#                                глиф не рисует, только свето-глубину под него;
+#   COLOR  = VISUAL IDENTITY   — один оттенок, один мягкий градиент;
+#   SUBJECT NAME = BACKGROUND CONTEXT — название предмета лишь источник двух-
+#                                трёх ненавязчивых мотивов у краёв кадра.
+#
 # Баланс инструкций тут важнее формулировок. Версия на 4000 символов и 34
 # запрета (одиннадцать из которых требовали пустоты: «hairline», «low
 # contrast», «generous empty space», «empty margin along all four edges»,
 # «stays dark and calm») дала ровно то, что и должна была: модель выполнила
 # все ограничения сразу, не нарисовав ничего — голый градиент с парой пылинок.
-# Поэтому теперь сначала ЧТО рисуем и сколько этого должно быть, и только
-# потом — ограничения, каждое ровно по одному разу.
+# Поэтому сначала ЧТО рисуем и сколько этого должно быть, и только потом —
+# ограничения, каждое ровно по одному разу.
 _BASE_STYLE = (
-    "Design the background of a course cover for a premium educational "
-    "application: a deep, richly coloured, elegant, Apple-like graphic in a "
-    "wide 16:9 frame. "
+    "Artwork for a course cover in a premium educational application, "
+    "Apple-like design language: minimalistic, elegant, modern, clean and "
+    "soft, in a wide 16:9 frame. "
+    "Subject of the course: \"{subject}\" — use it only as background "
+    "context, never write it or any other word on the image. "
 
-    # 1. Что рисуем — первым и с обязательным покрытием кадра.
-    # Название приходит от преподавателя и печатать его на картинке нельзя:
-    # запрет стоит вплотную к самому названию, а не только в общем списке в
-    # конце — так модель реже пытается подписать обложку.
-    "Subject of the course: \"{subject}\" — use it only as the topic, never "
-    "write it, or any other word, on the image. "
-    "Draw a background built from "
-    "abstract elements of this subject — for example: {motif}. These are only "
-    "examples: if they do not fit the subject, ignore them and use elements "
-    "that do, the subject name always wins. The cover must be instantly "
-    "recognisable as this field of knowledge, and two different subjects must "
-    "never get the same background. "
+    # 1. Единственный фокус композиции — центральная сцена под иконку.
+    # Яркость сцены названа умеренной специально: кадр проходит через
+    # normalize_exposure, и центр светлее углов больше чем в ~2.2 раза гасится
+    # радиальной маской — белый «прожектор» превращался в грязное пятно.
+    "The composition has ONE clear focal point at the centre: a softly "
+    "glowing stage for the app's subject icon — a calm, gently luminous "
+    "pool of the same hue as the background, lifted toward pastel, only "
+    "moderately brighter than the field around it, with a wide soft halo "
+    "and a whisper of depth beneath it, like a shallow pedestal of light. "
+    "Its light is tinted, never white and never a spotlight. Every element "
+    "of the drawing defers to this central glow: it is the calmest, most "
+    "important place in the frame, and nothing may stand inside it. "
 
-    "These elements are the content of this image, not a decoration: they "
-    "cover most of the frame as one continuous, airy drawing — the left and "
-    "the right side carrying a similar amount, the upper and the lower areas "
-    "used as well. "
+    # 2. Предмет — источник фоновых мотивов, всегда второстепенных.
+    "Around that centre, the subject appears only as quiet background "
+    "context: two or three large, understated motifs of this field — for "
+    "example: {motif} — drifting near the left and right edges. These are "
+    "only examples: if they do not fit the subject, use elements that do, "
+    "the subject name always wins. Draw them as soft, semi-transparent "
+    "shapes in a pale tint of the background colour, gently fading into "
+    "the gradient, with a subtle matte 3D roundness. They are a hint of "
+    "the discipline, not a catalogue: no more than three motifs, clear air "
+    "between them, and they must never compete with the central glow in "
+    "brightness or detail. "
 
-    # 2. Как рисуем — видимость задана явно, иначе «тонко» читается как «никак».
-    "Draw them as line art: clean outlines of even weight, thin but solid, "
-    "like a technical pen, in a pale lighter tint of the background colour, "
-    "glowing softly. They must be clearly visible and readable when the cover "
-    "is shown as a small card — a blueprint drawn in light ink on dark paper, "
-    "not a barely perceptible texture, not smoke, not blur. Flat outlines "
-    "only: no fill, no shading, no relief, no drop shadow, no volume, no "
-    "perspective — a schematic technical drawing, all of it in the same "
-    "weight, as if drawn by one hand in one pass. Do not gather several "
-    "complete objects into a scene or a collage, and never draw a row of "
-    "icons. "
+    # 3. Цветовая идентичность и свет.
+    "Colour identity: {color}. The whole frame is one smooth, subtle "
+    "gradient of this single hue — soft, airy and premium, gently deeper "
+    "toward the corners, never black, never grey, never oversaturated, no "
+    "neon. Light is soft and diffused, like frosted glass lit from behind; "
+    "transitions between tones are slow and silky. "
 
-    # 3. Цвет и свет. Здесь стояло только «darkest at the corners» — модель
-    # доводила углы до чёрного, и обложка выглядела погашенной. Теперь у
-    # темноты явно назван предел: угол тёмный, но это по-прежнему цвет.
-    "Colour: {color}. Fill the frame with one smooth gradient of this single "
-    "colour family, darkest at the corners — but the colour must stay clearly "
-    "visible everywhere, even the darkest corner is a deep tint of it, never "
-    "black, near-black or washed out to grey. Light it with a wide, dim glow "
-    "behind the middle: it lifts the whole frame to a comfortable mid-deep "
-    "brightness, soft and evenly spread, never a bright spotlight, "
-    "never a white-hot core, no neon and no glare. "
+    # 4. Коллекция: единая система у всех предметов.
+    "Every cover in this collection follows exactly the same visual system: "
+    "the same central-glow composition, the same softness, the same level "
+    "of detail, the same lighting and the same treatment of background "
+    "motifs. Only the colour, the chosen motifs and their placement change "
+    "from subject to subject. "
 
-    # 4. Центр под символ.
-    "Leave a clear circular area in the middle, about one third of the image "
-    "width across, holding nothing but the gradient — no line may cross it. "
-    "The interface places a single large subject symbol there, and it stays "
-    "the main accent of the cover. Keep the top and bottom edges calmer, the "
-    "artwork is cropped there. "
+    # 5. Запреты — один короткий список в конце.
+    "Never draw text, letters, numbers or logos; never draw an icon or "
+    "glyph shape at the centre — the glow itself is the stage, the "
+    "interface adds the icon later; no busy backgrounds, no collages of "
+    "many objects, no rows of icons, no cyberpunk or techno style, no "
+    "strong neon, no clutter in the corners, no photographic stock-image "
+    "look, no people or characters."
+)
 
-    # 5. Коллекция.
-    "Every cover in this collection shares one style: the same depth of "
-    "colour, the same soft light, the same thin-line drawing. Only the colour "
-    "and the subject of the drawing change. "
-
-    # 6. Запреты — один короткий список в конце.
-    "Never draw text, letters, numbers, subject names or logos; never draw the "
-    "subject symbol itself; no photographs, people, characters or unrelated "
-    "objects; no 3D rendering, no glossy materials, no cartoon style; no "
-    "rainbow or multi-colour palettes."
+# Варианты раскладки для Regenerate — куда сместить свет и где собрались
+# мотивы. Центральная сцена остаётся свободной в каждом варианте: это условие
+# читаемости иконки, а не одна из альтернатив.
+_COMPOSITIONS = (
+    "Layout: two motifs balance each other at the lower left and upper right "
+    "edges, the central glow sits just above centre.",
+    "Layout: one large motif half-fades beyond the right edge, a smaller "
+    "echo answers it near the lower left, the glow centred.",
+    "Layout: the motifs drift as a loose arc through the upper third, the "
+    "glow rests slightly below centre.",
+    "Layout: the motifs sit far apart at opposite edges, linked by one long "
+    "thin horizon line passing behind the central glow.",
+    "Layout: the motifs are small and scattered like distant constellations "
+    "in the outer thirds, the middle of the frame almost entirely calm air.",
 )
 
 # Варианты раскладки для Regenerate — куда сместить свет и где собрать
@@ -843,8 +857,12 @@ def fit_cover_frame(img):
 # как есть.
 EXPOSURE_MEAN_MAX = 82.0    # выше — обложка «светлая», выбивается из коллекции
 EXPOSURE_MEAN_MIN = 44.0    # ниже — цвет и графика тонут в темноте
-EXPOSURE_CENTRE_RATIO = 2.2  # во сколько раз центр вправе быть светлее углов
-EXPOSURE_MAX_DIP = 0.45      # сильнее середину не гасим ни при каком исходнике
+# Центральная сцена под иконку — НАМЕРЕННАЯ часть нового дизайна (см. промпт:
+# «softly glowing stage»), поэтому порог «прожектора» поднят: свечение в
+# центре вправе быть заметно ярче углов. Старые 2.2 давили лёгкое свечение
+# до грязно-серого пятна посреди кадра.
+EXPOSURE_CENTRE_RATIO = 3.6
+EXPOSURE_MAX_DIP = 0.30     # сильнее середину не гасим ни при каком исходнике
 
 # Пределы одного шага яркости. Вниз — не больше чем вдвое (иначе засвеченный
 # кадр превращается в грязь), вверх — до 2.2×: подъём с прежних 1.6 нужен,

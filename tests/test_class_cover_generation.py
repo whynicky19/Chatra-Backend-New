@@ -185,39 +185,30 @@ def test_prompt_is_one_style_across_subjects():
     for p in prompts:
         for required in (
             # что нельзя рисовать
-            "never draw text, letters, numbers, subject names or logos",
-            "never draw the subject symbol itself",
-            "no photographs, people, characters or unrelated objects",
-            "no 3d rendering", "no glossy materials", "no cartoon style",
-            "rainbow or multi-colour palettes",
-            # сама дизайн-система
-            "apple-like", "16:9", "one smooth gradient",
-            "wide, dim glow",
-            # Глубокий — не чёрный: без этого модель уводила углы в черноту и
-            # обложка выходила погашенной, на что и жаловались.
-            "never black, near-black or washed out to grey",
-            # Центр не выжигаем: модель ставила туда прожектор и обложка
-            # превращалась в фонарик в темноте.
-            "never a bright spotlight", "never a white-hot core",
-            # Только контур: у одной партии History нарисовал объёмные здания
-            # со светотенью, а Physics — чистую линию, и рядом это читалось
-            # как две разные системы.
-            "draw them as line art", "outlines of even weight",
-            "no shading", "no relief", "no drop shadow", "no volume",
-            "schematic technical drawing", "drawn by one hand in one pass",
-            "do not gather several complete objects into a scene or a collage",
-            # Тематика обязана заполнять кадр — см. соседний тест про пустоту.
-            "these elements are the content of this image",
-            "they cover most of the frame",
-            "the left and the right side carrying a similar amount",
-            # И быть ВИДНЫ, а не угадываться.
-            "clearly visible and readable when the cover",
-            "blueprint drawn in light ink on dark paper",
-            "not a barely perceptible texture",
-            "every cover in this collection shares one style",
-            # символ — главный акцент, фон вторичен
-            "clear circular area in the middle", "no line may cross it",
-            "stays the main accent of the cover",
+            "never draw text, letters, numbers or logos",
+            # Иконку в центре рисует КЛИЕНТ поверх картинки — модель делает
+            # только сцену под неё, иначе глиф задваивается.
+            "never draw an icon or glyph shape at the centre",
+            "no photographic stock-image look, no people or characters",
+            # сама дизайн-система (редакция «soft hero object»)
+            "apple-like", "16:9", "one smooth, subtle gradient",
+            "soft, airy and premium",
+            # Цвет не уходит ни в черноту, ни в неон.
+            "never black, never grey, never oversaturated, no neon",
+            # Единственный фокус композиции — сцена под иконку.
+            "one clear focal point at the centre",
+            "softly glowing stage for the app's subject icon",
+            "nothing may stand inside it",
+            # Свечение — тонированное, не прожектор: иначе normalize_exposure
+            # гасит центр до грязного пятна.
+            "tinted, never white and never a spotlight",
+            # Предмет — только фон: немного мотивов у краёв.
+            "quiet background context",
+            "no more than three motifs",
+            "never compete with the central glow",
+            # Коллекция.
+            "every cover in this collection follows exactly the same visual system",
+            "only the colour, the chosen motifs and their placement change",
         ):
             assert required in p, f"в промпте пропало «{required}»"
         # Прежняя ошибка: жёсткая «чистая полоса» под иконку превращала
@@ -271,8 +262,8 @@ def test_prompt_passes_the_subject_name_as_topic_only():
     AI-текст, который потом никак не исправить."""
     p = cover_art.build_prompt("blue", "code", seed=3, subject="Web Design")
     assert "Web Design" in p
-    assert "never write it, or any other word, on the image" in p
-    assert "never draw text, letters, numbers, subject names or logos" in p.lower()
+    assert "never write it or any other word on the image" in p
+    assert "never draw text, letters, numbers or logos" in p.lower()
 
 
 def test_theme_follows_the_class_name_not_the_chosen_symbol():
@@ -333,7 +324,7 @@ def test_subject_name_cannot_smuggle_instructions_into_the_prompt():
     # Кавычки вокруг темы остаются ровно одни — вырваться из них нечем.
     assert p.count('"') == 2
     # И стиль коллекции всё равно на месте, чем бы ни назвали класс.
-    assert "Apple-like graphic in a wide 16:9 frame" in p
+    assert "Apple-like design language" in p and "16:9" in p
 
 
 def test_regenerate_varies_composition_but_not_style():
@@ -604,7 +595,7 @@ def test_generation_sends_the_class_name_as_the_topic(client, teacher, storage, 
 
     assert "Веб-дизайн" in prompts[0]
     # И запрет на текст внутри картинки едет тем же промптом.
-    assert "never write it, or any other word, on the image" in prompts[0]
+    assert "never write it or any other word on the image" in prompts[0]
 
 
 def test_generation_updates_appearance_when_client_picks_new_values(client, teacher, storage, monkeypatch):
@@ -1097,12 +1088,18 @@ def test_exposure_never_burns_a_hole_in_the_centre():
     Гашение ограничено EXPOSURE_MAX_DIP: раньше проходы перемножались до 0.17
     и середина превращалась в тёмную дыру, а нарисованное на ней — в ровное
     пятно. Лучше чуть более светлый центр, чем испорченная обложка.
+
+    Порог «прожектора» поднят (EXPOSURE_CENTRE_RATIO = 3.6): центральная
+    светящаяся сцена под иконку — намеренная часть нового дизайна, и лёгое
+    свечение гасить нельзя — оно сереет в грязное пятно.
     """
     burnt = _lit_cover(spot=250)
     before = cover_art._exposure_stats(burnt)
     after = cover_art._exposure_stats(cover_art.normalize_exposure(burnt))
 
-    assert after[1] / after[2] < before[1] / before[2] * 0.75, "прожектор не поджался"
+    # Экстремальный прожектор подводится к границе допустимого, а не остаётся как есть.
+    assert after[1] / after[2] <= cover_art.EXPOSURE_CENTRE_RATIO + 0.5, "прожектор не поджался"
+    assert after[1] / after[2] < before[1] / before[2], "центр должен потемнеть"
     # Центр обязан остаться светлее краёв: обложка светится изнутри, а не
     # наоборот.
     assert after[1] > after[2]
