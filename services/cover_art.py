@@ -46,6 +46,7 @@
 """
 import colorsys
 import logging
+import math
 import random
 import re
 
@@ -1357,10 +1358,9 @@ def _scene_biology(rng, draw, W, H, line, soft, ink, line_w, hairline):
         t = i / (steps - 1)
         x = margin_x + span * t
         phase = t * turns * 2 * 3.14159
-        y = H * 0.52 + amp * (1 if (phase / 3.14159) % 2 < 1 else -1) * 0
-        # Чистая синусоида: y = H*0.5 + amp * sin(phase)
-        y_a = H * 0.52 + amp * (0.6 * (i % 6) / 3 - 0.6) if False else (H * 0.52 + amp * (1 if (i // 4) % 2 == 0 else -1) * 0.55)
-        y_b = H * 0.52 - (y_a - H * 0.52)
+        # Чистая синусоида: y = H*0.5 ± amp * sin(phase)
+        y_a = H * 0.52 + amp * math.sin(phase)
+        y_b = H * 0.52 - amp * math.sin(phase)
         pts_a.append((x, y_a))
         pts_b.append((x, y_b))
     for a, b in zip(pts_a, pts_a[1:]):

@@ -185,32 +185,31 @@ def test_prompt_is_one_style_across_subjects():
     for p in prompts:
         for required in (
             # что нельзя рисовать
-            "never draw text, letters, numbers or logos",
+            "never draw text, letters, numbers, formulas-as-text, logos or labels",
             # Иконку в центре рисует КЛИЕНТ поверх картинки — модель делает
             # только сцену под неё, иначе глиф задваивается.
             "never draw an icon or glyph shape at the centre",
             "no photographic stock-image look, no people or characters",
-            # сама дизайн-система (редакция «soft hero object»)
-            "apple-like", "16:9", "one smooth, subtle gradient",
+            # сама дизайн-система (редакция «уникальная сцена предмета»)
+            "apple-like", "16:9",
             "soft, airy and premium",
             # Цвет не уходит ни в черноту, ни в неон.
             "never black, never grey, never oversaturated, no neon",
-            # Единственный фокус композиции — сцена под иконку.
-            "one clear focal point at the centre",
-            "softly glowing stage for the app's subject icon",
-            "nothing may stand inside it",
-            # Свечение — тонированное, не прожектор: иначе normalize_exposure
-            # гасит центр до грязного пятна.
-            "tinted, never white and never a spotlight",
-            # Предмет — только фон: немного мотивов у краёв.
-            "quiet background context",
-            "no more than three motifs",
-            "never compete with the central glow",
+            # Сцена определяется предметом, а не общим шаблоном.
+            "build a unique visual scene for this subject",
+            # Под иконкой спокойно, но БЕЗ пьедестала: «тарелку» вывели из
+            # дизайна и в промпт явно запрещают.
+            "do not draw a glowing pedestal",
+            "leave the area where the icon will land relatively calm",
+            # Мотивы — заметный второй уровень: раньше требование видимости
+            # отсутствовало, и мотивы гасились до прозрачности.
+            "3 to 6 thematic elements",
+            "not allowed to be nearly transparent or barely discernible",
             # Коллекция.
             "every cover in this collection follows exactly the same visual system",
-            "only the colour, the chosen motifs and their placement change",
+            "only the colour, the scene and the chosen motifs change",
         ):
-            assert required in p, f"в промпте пропало «{required}»"
+            assert required in p.lower(), f"в промпте пропало «{required}»"
         # Прежняя ошибка: жёсткая «чистая полоса» под иконку превращала
         # обложку в SaaS-фон. Середина спокойная, но не вырезанная зона.
         assert "left third" not in p and "right third" not in p
@@ -243,8 +242,10 @@ def test_prompt_does_not_pile_up_demands_for_emptiness():
         assert banned not in p, f"в промпт вернулось требование пустоты «{banned}»"
 
     # Длина сама по себе не порок, но 4000 символов оказались симптомом:
-    # столько ограничений модель уже не удерживает.
-    assert len(p) < 3200, f"промпт снова разросся: {len(p)} символов"
+    # столько ограничений модель уже не удерживает. Новая редакция длиннее
+    # за счёт описания сцены ({scene}) — потолок поднят с учётом этого,
+    # но по-прежнему далёк от 4000.
+    assert len(p) < 3500, f"промпт снова разросся: {len(p)} символов"
 
 
 def test_prompt_carries_chosen_colour_and_thematic_hint():
@@ -262,8 +263,7 @@ def test_prompt_passes_the_subject_name_as_topic_only():
     AI-текст, который потом никак не исправить."""
     p = cover_art.build_prompt("blue", "code", seed=3, subject="Web Design")
     assert "Web Design" in p
-    assert "never write it or any other word on the image" in p
-    assert "never draw text, letters, numbers or logos" in p.lower()
+    assert "never draw text, letters, numbers, formulas-as-text, logos or labels" in p.lower()
 
 
 def test_theme_follows_the_class_name_not_the_chosen_symbol():
@@ -273,7 +273,9 @@ def test_theme_follows_the_class_name_not_the_chosen_symbol():
     p = cover_art.build_prompt("teal", "flask", seed=1, subject="Physics")
     assert cover_art.SUBJECT_MOTIFS[3][1] in p          # волны, силовые линии
     assert cover_art.ICONS["flask"]["motif"] not in p   # молекул и колб нет
-    assert "the subject name always wins" in p
+    # Сцена тоже подбирается по названию (orbit paths и прочая физика),
+    # а не по выбранному символу.
+    assert cover_art.SUBJECT_SCENES[7][1] in p
 
 
 @pytest.mark.parametrize("name,expect", [
@@ -321,8 +323,8 @@ def test_subject_name_cannot_smuggle_instructions_into_the_prompt():
     assert len(cleaned) <= cover_art.SUBJECT_MAX_LEN
 
     p = cover_art.build_prompt("blue", "book", seed=1, subject=hostile)
-    # Кавычки вокруг темы остаются ровно одни — вырваться из них нечем.
-    assert p.count('"') == 2
+    # Тема сидит ровно в своей паре кавычек промпта — вырваться из них нечем.
+    assert f'"{cleaned}"' in p
     # И стиль коллекции всё равно на месте, чем бы ни назвали класс.
     assert "Apple-like design language" in p and "16:9" in p
 
@@ -333,6 +335,7 @@ def test_regenerate_varies_composition_but_not_style():
     base = cover_art._BASE_STYLE.format(
         color=cover_art.PALETTE["teal"]["prompt"],
         subject=cover_art.ICONS["atom"]["subject"],
+        scene=cover_art.resolve_scene(cover_art.ICONS["atom"]["subject"]),
         motif=cover_art.ICONS["atom"]["motif"],
     )
     assert base in a and base in b       # стиль и цвет те же
@@ -392,9 +395,11 @@ def test_fallback_is_deep_but_not_dark():
 
 
 def test_fallback_centre_is_calmer_than_the_edges():
-    """Символ — главный акцент, фон вторичен. Локальный рендер держит это тем
-    же способом, что и промпт: графика уходит к краям, в середине только
-    градиент и свечение."""
+    """Символ — главный акцент, поэтому в его зоне не должно быть самого
+    контрастного штриха кадра. Новая дизайн-система («мотивы обязаны
+    читаться») сознательно пустила тематическую графику через середину,
+    так что прежний порог 0.25 больше не соответствует контракту: меряем,
+    что центр не ДОМИНИРУЕТ по деталям."""
     from PIL import ImageChops, ImageFilter
 
     for color in ("blue", "orange", "teal"):
@@ -407,8 +412,8 @@ def test_fallback_centre_is_calmer_than_the_edges():
             w, h = detail.size
             centre = detail.crop((round(w * 0.34), round(h * 0.28),
                                   round(w * 0.66), round(h * 0.72)))
-            assert centre.getextrema()[1] < detail.getextrema()[1] * 0.25, (
-                f"{color}/{seed}: под символом слишком контрастная графика — он утонет"
+            assert centre.getextrema()[1] < detail.getextrema()[1] * 0.75, (
+                f"{color}/{seed}: самый контрастный штрих стоит под символом — он утонет"
             )
 
 
@@ -595,7 +600,7 @@ def test_generation_sends_the_class_name_as_the_topic(client, teacher, storage, 
 
     assert "Веб-дизайн" in prompts[0]
     # И запрет на текст внутри картинки едет тем же промптом.
-    assert "never write it or any other word on the image" in prompts[0]
+    assert "never draw text, letters, numbers, formulas-as-text, logos or labels" in prompts[0].lower()
 
 
 def test_generation_updates_appearance_when_client_picks_new_values(client, teacher, storage, monkeypatch):
@@ -1083,15 +1088,16 @@ def test_exposure_is_pulled_into_the_collection_band():
 
 
 def test_exposure_never_burns_a_hole_in_the_centre():
-    """Совсем выжженный кадр не дотягивается до цели — и это правильно.
+    """Совсем выжженный кадр не должен превращаться в тёмную дыру в центре.
 
     Гашение ограничено EXPOSURE_MAX_DIP: раньше проходы перемножались до 0.17
-    и середина превращалась в тёмную дыру, а нарисованное на ней — в ровное
-    пятно. Лучше чуть более светлый центр, чем испорченная обложка.
+    и середина превращалась в ровное пятно. Лучше чуть более светлый центр,
+    чем испорченная обложка.
 
-    Порог «прожектора» поднят (EXPOSURE_CENTRE_RATIO = 3.6): центральная
-    светящаяся сцена под иконку — намеренная часть нового дизайна, и лёгое
-    свечение гасить нельзя — оно сереет в грязное пятно.
+    Порог «прожектора» поднят (EXPOSURE_CENTRE_RATIO = 5.5): мягкое свечение
+    изнутри — намеренная часть нового дизайна, лёгое гасить нельзя — оно
+    сереет в грязное пятно. Фикстура ниже порога, так что сцена проходит
+    насквозь — главное, что центр никогда не раздавлен.
     """
     burnt = _lit_cover(spot=250)
     before = cover_art._exposure_stats(burnt)
@@ -1099,10 +1105,10 @@ def test_exposure_never_burns_a_hole_in_the_centre():
 
     # Экстремальный прожектор подводится к границе допустимого, а не остаётся как есть.
     assert after[1] / after[2] <= cover_art.EXPOSURE_CENTRE_RATIO + 0.5, "прожектор не поджался"
-    assert after[1] / after[2] < before[1] / before[2], "центр должен потемнеть"
     # Центр обязан остаться светлее краёв: обложка светится изнутри, а не
     # наоборот.
     assert after[1] > after[2]
+    # И центр не раздавлен: суммарное затемнение всегда мягче MAX_DIP.
     assert after[1] >= before[1] * cover_art.EXPOSURE_MAX_DIP * 0.9
 
 
