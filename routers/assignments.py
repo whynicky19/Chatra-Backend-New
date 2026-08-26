@@ -604,7 +604,12 @@ async def ai_grade_submission(
         )
 
     assignment = crud.get_assignment(db, sub.assignment_id)
-    criteria = _json.loads(assignment.criteria) if assignment.criteria else []
+    try:
+        criteria = _json.loads(assignment.criteria) if assignment.criteria else []
+        if not isinstance(criteria, list):
+            criteria = []
+    except Exception:
+        criteria = []
 
     if not criteria:
         raise HTTPException(
@@ -614,47 +619,22 @@ async def ai_grade_submission(
 
     crud.set_submission_status(db, submission_id, "grading")
 
+    # Общий пайплайн с автопроверкой по дедлайну (services/deadline_checker.py):
+    # сбор текстов файлов, классификация фото/документы, встроенные картинки.
+    from services.ai_grader import collect_submission_material
+    try:
+        full_text, image_urls, embedded_images = await collect_submission_material(
+            text_content=sub.text_content,
+            file_url=sub.file_url,
+            file_urls_json=sub.file_urls,
+        )
+    except Exception:
+        crud.set_submission_status(db, submission_id, "submitted")
+        raise
 
-    full_text = sub.text_content or ""
-
-    all_urls: list = []
-    if sub.file_urls:
-        try:
-            all_urls = _json.loads(sub.file_urls)
-        except Exception:
-            pass
-    if not all_urls and sub.file_url:
-        all_urls = [sub.file_url]
-
-    # Фото рукописных работ идут отдельным vision-путём (grade_handwritten_
-    # submission) с обязательной проверкой уверенности распознавания —
-    # остальные файлы (docx/pdf/txt/...) читаются как раньше в full_text.
-    image_urls = [u for u in all_urls if u.split("?")[0].rsplit(".", 1)[-1].lower() in _IMAGE_EXTS]
-    doc_urls = [u for u in all_urls if u not in image_urls]
-
-    from services.ai_grader import _fetch_file_text, _fetch_embedded_images, _fetch_pdf_page_images
-    embedded_images: list = []
-    for i, url in enumerate(doc_urls):
-        file_text = await _fetch_file_text(url)
-        if file_text.strip():
-            label = f"ФАЙЛ {i+1}" if len(doc_urls) > 1 else "СОДЕРЖИМОЕ ФАЙЛА"
-            full_text = (
-                (full_text + f"\n\n{label}:\n" + file_text).strip()
-                if full_text
-                else f"{label}:\n{file_text}"
-            )
-        # .docx/.pptx может нести ответ КАРТИНКОЙ (скриншот/скан/фото/схема) —
-        # doc.paragraphs/doc.tables выше видят только текстовый слой, без
-        # этого студент терял бы баллы не за содержание, а за способ вставки.
-        embedded_images.extend(await _fetch_embedded_images(url))
-        # PDF-скан без текстового слоя (частый случай "сканер в приложении
-        # телефона") раньше уходил только в слабый OCR-текст — рендерим
-        # страницы как изображения, чтобы модель читала их vision'ом, как
-        # уже делает для отдельно загруженных фото рукописных работ.
-        embedded_images.extend(await _fetch_pdf_page_images(url))
-
-    if not full_text and not image_urls and not embedded_images:
-        full_text = f"[Студент сдал файл(ы), но прочитать не удалось: {', '.join(all_urls)}]"
+    if not full_text.strip() and not image_urls and not embedded_images:
+        all_urls_hint = sub.file_urls or sub.file_url or ""
+        full_text = f"[Студент сдал файл(ы), но прочитать не удалось: {all_urls_hint}]"
 
 
     reference_urls: list = crud.resolve_reference_solution_urls(db, assignment, sub)
@@ -686,9 +666,14 @@ async def ai_grade_submission(
                 lecture_context=lecture_context if lecture_context else None,
                 embedded_image_urls=embedded_images if embedded_images else None,
             )
-    except RuntimeError as e:
+    except Exception as e:
+        # Раньше ловили только RuntimeError: любое другое исключение между
+        # set_status("grading") и записью оценки оставляло сдачу навсегда
+        # в статусе "grading" (расшивал её только reaper раз в 15 минут).
         crud.set_submission_status(db, submission_id, "submitted")
-        raise HTTPException(status_code=502, detail=str(e))
+        if isinstance(e, RuntimeError):
+            raise HTTPException(status_code=502, detail=str(e))
+        raise
 
 
     try:

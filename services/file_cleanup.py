@@ -266,6 +266,20 @@ def delete_replaced_post_cover(old_body: str | None, new_body: str | None) -> bo
     return False
 
 
+def delete_removed_post_files(old_body: str | None, new_body: str | None) -> int:
+    """При редактировании лекции — удаляет из хранилища файлы, убранные из
+    body["files"] (пользователь снял «чип» файла при правке). Раньше чистилась
+    только обложка, а снятые вложения навсегда оставались в R2 (orphaned) —
+    в отличие от заданий, где crud.assignments.update_assignment корректно
+    сравнивает старые/новые URL."""
+    old_files = set(_post_attachment_urls(old_body))
+    if not old_files:
+        return 0
+    new_files = set(_post_attachment_urls(new_body))
+    removed = old_files - new_files
+    return delete_urls(removed)
+
+
 def user_file_urls(user) -> set[str]:
     """URL всех файлов, привязанных к пользователю: его сдачи, посты
     (обложки лекций), файлы созданных им заданий (референсы, варианты, сдачи

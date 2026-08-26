@@ -109,10 +109,17 @@ async def _build_chunks_for_lecture_body(content: str) -> list[_ChunkDraft]:
     return await _build_chunks_for_text(content, source_type="text")
 
 
-async def _build_chunks_for_file(url: str) -> tuple[list[_ChunkDraft], bytes]:
-    """Возвращает (чанки, сырые байты файла для content_hash). Переиспользует
-    приватные функции ai_grader — тот же пайплайн extraction/OCR, что и
-    грейдинг: одна кодовая база для "прочитать файл" везде в проекте."""
+async def _build_chunks_for_file(url: str) -> tuple[list[_ChunkDraft], bytes, bool]:
+    """Возвращает (чанки, сырые байты файла для content_hash, download_ok).
+    Переиспользует приватные функции ai_grader — тот же пайплайн
+    extraction/OCR, что и грейдинг: одна кодовая база для "прочитать файл"
+    везде в проекте.
+
+    download_ok=False означает ТРАНЗИТНУЮ ошибку скачивания (сеть/R2):
+    вызывающий код обязан в этом случае НЕ трогать прежний индекс документа
+    (раньше сбой скачивания давал content_hash от имени ключа, документ
+    считался «изменившимся», старый удалялся и создавался пустой — временный
+    сетевой сбой молча выбивал лекцию из поиска ИИ до следующей правки)."""
     from services.ai_grader import (
         _fetch_file_text, _fetch_embedded_images, _fetch_pdf_page_images,
         _fetch_image_data_uri, IMAGE_EXTS,
@@ -123,12 +130,14 @@ async def _build_chunks_for_file(url: str) -> tuple[list[_ChunkDraft], bytes]:
     ext = url.split("?")[0].rsplit(".", 1)[-1].lower() if "." in url.split("?")[0] else ""
 
     raw_bytes = b""
+    download_ok = False
     if is_safe_fetch_url(url):
         try:
             async with httpx.AsyncClient(timeout=25.0) as client:
                 resp = await client.get(sign_upload_url(url))
                 if resp.is_success:
                     raw_bytes = resp.content
+                    download_ok = True
         except Exception:
             raw_bytes = b""
 
@@ -142,7 +151,7 @@ async def _build_chunks_for_file(url: str) -> tuple[list[_ChunkDraft], bytes]:
             caption = await _caption_image(data_uri)
             if caption.strip():
                 chunks.extend(await _build_chunks_for_text(caption, source_type="image_caption"))
-        return chunks, raw_bytes
+        return chunks, raw_bytes, download_ok
 
     file_text = await _fetch_file_text(url)
     if file_text.strip() and not file_text.startswith("["):
@@ -155,7 +164,7 @@ async def _build_chunks_for_file(url: str) -> tuple[list[_ChunkDraft], bytes]:
         if caption.strip():
             chunks.extend(await _build_chunks_for_text(caption, source_type="image_caption"))
 
-    return chunks, raw_bytes
+    return chunks, raw_bytes, download_ok
 
 
 def _parse_lecture_files(body_json: str) -> list[str]:
@@ -270,7 +279,17 @@ async def ingest_lecture(db: Session, post_id: int) -> None:
                 filename = "Текст лекции"
                 mime_type = "text/plain"
             else:
-                drafts, raw_bytes = await _build_chunks_for_file(source_key)
+                drafts, raw_bytes, download_ok = await _build_chunks_for_file(source_key)
+                if not download_ok:
+                    # Транзиентный сбой скачивания: НЕ трогаем прежний индекс
+                    # (если он есть) и не создаём пустой вместо отсутствующего —
+                    # следующий инжест (правка лекции) попробует снова.
+                    if existing:
+                        keep_ids.add(existing.id)
+                    logger.warning(
+                        "rag_ingest: файл %s лекции %s недоступен, источник пропущен", source_key, post_id,
+                    )
+                    continue
                 content_hash = _sha256(raw_bytes) if raw_bytes else _sha256(source_key.encode("utf-8"))
                 if existing and existing.content_hash == content_hash:
                     keep_ids.add(existing.id)

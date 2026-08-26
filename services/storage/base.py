@@ -4,6 +4,8 @@
 CATEGORIES). Ключ объекта строится StorageService.build_key(): '<category>/
 <человекочитаемое-имя>[.<ext>]', с оригинальным именем файла вместо
 случайного UUID и авто-суффиксом при конфликте имён (см. docstring build_key).
+Новые загрузки от клиента (upload_unique) дополнительно получают случайный
+токен в имени — путь непредсказуем для перебора (см. docstring upload_unique).
 """
 import os
 import re
@@ -134,23 +136,21 @@ class StorageService(ABC):
         записать по нему; второй PUT молча перезаписывал байты первого без
         единой ошибки или лога, и файл первого студента терялся насовсем, а
         оба запроса возвращали 200 с одним и тем же file_url. Здесь каждая
-        попытка — один атомарный condition write (put_if_absent); коллизия
-        просто переходит к следующему кандидату вместо перезаписи чужого
-        файла."""
+        попытка — один атомарный condition write (put_if_absent).
+
+        Ключ нового файла всегда получает случайный токен ('<имя>_<token>'):
+        доступ к приватным файлам = знание точного пути + HMAC-подписи.
+        Предсказуемые человекочитаемые пути ('submissions/report.pdf') можно
+        было перебрать, а мидлварь подписей подпишет ЛЮБОЙ /uploads/-путь,
+        встреченный в JSON-ответе (в т.ч. вставленный злоумышленником в текст
+        сообщения/описания) — случайный токен делает такой перебор
+        неосуществимым. Понятное имя файла для скачивания не страдает:
+        клиенты хранят оригинальное имя в #fragment, а Content-Disposition
+        строится из ключа, который по-прежнему читаем."""
         category = category.strip("/")
         stem, ext = _sanitize_filename(original_filename)
         suffix = f".{ext}" if ext else ""
 
-        candidate = f"{category}/{stem}{suffix}"
-        if self.put_if_absent(content, candidate, content_type, cache_control):
-            return self.get_url(candidate)
-        for i in range(1, _MAX_COLLISION_ATTEMPTS + 1):
-            candidate = f"{category}/{stem}_{i}{suffix}"
-            if self.put_if_absent(content, candidate, content_type, cache_control):
-                return self.get_url(candidate)
-        # UUID-хвост занят с исчезающе малой вероятностью, но всё равно пишем
-        # условно — иначе именно в этом (невероятном) случае гонка вернулась
-        # бы обратно.
         for _ in range(_MAX_COLLISION_ATTEMPTS):
             candidate = f"{category}/{stem}_{uuid4().hex[:8]}{suffix}"
             if self.put_if_absent(content, candidate, content_type, cache_control):

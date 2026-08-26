@@ -5,7 +5,7 @@ import httpx
 from datetime import datetime
 from typing import List, Optional, Union, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from deps import get_current_user
 from db import get_db
 from services.rate_limit import RateLimiter
@@ -103,7 +103,9 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     messages: List[ChatMessage]
     max_tokens: int = 2000
-    temperature: float = 0.7
+    # OpenAI принимает temperature 0..2 — невалидное значение раньше уходило
+    # на сторону модели и возвращалось клиенту как сырой 502.
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     class_id: Optional[int] = None
     # Обязателен для главного ассистента (class_id IS NULL). Для репетитора
     # класса (class_id задан) полностью игнорируется.

@@ -261,21 +261,32 @@ def test_upload_unique_atomically_avoids_toctou_collision():
     # Первый кандидат уже занят (гонка/коллизия) -> 412, второй свободен.
     svc._client.put_object.side_effect = [_client_error(412), {}]
     url = svc.upload_unique(b"data", "submissions", "report.pdf", "application/pdf")
-    assert url == "http://localhost:8000/api/uploads/r2/submissions/report_1.pdf"
+    assert url == f"http://localhost:8000/api/uploads/r2/{svc._client.put_object.call_args_list[-1].kwargs['Key']}"
     assert svc._client.put_object.call_count == 2
     first_key = svc._client.put_object.call_args_list[0].kwargs["Key"]
     second_key = svc._client.put_object.call_args_list[1].kwargs["Key"]
-    assert first_key == "submissions/report.pdf"
-    assert second_key == "submissions/report_1.pdf"
+    # Ключи всегда со случайным токеном (непредсказуемый путь), читаемое имя сохранено.
+    assert first_key.startswith("submissions/report_") and first_key.endswith(".pdf")
+    assert second_key.startswith("submissions/report_") and second_key.endswith(".pdf")
+    assert first_key != second_key
 
 
-def test_upload_unique_falls_back_to_uuid_after_exhausting_suffixes():
+def test_upload_unique_key_is_unguessable_but_readable():
+    # Ключ новой загрузки обязан содержать случайный токен: предсказуемые пути
+    # ('submissions/report.pdf') перебирались, а мидлварь подписывает любой
+    # /uploads/-путь в JSON-ответе — случайный токен закрывает перебор.
+    import re as _re
+
     svc = _service()
-    svc._client.put_object.side_effect = [_client_error(412)] * 21 + [{}]
-    url = svc.upload_unique(b"data", "materials", "report.pdf", "application/pdf")
-    assert svc._client.put_object.call_count == 22
-    last_key = svc._client.put_object.call_args_list[-1].kwargs["Key"]
-    assert last_key.startswith("materials/report_") and last_key.endswith(".pdf")
-    tail = last_key[len("materials/report_"):-len(".pdf")]
-    assert tail not in {str(i) for i in range(1, 21)}
-    assert url.endswith(last_key)
+    svc.upload_unique(b"data", "submissions", "report.pdf", "application/pdf")
+    key = svc._client.put_object.call_args.kwargs["Key"]
+    m = _re.match(r"^submissions/report_[0-9a-f]{8}\.pdf$", key)
+    assert m, f"ожидался ключ с токеном, получено: {key}"
+
+
+def test_upload_unique_raises_after_exhausting_attempts():
+    svc = _service()
+    svc._client.put_object.side_effect = [_client_error(412)] * 20
+    with pytest.raises(StorageError):
+        svc.upload_unique(b"data", "materials", "report.pdf", "application/pdf")
+    assert svc._client.put_object.call_count == 20

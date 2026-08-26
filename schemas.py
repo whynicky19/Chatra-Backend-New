@@ -391,7 +391,9 @@ class InviteCodeResponse(BaseModel):
 class SubmissionCreateV2(BaseModel):
     text_content: Optional[str] = Field(default=None, max_length=MAX_SUBMISSION_TEXT_LEN)
     file_url: Optional[str] = None
-    file_urls: Optional[List[str]] = None
+    # Клиентский лимит — 10 файлов на сдачу (upload_limits.dart); без max_length
+    # здесь злоупотребление раздувало ai-grade (до 3 скачиваний на файл).
+    file_urls: Optional[List[str]] = Field(default=None, max_length=10)
     variant_number: Optional[int] = None
 
 class PublicUserResponse(BaseModel):

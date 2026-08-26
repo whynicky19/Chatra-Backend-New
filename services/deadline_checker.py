@@ -13,11 +13,8 @@ from models import Assignment, Deadline, Grade, Submission
 from services.ai_grader import (
     grade_submission as _ai_grade,
     grade_handwritten_submission as _ai_grade_handwritten,
-    _fetch_file_text,
-    _fetch_embedded_images,
-    _fetch_pdf_page_images,
+    collect_submission_material,
     AI_CONFIDENCE_THRESHOLD,
-    IMAGE_EXTS,
 )
 
 logger = logging.getLogger("deadline_checker")
@@ -73,45 +70,20 @@ async def _grade_one(db: Session, submission, assignment, org_type: str = "unive
 
         crud.set_submission_status(db, sub_id, "grading")
 
-        full_text = submission.text_content or ""
-        all_urls: list = []
-        if submission.file_urls:
-            try:
-                all_urls = _json.loads(submission.file_urls)
-            except Exception:
-                pass
-        if not all_urls and submission.file_url:
-            all_urls = [submission.file_url]
+        # Общий пайплайн с ручной кнопкой "Проверить ИИ"
+        # (routers/assignments.py::ai_grade_submission): сбор текстов,
+        # классификация фото/документы, встроенные картинки docx/pptx и
+        # скан-PDF. Раньше логика дублировалась здесь построчно и рисковала
+        # разойтись с ручным путём.
+        full_text, image_urls, embedded_images = await collect_submission_material(
+            text_content=submission.text_content,
+            file_url=submission.file_url,
+            file_urls_json=submission.file_urls,
+        )
 
-        # BUG (найден при аудите): раньше эта функция гоняла ЛЮБОЙ файл,
-        # включая фото рукописной работы, через текстовый _fetch_file_text —
-        # для картинок он отдаёт заглушку "[Изображение — текст недоступен]",
-        # и модель "проверяла" эту заглушку вместо реального содержимого
-        # фото. Ручная кнопка "Проверить ИИ" (routers/assignments.py) всегда
-        # отделяла фото и вела их vision-путём — автопроверка по дедлайну
-        # была единственным местом, где это не работало. Приводим к тому же
-        # разделению: фото → vision, документы → текст + встроенные картинки.
-        image_urls = [u for u in all_urls if u.split("?")[0].rsplit(".", 1)[-1].lower() in IMAGE_EXTS]
-        doc_urls = [u for u in all_urls if u not in image_urls]
-
-        embedded_images: list = []
-        for i, url in enumerate(doc_urls):
-            file_text = await _fetch_file_text(url)
-            if file_text.strip():
-                label = f"ФАЙЛ {i+1}" if len(doc_urls) > 1 else "СОДЕРЖИМОЕ ФАЙЛА"
-                full_text = (
-                    (full_text + f"\n\n{label}:\n" + file_text).strip()
-                    if full_text
-                    else f"{label}:\n{file_text}"
-                )
-            embedded_images.extend(await _fetch_embedded_images(url))
-            # PDF-скан без текстового слоя — рендерим страницы как картинки
-            # для vision (см. ai_grader._fetch_pdf_page_images), тот же фикс,
-            # что и в ручном пути (routers/assignments.py).
-            embedded_images.extend(await _fetch_pdf_page_images(url))
-
-        if not full_text and not image_urls and not embedded_images:
-            full_text = f"[Студент сдал файл(ы), но прочитать не удалось: {', '.join(all_urls)}]"
+        if not full_text.strip() and not image_urls and not embedded_images:
+            all_urls_hint = submission.file_urls or submission.file_url or ""
+            full_text = f"[Студент сдал файл(ы), но прочитать не удалось: {all_urls_hint}]"
 
         lecture_context = crud_posts.get_lecture_context(db, assignment.class_id, limit=5)
 

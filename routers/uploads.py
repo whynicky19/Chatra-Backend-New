@@ -1,6 +1,5 @@
 import os
 import logging
-import tempfile
 from collections import OrderedDict
 from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import JSONResponse
@@ -198,60 +197,23 @@ async def get_file_text(
 # просмотрщике — с выделениями и заметками, как у остальных материалов.
 _OFFICE_PREVIEW_EXTS = {"ppt", "pptx", "doc", "docx", "rtf"}
 
-# LibreOffice ищем не только в PATH: uvicorn, запущенный не из интерактивной
-# оболочки (launchd, IDE, systemd), не видит /opt/homebrew/bin, и конвертация
-# падала с «LibreOffice не установлен» на машине, где он стоит.
-_SOFFICE_CANDIDATES = (
-    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
-    "/opt/homebrew/bin/soffice",
-    "/usr/local/bin/soffice",
-    "/usr/bin/soffice",
-    "/usr/bin/libreoffice",
-    "/snap/bin/libreoffice",
-)
+# Конвертация живёт в services/office_convert.py: её же использует пайплайн
+# чтения файлов ИИ (.doc/.ppt/.xls/.rtf там конвертируются в PDF перед
+# извлечением текста) — одна реализация для превью и ИИ.
+from services.office_convert import convert_office_to_pdf  # noqa: E402
 
 
-def _soffice_path() -> str:
-    """Путь к soffice: сначала PATH, затем обычные места установки."""
-    import shutil
-    found = shutil.which("soffice") or shutil.which("libreoffice")
-    if found:
-        return found
-    for candidate in _SOFFICE_CANDIDATES:
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
-    return "soffice"  # пусть упадёт с понятной ошибкой ниже
+def _preview_cache_key(content: bytes) -> str:
+    """Ключ кэша превью от ХЭША СОДЕРЖИМОГО, а не от пути файла.
 
+    Ключи хранилища человекочитаемые и освобождаются после удаления: если бы
+    ключ строился от пути, новый пользователь, загрузивший свой файл под тем
+    же именем, получил бы PDF-превью ЧУЖОГО старого файла (объект previews/
+    не инвалидируется при удалении исходника). Хэш содержимого исключает
+    коллизию между разными файлами в принципе."""
+    import hashlib
 
-def _convert_office_to_pdf(content: bytes, ext: str) -> bytes:
-    """Конвертирует .ppt/.pptx/.doc/.rtf в PDF через headless LibreOffice
-    (soffice) — блокирующий вызов, вызывать через run_in_threadpool. Каждый
-    вызов — свой временный профиль/каталог (parallel-запросы иначе делят один
-    профиль soffice и падают с блокировкой)."""
-    import subprocess
-    with tempfile.TemporaryDirectory() as tmpdir:
-        src = os.path.join(tmpdir, f"src.{ext}")
-        with open(src, "wb") as f:
-            f.write(content)
-        try:
-            result = subprocess.run(
-                [
-                    _soffice_path(), "--headless", "--norestore", "--convert-to", "pdf",
-                    "--outdir", tmpdir, src,
-                ],
-                capture_output=True, timeout=60,
-                env={**os.environ, "HOME": tmpdir},
-            )
-        except FileNotFoundError as e:
-            raise RuntimeError("LibreOffice (soffice) не установлен на сервере") from e
-        except subprocess.TimeoutExpired as e:
-            raise RuntimeError("Конвертация в PDF заняла слишком много времени") from e
-        pdf_path = os.path.join(tmpdir, "src.pdf")
-        if result.returncode != 0 or not os.path.isfile(pdf_path):
-            stderr = result.stderr.decode(errors="ignore") if result.stderr else ""
-            raise RuntimeError(f"Не удалось сконвертировать файл в PDF: {stderr[:300]}")
-        with open(pdf_path, "rb") as f:
-            return f.read()
+    return f"{PREVIEW_CATEGORY}/{hashlib.sha256(content).hexdigest()}.pdf"
 
 
 def _prewarm_office_preview(file_path: str, ext: str, content: bytes) -> None:
@@ -264,13 +226,12 @@ def _prewarm_office_preview(file_path: str, ext: str, content: bytes) -> None:
     кладём в тот же кэш R2 с тем же ключом — к моменту открытия файла
     GET /utils/preview-pdf отвечает мгновенно. Ошибки не роняем: превью
     просто сконвертируется лениво при первом запросе."""
-    import hashlib
-    cache_key = f"{PREVIEW_CATEGORY}/{hashlib.sha256(file_path.encode()).hexdigest()}.pdf"
+    cache_key = _preview_cache_key(content)
     try:
         storage = get_storage_service()
         if storage.exists(cache_key):
             return
-        pdf_bytes = _convert_office_to_pdf(content, ext)
+        pdf_bytes = convert_office_to_pdf(content, ext)
         storage.upload(pdf_bytes, cache_key, "application/pdf")
         logger.info("Preview prewarmed: %s", file_path)
     except Exception as e:
@@ -285,27 +246,30 @@ async def get_preview_pdf(
     """PDF-версия .ppt/.pptx/.doc/.rtf для предпросмотра на сайте (родной
     PDF-вьюер браузера через iframe — без него такие файлы показывались
     только с кнопкой «скачать», см. FilePreviewModal.vue). Результат
-    кэшируется в R2 под детерминированным ключом от пути исходника:
-    конвертация — не бесплатная операция (LibreOffice), а сам исходник
-    неизменяем."""
+    кэшируется в R2 под ключом от хэша содержимого исходника: конвертация —
+    не бесплатная операция (LibreOffice), а сам исходник неизменяем."""
     file_path = _verify_signed_upload_url(url)
     ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
     if ext not in _OFFICE_PREVIEW_EXTS:
-        raise HTTPException(status_code=422, detail="Предпросмотр в PDF доступен только для .ppt/.pptx/.doc/.rtf")
+        raise HTTPException(status_code=422, detail="Предпросмотр в PDF доступен только для .ppt/.pptx/.doc/.docx/.rtf")
 
-    import hashlib
-    cache_key = f"{PREVIEW_CATEGORY}/{hashlib.sha256(file_path.encode()).hexdigest()}.pdf"
     storage = get_storage_service()
 
+    # Скачиваем исходник всегда: ключ кэша строится от хэша СОДЕРЖИМОГО,
+    # поэтому без байт ключ не посчитать. Скачивание из R2 на порядки дешевле
+    # самой конвертации, так что смысл кэша (экономия soffice) сохраняется.
+    signed_source = _signed_source_url(file_path)
+    import httpx
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(signed_source)
+    if not resp.is_success:
+        raise HTTPException(status_code=502, detail="Не удалось получить исходный файл")
+
+    cache_key = _preview_cache_key(resp.content)
+
     if not await run_in_threadpool(storage.exists, cache_key):
-        signed_source = _signed_source_url(file_path)
-        import httpx
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(signed_source)
-        if not resp.is_success:
-            raise HTTPException(status_code=502, detail="Не удалось получить исходный файл")
         try:
-            pdf_bytes = await run_in_threadpool(_convert_office_to_pdf, resp.content, ext)
+            pdf_bytes = await run_in_threadpool(convert_office_to_pdf, resp.content, ext)
         except RuntimeError as e:
             raise HTTPException(status_code=502, detail=str(e))
         try:
@@ -324,7 +288,7 @@ DEFAULT_CATEGORY = "attachments"
 async def upload_file(
     file: UploadFile = File(...),
     category: str = Form(DEFAULT_CATEGORY),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
+    background_tasks: BackgroundTasks = None,
     current_user=Depends(get_current_user),
 ):
     if not file.filename:
@@ -383,6 +347,10 @@ async def upload_file(
         )
     except StorageError as e:
         raise HTTPException(status_code=502, detail=f"Не удалось загрузить файл в хранилище: {e}")
+    except RuntimeError as e:
+        # get_storage_service() бросает RuntimeError, если R2 не сконфигурирован —
+        # раньше уходило сырым 500 без объяснения.
+        raise HTTPException(status_code=503, detail=str(e))
 
     # Word/презентации конвертируем в PDF в фоне, пока файл « свежий»:
     # байты уже здесь, и к первому открытию превью будет готово.

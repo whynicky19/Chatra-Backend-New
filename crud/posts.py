@@ -5,7 +5,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from models import Posts, User
-from services.file_cleanup import delete_replaced_post_cover, delete_urls, post_file_urls
+from services.file_cleanup import (
+    delete_replaced_post_cover,
+    delete_removed_post_files,
+    delete_urls,
+    post_file_urls,
+)
 
 _LECTURE_TITLE_RE = re.compile(r"^\[LECTURE\]\[(\d+)\]")
 _LECTURE_TITLE_STRIP_RE = re.compile(r"^\[LECTURE\]\[\d+\]\s*")
@@ -143,6 +148,9 @@ def update_post(db: Session, post_id: int, title: str, body: str) -> Posts:
     db.refresh(post)
     # BE-10: обложку заменили (или убрали) — старый файл больше не нужен.
     delete_replaced_post_cover(old_body, body)
+    # Вложения, убранные из body["files"] при правке лекции, тоже подчищаем —
+    # раньше оставались в хранилище навсегда (orphaned).
+    delete_removed_post_files(old_body, body)
     if _LECTURE_TITLE_RE.match(title or ""):
         # Ре-индекс: content_hash в rag_ingest пропустит источники, которые
         # фактически не изменились, пересчитает только реально новые/правленые.

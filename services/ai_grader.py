@@ -496,6 +496,135 @@ def _extract_pptx_images(data: bytes, max_images: int = MAX_DOCX_EMBEDDED_IMAGES
         return []
 
 
+def _parse_pptx(data: bytes) -> str:
+    """Текст презентации .pptx по слайдам В ПРАВИЛЬНОМ ПОРЯДКЕ.
+
+    Старая реализация итерировала z.namelist() лексикографически — slide10
+    шёл раньше slide2, и модель получала перемешанный порядок слайдов.
+    Сначала пробуем python-pptx (он в requirements), при ошибке — XML-фолбэк
+    с числовой сортировкой слайдов."""
+    def _slide_number(path: str) -> int:
+        m = re.search(r"slide(\d+)\.xml$", path)
+        return int(m.group(1)) if m else 10**9
+
+    try:
+        from pptx import Presentation
+
+        prs = Presentation(io.BytesIO(data))
+        parts = []
+        for idx, slide in enumerate(prs.slides, start=1):
+            texts = []
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    t = shape.text_frame.text.strip()
+                    if t:
+                        texts.append(t)
+                if getattr(shape, "has_table", False):
+                    try:
+                        for row in shape.table.rows:
+                            cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                            if cells:
+                                texts.append(" | ".join(cells))
+                    except Exception:
+                        pass
+            if texts:
+                parts.append(f"[Слайд {idx}]\n" + "\n".join(texts))
+        return "\n\n".join(parts).strip()
+    except Exception:
+        pass
+
+    # XML-фолбэк: тот же regex-парсинг, но слайды сортируются по номеру
+    # (slide2 раньше slide10, а НЕ "slide10" < "slide2" лексикографически),
+    # заметки к слайдам тоже читаем — там студенты часто пишут суть.
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            names = z.namelist()
+            slides = sorted(
+                (n for n in names if re.match(r"ppt/slides/slide\d+\.xml$", n)),
+                key=_slide_number,
+            )
+            notes = sorted(
+                (n for n in names if re.match(r"ppt/notesSlides/notesSlide\d+\.xml$", n)),
+                key=_slide_number,
+            )
+            texts = []
+            for name in slides + notes:
+                xml = z.read(name).decode("utf-8", errors="ignore")
+                found = re.findall(r"<a:t>([^<]+)</a:t>", xml)
+                if found:
+                    label = "[Заметки]" if "notesSlide" in name else ""
+                    block = " ".join(found)
+                    texts.append(f"{label} {block}".strip())
+            return "\n".join(texts).strip()
+    except Exception:
+        return ""
+
+
+def _parse_xlsx(data: bytes) -> str:
+    """Таблицы .xlsx. Раньше читались только xl/worksheets/*.xml, но текстовые
+    ячейки Excel хранит в xl/sharedStrings.xml (в листах — лишь числовые
+    индексы t="s") — реальный файл с текстом давал пустой результат. Теперь:
+    openpyxl (в requirements) как основной путь, XML-фолбэк с резолвом
+    sharedStrings по индексу."""
+    try:
+        import openpyxl
+
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        parts = []
+        for ws in wb.worksheets:
+            rows_out = []
+            for row in ws.iter_rows(max_row=500):
+                cells = [str(c.value).strip() for c in row if c.value is not None and str(c.value).strip()]
+                if cells:
+                    rows_out.append(" | ".join(cells))
+            if rows_out:
+                title = ws.title or "Лист"
+                parts.append(f"[Лист: {title}]\n" + "\n".join(rows_out[:2000]))
+        wb.close()
+        return "\n\n".join(parts).strip()
+    except Exception:
+        pass
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            shared: list[str] = []
+            if "xl/sharedStrings.xml" in z.namelist():
+                xml = z.read("xl/sharedStrings.xml").decode("utf-8", errors="ignore")
+                for si in re.findall(r"<si>(.*?)</si>", xml, re.DOTALL):
+                    runs = re.findall(r"<t[^>]*>([^<]*)</t>", si)
+                    shared.append("".join(runs))
+            sheet_names = sorted(n for n in z.namelist() if re.match(r"xl/worksheets/sheet\d+\.xml$", n))
+            parts = []
+            for name in sheet_names:
+                xml = z.read(name).decode("utf-8", errors="ignore")
+                row_texts = []
+                for row_xml in re.findall(r"<row[^>]*>(.*?)</row>", xml, re.DOTALL):
+                    cells = []
+                    for cell_xml in re.findall(r"<c\b[^>]*?(?:/>|>.*?</c>)", row_xml, re.DOTALL):
+                        m_val = re.search(r"<v>([^<]*)</v>", cell_xml)
+                        m_inline = re.search(r"<is>.*?<t[^>]*>([^<]*)</t>.*?</is>", cell_xml, re.DOTALL)
+                        value = ""
+                        if 't="s"' in cell_xml and m_val:
+                            try:
+                                value = shared[int(m_val.group(1))]
+                            except (ValueError, IndexError):
+                                value = ""
+                        elif m_inline:
+                            value = m_inline.group(1)
+                        elif m_val:
+                            value = m_val.group(1)
+                        value = value.strip()
+                        if value:
+                            cells.append(value)
+                    if cells:
+                        row_texts.append(" | ".join(cells))
+                if row_texts:
+                    parts.append("\n".join(row_texts[:2000]))
+            return "\n\n".join(parts).strip()
+    except Exception:
+        return ""
+
+
 def _image_bytes_to_data_uri(data: bytes, ext: str) -> Optional[str]:
     mime = _DOCX_IMAGE_MIME.get(ext.lower())
     if not mime or not data or len(data) > MAX_DOCX_IMAGE_BYTES:
@@ -600,6 +729,44 @@ def _looks_garbled(text: str) -> bool:
         counts[ch] = counts.get(ch, 0) + 1
     most_common_n = max(counts.values())
     return most_common_n / len(stripped) > 0.4
+
+
+def _decode_text_bytes(data: bytes) -> str:
+    """Декодирование текстового файла с фолбэком на cp1251.
+
+    Раньше читали только utf-8 errors="ignore": файл в Windows-1251 (частый
+    случай .txt/.csv из русскоязычного Excel/Notepad) проходил валидацию на
+    аплоаде (там cp1251 разрешён), но здесь превращался в mojibake — кириллица
+    молча скармливалась модели как «Ïðèâåò». Порядок: строгий utf-8 → строгий
+    cp1251 → utf-8 ignore (последний шанс для смешанных байтов)."""
+    for enc in ("utf-8", "cp1251"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="ignore")
+
+
+# Легаси Office-форматы, которые ИИ раньше не умел читать вообще (.doc/.ppt/
+# .xls — бинарный OLE-мусор декодировался как utf-8 ignore и уходил модели;
+# .rtf — разметка вместо текста). Теперь конвертируются в PDF через
+# LibreOffice и читаются штатным PDF-путём.
+_LEGACY_OFFICE_EXTS = {"doc", "ppt", "xls", "rtf"}
+
+
+def _office_to_pdf_text(data: bytes, ext: str) -> str:
+    """Конвертирует легаси Office-файл в PDF (LibreOffice) и извлекает текст.
+    Блокирующий вызов — только через asyncio.to_thread."""
+    from services.office_convert import convert_office_to_pdf, extract_pdf_text_from_bytes
+
+    try:
+        pdf_bytes = convert_office_to_pdf(data, ext)
+    except Exception:
+        return ""
+    text = extract_pdf_text_from_bytes(pdf_bytes)
+    # soffice иногда отдаёт пустой текстовый слой (сканы внутри doc) — тогда
+    # честно возвращаем "", вызывающий код покажет «не прочитано».
+    return text[:25000]
 
 
 # OCR — последний фолбэк для сканов/фото без текстового слоя. Ограничиваем
@@ -732,28 +899,11 @@ async def _fetch_file_text(url: str) -> str:
 
 
             elif ext == "pdf" or "pdf" in content_type:
-                try:
-                    import pdfplumber
-                    with pdfplumber.open(io.BytesIO(resp.content)) as pdf:
-                        pages = [p.extract_text(layout=True) or "" for p in pdf.pages[:40]]
-                    text = "\n\n".join(p for p in pages if p.strip())
-                    if text.strip() and not _looks_garbled(text):
-                        return text[:25000]
-                except Exception:
-                    pass
-                # pdfplumber либо не смог прочитать, либо вернул мусор
-                # (сломанный font-encoding) — пробуем pypdf, у него другой
-                # путь разбора шрифтов и иногда он справляется там, где
-                # pdfplumber даёт "nnnnnnn".
-                try:
-                    from pypdf import PdfReader
-                    reader = PdfReader(io.BytesIO(resp.content))
-                    pages = [page.extract_text() or "" for page in reader.pages[:40]]
-                    text = "\n\n".join(p for p in pages if p.strip())
-                    if text.strip() and not _looks_garbled(text):
-                        return text[:25000]
-                except Exception:
-                    pass
+                from services.office_convert import extract_pdf_text_from_bytes
+
+                text = await asyncio.to_thread(extract_pdf_text_from_bytes, resp.content)
+                if text.strip():
+                    return text[:25000]
                 # pdfplumber/pypdf оба ничего не дали — вероятно скан или
                 # фото-PDF без текстового слоя вообще (частый случай для
                 # рукописных конспектов/фото тетради, сохранённых как PDF).
@@ -777,26 +927,41 @@ async def _fetch_file_text(url: str) -> str:
 
 
             elif ext in ("pptx", "xlsx"):
-                try:
-                    with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
-                        texts = []
-                        for name in z.namelist():
-                            if not name.endswith(".xml"):
-                                continue
-                            if not any(p in name for p in ("ppt/slides/", "xl/worksheets/")):
-                                continue
-                            xml = z.read(name).decode("utf-8", errors="ignore")
-                            found = re.findall(r"<(?:a:t|t)[^>]*>([^<]+)</(?:a:t|t)>", xml)
-                            if found:
-                                texts.append(" ".join(found))
-                    result = "\n".join(texts).strip()
-                    return result[:20000] if result else ""
-                except Exception as e:
-                    return f"[{ext.upper()} — не удалось прочитать: {e}]"
+                if ext == "pptx":
+                    text = await asyncio.to_thread(_parse_pptx, resp.content)
+                    if not text.strip():
+                        # Презентация может состоять целиком из картинок
+                        # (скриншоты на слайдах) — текстового слоя нет.
+                        # Конвертируем в PDF и пробуем вытащить текст оттуда,
+                        # прежде чем отдавать «не прочитано».
+                        text = await asyncio.to_thread(_office_to_pdf_text, resp.content, ext)
+                else:
+                    text = await asyncio.to_thread(_parse_xlsx, resp.content)
+                result = text.strip()
+                return result[:20000] if result else ""
+
+
+            elif ext in _LEGACY_OFFICE_EXTS:
+                # .doc/.ppt/.xls/.rtf: бинарные форматы, текстовым декодированием
+                # не читаются (раньше модель получала OLE-мусор/rtf-разметку как
+                # «текст работы»). Конвертируем в PDF через LibreOffice и читаем
+                # штатным путём. .rtf дополнительно умеем читать как текст —
+                # простой rtf это почти ascii с control words.
+                text = await asyncio.to_thread(_office_to_pdf_text, resp.content, ext)
+                if text.strip():
+                    return text[:25000]
+                if ext == "rtf":
+                    decoded = _decode_text_bytes(resp.content)
+                    stripped = re.sub(r"\{\\\*?[^{}]*\}|\\[a-z]+-?\d* ?|[{}]", " ", decoded)
+                    stripped = re.sub(r"\s+", " ", stripped).strip()
+                    if len(stripped) > 50 and not _looks_garbled(stripped):
+                        return stripped[:20000]
+                return ""
 
 
             elif ext in ("txt", "md", "csv", "tsv", "log", "json", "xml", "yaml", "yml"):
-                return resp.content.decode("utf-8", errors="ignore")[:20000]
+                text = _decode_text_bytes(resp.content)
+                return text[:20000]
 
 
             elif ext in ("png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "heic", "heif"):
@@ -804,11 +969,10 @@ async def _fetch_file_text(url: str) -> str:
 
 
             else:
-                try:
-                    decoded = resp.content.decode("utf-8", errors="ignore")
-                    return decoded[:15000] if decoded.strip() else ""
-                except Exception:
-                    return ""
+                decoded = _decode_text_bytes(resp.content)
+                if decoded.strip() and not _looks_garbled(decoded):
+                    return decoded[:15000]
+                return ""
 
     except Exception:
         return ""
@@ -1088,6 +1252,63 @@ async def grade_handwritten_submission(
     _parse_confidence(result)
 
     return result
+
+
+async def collect_submission_material(
+    text_content: Optional[str],
+    file_url: Optional[str],
+    file_urls_json: Optional[str],
+) -> tuple[str, list, list]:
+    """Собирает материал сдачи для ИИ-проверки: текст работы + все файлы.
+
+    Возвращает (full_text, image_urls, embedded_images):
+      - full_text — text_content студента + извлечённые тексты документов
+        с метками «ФАЙЛ N:»;
+      - image_urls — ссылки на фото (идут отдельным vision-путём);
+      - embedded_images — data:-URI картинок из docx/pptx и страниц
+        скан-PDF без текстового слоя.
+
+    Общий код для ручной кнопки «Проверить ИИ» (routers/assignments.py) и
+    автопроверки по дедлайну (services/deadline_checker.py) — раньше эта
+    логика была скопирована в оба места и рисковала разойтись."""
+    full_text = text_content or ""
+
+    all_urls: list = []
+    if file_urls_json:
+        try:
+            parsed = json.loads(file_urls_json)
+            if isinstance(parsed, list):
+                all_urls = [u for u in parsed if isinstance(u, str)]
+            elif isinstance(parsed, str):
+                all_urls = [parsed]
+        except Exception:
+            pass
+    if not all_urls and file_url:
+        all_urls = [file_url]
+
+    image_urls = [
+        u for u in all_urls
+        if u.split("?")[0].rsplit(".", 1)[-1].lower() in IMAGE_EXTS
+    ]
+    doc_urls = [u for u in all_urls if u not in image_urls]
+
+    embedded_images: list = []
+    for i, url in enumerate(doc_urls):
+        file_text = await _fetch_file_text(url)
+        if file_text.strip() and not file_text.startswith("["):
+            label = f"ФАЙЛ {i+1}" if len(doc_urls) > 1 else "СОДЕРЖИМОЕ ФАЙЛА"
+            full_text = (
+                (full_text + f"\n\n{label}:\n" + file_text).strip()
+                if full_text
+                else f"{label}:\n{file_text}"
+            )
+        # .docx/.pptx может нести ответ КАРТИНКОЙ (скриншот/скан/фото/схема) —
+        # отдаём её модели vision'ом, а не игнорируем.
+        embedded_images.extend(await _fetch_embedded_images(url))
+        # PDF-скан без текстового слоя — рендерим страницы как изображения.
+        embedded_images.extend(await _fetch_pdf_page_images(url))
+
+    return full_text, image_urls, embedded_images
 
 
 async def grade_submission(
