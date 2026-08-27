@@ -1,6 +1,6 @@
 """Миграция 009: учебные потоки (когорты).
 
-Делает всё, что описано в migrations/009_cohorts.sql, и бэкфилл данных:
+Создаёт нужную для текущего кода схему учебных потоков и делает бэкофилл данных:
 
   1. DDL: таблицы cohorts / cohort_students / deadlines, колонки
      classes.rotation_mode и submissions.deadline_id (идемпотентно).

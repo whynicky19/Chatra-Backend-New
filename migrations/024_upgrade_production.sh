@@ -55,9 +55,6 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'ALTER TABLE classes ALTER COLUMN inv
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE UNIQUE INDEX IF NOT EXISTS ix_classes_invite_code ON classes (invite_code);'
 
 sql migrations/006_class_extra_fields.sql
-# 006_backfill_posts_to_classes.py намеренно НЕ запускается: это архивный
-# перенос из удалённой модели «класс = пост», который создаёт видимые классы
-# из старых posts. Для работы текущего приложения он не нужен.
 
 # Старый direct-messages чат в некоторых базах уже был удалён раньше, а
 # текущий продукт эту таблицу не использует. ALTER выполняем только там,
@@ -68,24 +65,19 @@ else
   echo 'SKIP migrations/007_messages_file_url_is_read.sql: legacy messages table is absent.'
 fi
 
-# Миграция 008 относится к удалённой avatar-функции и пропущена. 009
-# самостоятельно создаёт таблицы и добавляет активные потоки уже существующим
-# классам — без этого текущая логика потоков и дедлайнов неполна.
+# 009 самостоятельно создаёт таблицы и добавляет активные потоки уже
+# существующим классам — без этого текущая логика потоков и дедлайнов неполна.
 py migrations/009_backfill_cohorts.py
 
-# 010 удаляет дубли сдач, поэтому не нужна для схемы и не выполняется.
 sql migrations/011_user_ai_unlimited.sql
 sql migrations/012_ai_usage_user_day_index.sql
 sql migrations/013_submission_ai_confidence.sql
 sql migrations/014_classes_cover_thumbnail.sql
 
-# 015 перепаковывает файлы в R2, 016 удаляет avatar-таблицы — оба шага не
-# нужны текущему коду и не входят в этот скрипт.
 sql migrations/017_posts_lecture_position.sql
 sql migrations/018_rag_lecture_ingest.sql
 py migrations/019_backfill_rag_lecture_ingest.py
 
-# 020 удаляет устаревшие варианты заданий и здесь не выполняется.
 sql migrations/021_class_cover_appearance.sql
 sql migrations/022_users_created_at.sql
 sql migrations/023_annotations.sql
@@ -102,4 +94,3 @@ py migrations/add_reports.py
 py migrations/add_submission_student_index.py
 
 echo 'SUCCESS: all schema changes required by the current code are complete.'
-echo 'Not run: archive/data-cleanup migrations 006-backfill, 008, 010, 015, 016, 020, migrate_base64_covers, cleanup_dead_file_refs and drop_chat_tables.'

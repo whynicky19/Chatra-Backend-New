@@ -48,6 +48,7 @@ uploads/*
 !uploads/.gitkeep
 
 *.sql
+!migrations/*.sql
 backup_*.sql
 
 # Firebase service account (push-уведомления) — не коммитить

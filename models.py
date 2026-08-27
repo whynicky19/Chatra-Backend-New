@@ -50,7 +50,7 @@ class Class(Base):
     cover_image: Mapped[str] = mapped_column(Text, nullable=True)
     # Уменьшенная версия обложки (≤480px) для карточек списка классов —
     # см. services/image_processing.py. Может быть NULL для обложек,
-    # созданных до появления миниатюр (см. migrations/015_optimize_existing_covers.py).
+    # созданных до появления миниатюр.
     cover_thumbnail: Mapped[str] = mapped_column(Text, nullable=True)
 
     # Оформление обложки: слаг цвета из палитры и слаг предметной иконки
