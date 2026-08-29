@@ -130,6 +130,8 @@ def test_ai_grade_includes_lecture_context_in_prompt(client, db_session, monkeyp
         criteria=[{"name": "полнота", "weight": 100}], max_score=100,
         deadline=None, created_by=teacher.id,
     )
+    # см. test_cross_class_access.py — после flush() нужен явный commit.
+    db_session.commit()
     sub = client.post(
         f"/api/assignments/{assignment.id}/submit",
         json={"text_content": "Клетки состоят из мембраны и ядра."},

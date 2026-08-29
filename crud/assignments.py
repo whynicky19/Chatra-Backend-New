@@ -32,7 +32,13 @@ def create_assignment(
         reference_solution_url=reference_solution_url,
     )
     db.add(obj)
-    db.commit()
+    # flush, а не commit: парный Deadline пишется в той же транзакции в
+    # routers/assignments.py:create_assignment (одна транзакция на задание +
+    # дедлайн активного потока). Раньше здесь был commit() + отдельный commit
+    # после upsert_deadline — при сбое между ними assignments.deadline был
+    # записан, а Deadline в активном потоке нет: сдачи шли в легаси-ветку
+    # автопроверки (deadline_checker по Submission.deadline_id IS NULL).
+    db.flush()
     db.refresh(obj)
     return obj
 

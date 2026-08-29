@@ -146,7 +146,8 @@ def resolve_deadline(
     Правила: есть запись по потоку -> её дата (студенту неопубликованная
     запись даёт None-дату — но такое задание для него целиком скрыто,
     см. is_hidden_for_user); записи нет -> fallback на deprecated
-    assignments.deadline.
+    assignments.deadline. no_deadline=True -> действующая дата = None
+    (задание «без срока», is_late=False, автопроверка не сработает).
     """
     cohort = _cohort_for_deadlines(db, assignment.class_id, user)
     if cohort is None:
@@ -161,6 +162,8 @@ def resolve_deadline(
     if row is None:
         return None, assignment.deadline
     if user.role == "student" and not row.is_published:
+        return row, None
+    if row.no_deadline:
         return row, None
     return row, row.due_date
 
@@ -211,6 +214,8 @@ def deadlines_map(
             continue
         if user.role == "student" and not row.is_published:
             hidden.add(a.id)
+        elif row.no_deadline:
+            result[a.id] = None
         else:
             result[a.id] = row.due_date
     return result, hidden
@@ -255,6 +260,14 @@ def rollover_class(db: Session, cls: Class, new_academic_year: str, new_start_da
     assignments = db.query(Assignment).filter(Assignment.class_id == cls.id).all()
     for a in assignments:
         old = old_rows.get(a.id)
+        # no_deadline переезжает 1:1 (placeholder = 2099; сдвигать некуда).
+        if old and old.no_deadline:
+            upsert_deadline(
+                db, new_cohort.id, a.id, old.due_date,
+                is_published=False, no_deadline=True,
+            )
+            created += 1
+            continue
         base = old.due_date if old else a.deadline  # тот же fallback, что и при чтении
         if base is None:
             continue
@@ -273,24 +286,33 @@ def upsert_deadline(
     db: Session,
     cohort_id: int,
     assignment_id: int,
-    due_date: datetime,
+    due_date: Optional[datetime],
     is_published: bool = True,
+    no_deadline: bool = False,
 ) -> Deadline:
-    """Создаёт/обновляет дедлайн задания в потоке; commit на вызывающей стороне."""
+    """Создаёт/обновляет дедлайн задания в потоке; commit на вызывающей стороне.
+
+    no_deadline=True — задание без срока сдачи: due_date в БД остаётся
+    NOT NULL (placeholder = end of current academic year), но resolve_deadline
+    возвращает его как None — is_late=False, автопроверка и напоминания не
+    срабатывают. Студент видит задание, если is_published=True."""
     row = (
         db.query(Deadline)
         .filter(Deadline.cohort_id == cohort_id, Deadline.assignment_id == assignment_id)
         .first()
     )
+    placeholder_due = due_date or datetime(2099, 12, 31, 23, 59, 59)
     if row:
-        row.due_date = due_date
+        row.due_date = placeholder_due
         row.is_published = is_published
+        row.no_deadline = no_deadline
         return row
     row = Deadline(
         cohort_id=cohort_id,
         assignment_id=assignment_id,
-        due_date=due_date,
+        due_date=placeholder_due,
         is_published=is_published,
+        no_deadline=no_deadline,
     )
     db.add(row)
     db.flush()

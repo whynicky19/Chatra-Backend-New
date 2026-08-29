@@ -67,6 +67,8 @@ def _make_assignment(db, teacher):
         deadline=None,
         created_by=teacher.id,
     )
+    # см. test_cross_class_access.py — после flush() нужен явный commit.
+    db.commit()
     return cls, assignment
 
 

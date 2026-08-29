@@ -93,4 +93,8 @@ py migrations/add_user_blocks.py
 py migrations/add_reports.py
 py migrations/add_submission_student_index.py
 
+# 025: флаг «без дедлайна» в deadlines — чтобы учитель мог опубликовать
+# задание без конкретной даты сдачи.
+sql migrations/025_deadline_no_deadline.sql
+
 echo 'SUCCESS: all schema changes required by the current code are complete.'

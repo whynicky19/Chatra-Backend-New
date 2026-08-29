@@ -18,6 +18,11 @@ def test_clear_deadline_flag_removes_deadline(client, db_session):
         db_session, cls.id, "HW1", None, [{"name": "ok", "weight": 100}], 100,
         deadline, teacher.id,
     )
+    # create_assignment теперь делает flush() (а не commit()), чтобы атомарно
+    # зафиксировать задание + Deadline в одной транзакции в роутере — здесь
+    # коммитим явно, потому что тест обращается через HTTP, у которого своя
+    # сессия.
+    db_session.commit()
     cohort = crud_cohorts.get_active_cohort(db_session, cls.id)
     crud_cohorts.upsert_deadline(db_session, cohort.id, assignment.id, deadline, is_published=True)
     db_session.commit()
@@ -51,6 +56,9 @@ def test_omitting_deadline_field_does_not_clear_it(client, db_session):
         db_session, cls.id, "HW1", None, [{"name": "ok", "weight": 100}], 100,
         deadline, teacher.id,
     )
+    # см. test_clear_deadline_flag_removes_deadline — без явного commit()
+    # запись не видна HTTP-сессии клиента.
+    db_session.commit()
 
     resp = client.put(
         f"/api/assignments/{assignment.id}",

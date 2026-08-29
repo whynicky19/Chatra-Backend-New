@@ -16,6 +16,8 @@ def _assignment(db, teacher):
         criteria=[{"name": "x", "weight": 100}], max_score=100,
         deadline=None, created_by=teacher.id,
     )
+    # см. test_cross_class_access.py — после flush() нужен явный commit.
+    db.commit()
     return cls, a
 
 

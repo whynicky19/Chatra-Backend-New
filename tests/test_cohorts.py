@@ -371,3 +371,161 @@ def test_rollover_and_cohort_views_owner_only(client, db_session):
     assert client.get(f"/api/classes/{cls['id']}/cohorts", headers=auth_headers(stranger)).status_code == 403
     # Студенту учительские ручки закрыты ролью
     assert client.get(f"/api/classes/{cls['id']}/cohorts", headers=auth_headers(student)).status_code == 403
+
+
+def test_was_shifted_flag_after_rollover(client, db_session):
+    """Дедлайн, скопированный rollover'ом из архивного потока, помечается
+    was_shifted=True — UI использует для бейджа 'проверьте дату'. Дедлайны,
+    созданные вручную (create_assignment), — was_shifted=False."""
+    teacher = make_user(db_session, role="teacher")
+    cls, _ = _setup_class(client, db_session, teacher, deadline="2025-10-01T23:59:00")
+
+    # До rollover — флаг False (исходный дедлайн из create_assignment).
+    old_cohort = _active_cohort(db_session, cls["id"])
+    resp = client.get(
+        f"/api/cohorts/{old_cohort.id}/deadlines", headers=auth_headers(teacher)
+    )
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert len(rows) == 1
+    assert rows[0]["was_shifted"] is False
+
+    # После rollover — флаг True у новой копии, False у старой.
+    result = _rollover(client, teacher, cls["id"])
+    new_cohort_id = result["new_cohort_id"]
+    resp = client.get(
+        f"/api/cohorts/{new_cohort_id}/deadlines", headers=auth_headers(teacher)
+    )
+    new_rows = resp.json()
+    assert len(new_rows) == 1
+    assert new_rows[0]["was_shifted"] is True
+
+
+def test_cannot_unpublish_deadline_with_submissions(client, db_session):
+    """BE-cohort-unpublish: снять публикацию с дедлайна, по которому уже
+    сдавали, — нельзя (409). Иначе задание исчезнет у студента, а сдачи
+    повиснут без автопроверки (deadline_checker фильтрует is_published)."""
+    teacher = make_user(db_session, role="teacher")
+    student = make_user(db_session, role="student")
+    cls, assignment = _setup_class(client, db_session, teacher)
+    client.post(
+        "/api/classes/join-by-code",
+        json={"code": cls["invite_code"]},
+        headers=auth_headers(student),
+    )
+    cohort = _active_cohort(db_session, cls["id"])
+    deadline_id = (
+        db_session.query(Deadline)
+        .filter(Deadline.cohort_id == cohort.id, Deadline.assignment_id == assignment["id"])
+        .one().id
+    )
+    # Студент сдаёт (дедлайн опубликован по умолчанию).
+    resp = client.post(
+        f"/api/assignments/{assignment['id']}/submit",
+        json={"text_content": "x"},
+        headers=auth_headers(student),
+    )
+    assert resp.status_code == 201
+
+    # Снять публикацию — 409.
+    resp = client.patch(
+        f"/api/deadlines/{deadline_id}",
+        json={"is_published": False},
+        headers=auth_headers(teacher),
+    )
+    assert resp.status_code == 409
+    assert "сдачи" in resp.json()["detail"].lower()
+
+
+def test_no_deadline_assignment_is_publishable(client, db_session):
+    """Задание без даты (no_deadline=True) получает Deadline-строку с
+    placeholder датой и видна в «Заданиях и дедлайнах» — иначе учитель не
+    мог бы отдельно опубликовать такое задание. UI маскирует placeholder в None."""
+    teacher = make_user(db_session, role="teacher")
+    student = make_user(db_session, role="student")
+    cls = client.post("/api/classes/", json={"name": "NoDL"}, headers=auth_headers(teacher)).json()
+    assignment = client.post(
+        "/api/assignments/",
+        json={
+            "class_id": cls["id"],
+            "title": "Practice",
+            "criteria": [{"name": "ok", "weight": 100}],
+            # deadline отсутствует
+        },
+        headers=auth_headers(teacher),
+    ).json()
+
+    cohort = _active_cohort(db_session, cls["id"])
+    row = (
+        db_session.query(Deadline)
+        .filter(Deadline.cohort_id == cohort.id, Deadline.assignment_id == assignment["id"])
+        .one()
+    )
+    assert row.no_deadline is True
+    # В БД due_date NOT NULL — placeholder.
+    assert row.due_date is not None
+
+    # API маскирует placeholder в None, is_published=True сразу.
+    resp = client.get(
+        f"/api/cohorts/{cohort.id}/deadlines", headers=auth_headers(teacher)
+    )
+    items = resp.json()
+    assert len(items) == 1
+    assert items[0]["no_deadline"] is True
+    assert items[0]["due_date"] is None
+    assert items[0]["is_published"] is True
+
+    # Студент видит задание, deadline=null.
+    client.post(
+        "/api/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student)
+    )
+    a = client.get(
+        f"/api/assignments/{assignment['id']}", headers=auth_headers(student)
+    ).json()
+    assert a["deadline"] is None
+
+
+def test_publish_all_includes_no_deadline_drafts(client, db_session):
+    """Ролловер создаёт черновики даже для no_deadline-заданий; кнопка
+    «Опубликовать все» должна подхватывать их наравне с обычными."""
+    teacher = make_user(db_session, role="teacher")
+    student = make_user(db_session, role="student")
+    cls, assignment = _setup_class(client, db_session, teacher)
+    client.post(
+        "/api/classes/join-by-code", json={"code": cls["invite_code"]}, headers=auth_headers(student)
+    )
+    # Переключаем существующее задание в no_deadline.
+    cohort = _active_cohort(db_session, cls["id"])
+    deadline_id = (
+        db_session.query(Deadline)
+        .filter(Deadline.cohort_id == cohort.id, Deadline.assignment_id == assignment["id"])
+        .one().id
+    )
+    resp = client.patch(
+        f"/api/deadlines/{deadline_id}",
+        json={"no_deadline": True},
+        headers=auth_headers(teacher),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["no_deadline"] is True
+    assert resp.json()["due_date"] is None
+
+    # Rollover — черновик должен сохранить no_deadline.
+    result = _rollover(client, teacher, cls["id"])
+    new_cohort_id = result["new_cohort_id"]
+    resp = client.get(
+        f"/api/cohorts/{new_cohort_id}/deadlines", headers=auth_headers(teacher)
+    )
+    items = resp.json()
+    assert items[0]["is_published"] is False
+    assert items[0]["no_deadline"] is True
+
+    # publish-all подхватывает.
+    resp = client.patch(
+        f"/api/cohorts/{new_cohort_id}/deadlines/publish-all", headers=auth_headers(teacher)
+    )
+    assert resp.json()["published"] == 1
+    resp = client.get(
+        f"/api/cohorts/{new_cohort_id}/deadlines", headers=auth_headers(teacher)
+    )
+    assert resp.json()[0]["is_published"] is True

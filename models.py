@@ -132,7 +132,14 @@ class Cohort(Base):
 
 class Deadline(Base):
     """Дедлайн задания в рамках конкретного потока. Заменяет жёсткое поле
-    assignments.deadline: контент общий, а даты у каждого учебного года свои."""
+    assignments.deadline: контент общий, а даты у каждого учебного года свои.
+
+    no_deadline=True — задание без срока сдачи (учитель может опубликовать
+    «открытое» задание, например для тренировки). due_date в этом случае
+    хранится как технический placeholder (по умолчанию — created_at потока),
+    но resolve_deadline возвращает его как None: is_late=False, автопроверка
+    и напоминания не срабатывают. is_hidden_for_user трактует no_deadline
+    так же, как обычные опубликованные — студент видит задание."""
     __tablename__ = "deadlines"
     __table_args__ = (
         UniqueConstraint("cohort_id", "assignment_id", name="ux_deadlines_cohort_assignment"),
@@ -149,6 +156,7 @@ class Deadline(Base):
     # После rollover дедлайны создаются черновиками (False) — преподаватель
     # проверяет сдвинутые даты и публикует; ученикам видны только опубликованные.
     is_published: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    no_deadline: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     cohort: Mapped["Cohort"] = relationship(back_populates="deadlines")
     assignment: Mapped["Assignment"] = relationship()

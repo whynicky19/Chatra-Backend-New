@@ -448,8 +448,19 @@ class DeadlineResponse(BaseModel):
     assignment_id: int
     # Название задания — чтобы экран проверки дедлайнов не показывал голые id.
     assignment_title: Optional[str] = None
-    due_date: datetime
+    # Из-за NOT NULL на колонке для no_deadline=True мы кладём placeholder
+    # в БД (2099-12-31). В API приводим обратно к None, чтобы UI мог сразу
+    # отличить «без срока» от «31 декабря 2099».
+    due_date: Optional[datetime] = None
     is_published: bool
+    # true — дедлайн создан rollover'ом из архивного потока того же класса:
+    # дата сдвинута автоматически на разницу start_date, учитель должен
+    # проверить перед публикацией. Считается на лету в роутере.
+    was_shifted: bool = False
+    # true — задание «без срока сдачи» (тренировка, открытое). is_late=False,
+    # автопроверка и напоминания не срабатывают. Управляется учителем из
+    # экрана «Задания и дедлайны».
+    no_deadline: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -457,6 +468,9 @@ class DeadlineResponse(BaseModel):
 class DeadlineUpdate(BaseModel):
     due_date: Optional[datetime] = None
     is_published: Optional[bool] = None
+    # Учитель может переключить задание в режим «без срока» (no_deadline=True)
+    # или вернуть дату (no_deadline=False + due_date).
+    no_deadline: Optional[bool] = None
 
 
 class RotationModeUpdate(BaseModel):

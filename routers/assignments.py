@@ -149,25 +149,40 @@ def create_assignment(
     # единственной дырой в этой цепочке.
     require_class_owner(db, body.class_id, current_user)
     criteria_list = [c.model_dump() for c in body.criteria]
-    obj = crud.create_assignment(
-        db=db,
-        class_id=body.class_id,
-        title=body.title,
-        description=body.description,
-        criteria=criteria_list,
-        # Макс. балл больше не настраивается — всегда 100 (см. AssignmentCreate).
-        max_score=100,
-        deadline=body.deadline,
-        created_by=current_user.id,
-        reference_solution_url=body.reference_solution_url,
-    )
-    # Дедлайн дублируется в активный поток класса — источник правды теперь
-    # таблица deadlines, поле задания остаётся для обратной совместимости.
-    if body.deadline:
+    try:
+        obj = crud.create_assignment(
+            db=db,
+            class_id=body.class_id,
+            title=body.title,
+            description=body.description,
+            criteria=criteria_list,
+            # Макс. балл больше не настраивается — всегда 100 (см. AssignmentCreate).
+            max_score=100,
+            deadline=body.deadline,
+            created_by=current_user.id,
+            reference_solution_url=body.reference_solution_url,
+        )
+        # Дедлайн дублируется в активный поток класса — источник правды теперь
+        # таблица deadlines, поле задания остаётся для обратной совместимости.
+        # ВСЁ в одной транзакции: create_assignment внутри делает flush(),
+        # а не commit() — иначе при сбое между заданием и Deadline сдачи
+        # шли в легаси-ветку автопроверки (Submission.deadline_id IS NULL).
+        #
+        # Строка Deadline создаётся ВСЕГДА — даже если учитель не задал дату
+        # (no_deadline=True). Иначе такое задание нельзя было бы отдельно
+        # опубликовать/закрыть через экран «Задания и дедлайны» потока — оно
+        # жило бы только в fallback-поле assignments.deadline.
         cohort = crud_cohorts.get_active_cohort(db, body.class_id)
         if cohort:
-            crud_cohorts.upsert_deadline(db, cohort.id, obj.id, body.deadline, is_published=True)
-            db.commit()
+            crud_cohorts.upsert_deadline(
+                db, cohort.id, obj.id, body.deadline,
+                is_published=True,
+                no_deadline=body.deadline is None,
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return obj
 
 
@@ -290,16 +305,22 @@ def update_assignment(
     obj = crud.update_assignment(db, assignment_id, data)
     # Правка дедлайна задания = правка дедлайна АКТИВНОГО потока (архивные
     # годы не трогаем). Точечная правка по потокам — PATCH дедлайнов потока.
-    cohort = crud_cohorts.get_active_cohort(db, obj.class_id) if (clear_deadline or "deadline" in data) else None
-    if clear_deadline:
-        obj.deadline = None
-        if cohort:
-            crud_cohorts.delete_deadline(db, cohort.id, obj.id)
+    # deadline=null в запросе => no_deadline=True; clear_deadline=True =>
+    # удаляем строку Deadline целиком (поведение до добавления no_deadline).
+    if clear_deadline or "deadline" in data:
+        cohort = crud_cohorts.get_active_cohort(db, obj.class_id)
+        if clear_deadline:
+            obj.deadline = None
+            if cohort:
+                crud_cohorts.delete_deadline(db, cohort.id, obj.id)
+        elif cohort:
+            crud_cohorts.upsert_deadline(
+                db, cohort.id, obj.id, data["deadline"],
+                is_published=True,
+                no_deadline=data["deadline"] is None,
+            )
         db.commit()
         db.refresh(obj)
-    elif "deadline" in data and cohort:
-        crud_cohorts.upsert_deadline(db, cohort.id, obj.id, data["deadline"], is_published=True)
-        db.commit()
     return obj
 
 

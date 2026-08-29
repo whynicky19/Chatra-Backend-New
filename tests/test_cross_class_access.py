@@ -18,11 +18,16 @@ def _make_lecture(db, class_id, teacher, topic="Тема"):
 
 
 def _make_assignment(db, class_id, teacher, title="HW"):
-    return crud_assignments.create_assignment(
+    obj = crud_assignments.create_assignment(
         db=db, class_id=class_id, title=title, description=None,
         criteria=[{"name": "полнота", "weight": 100}], max_score=100,
         deadline=None, created_by=teacher.id,
     )
+    # create_assignment теперь делает flush(), а не commit() — иначе роутер
+    # не мог бы атомарно зафиксировать пару Assignment+Deadline в одной
+    # транзакции. Тестам, обращающимся к записи через HTTP, нужен явный commit.
+    db.commit()
+    return obj
 
 
 def test_student_cannot_list_lectures_of_class_they_are_not_in(client, db_session):

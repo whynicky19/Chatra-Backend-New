@@ -12,7 +12,7 @@ import schemas
 from crud import cohorts as crud_cohorts
 from db import get_db
 from deps import get_current_teacher
-from models import Assignment, Class, Cohort, Deadline, cohort_students
+from models import Assignment, Class, Cohort, Deadline, Submission, cohort_students
 
 router = APIRouter(tags=["Cohorts"])
 
@@ -146,10 +146,35 @@ def set_rotation_mode(
 
 
 
-def _deadline_response(d: Deadline, title: Optional[str]) -> schemas.DeadlineResponse:
+def _deadline_response(d: Deadline, title: Optional[str], was_shifted: bool = False) -> schemas.DeadlineResponse:
     resp = schemas.DeadlineResponse.model_validate(d)
     resp.assignment_title = title
+    resp.was_shifted = was_shifted
+    # Для no_deadline=True в БД лежит placeholder 2099-12-31 (из-за NOT NULL)
+    # — маскируем обратно в None, чтобы клиент не рендерил фантомную дату.
+    if d.no_deadline:
+        resp.due_date = None
     return resp
+
+
+def _was_shifted(db: Session, d: Deadline) -> bool:
+    """Дедлайн был автоматически сдвинут (rollover), если в архивном потоке
+    того же класса уже была запись Deadline для этого задания — её скопировали
+    в новый поток со сдвигом. Используется для бейджа 'проверьте дату' в UI."""
+    class_id = db.query(Cohort.class_id).filter(Cohort.id == d.cohort_id).scalar()
+    if class_id is None:
+        return False
+    return (
+        db.query(Deadline.id)
+        .join(Cohort, Cohort.id == Deadline.cohort_id)
+        .filter(
+            Cohort.class_id == class_id,
+            Cohort.status == "archived",
+            Deadline.assignment_id == d.assignment_id,
+        )
+        .first()
+        is not None
+    )
 
 
 @router.get("/cohorts/{cohort_id}/deadlines", response_model=List[schemas.DeadlineResponse])
@@ -167,7 +192,21 @@ def list_cohort_deadlines(
         .order_by(Deadline.due_date)
         .all()
     )
-    return [_deadline_response(d, title) for d, title in rows]
+    # was_shifted считаем одним запросом: ID архивных дедлайнов того же класса.
+    # Для каждой строки проверяем, есть ли её assignment_id в этом наборе.
+    klass_id = db.query(Cohort.class_id).filter(Cohort.id == cohort_id).scalar()
+    archived_aids: set = set()
+    if klass_id is not None:
+        archived_aids = {
+            aid for (aid,) in db.query(Deadline.assignment_id)
+            .join(Cohort, Cohort.id == Deadline.cohort_id)
+            .filter(Cohort.class_id == klass_id, Cohort.status == "archived")
+            .all()
+        }
+    return [
+        _deadline_response(d, title, was_shifted=(d.assignment_id in archived_aids))
+        for d, title in rows
+    ]
 
 
 @router.patch("/deadlines/{deadline_id}", response_model=schemas.DeadlineResponse)
@@ -182,14 +221,33 @@ def update_deadline(
     if not d:
         raise HTTPException(status_code=404, detail="Дедлайн не найден")
     _get_owned_cohort(db, d.cohort_id, current_user)
+    # BE-cohort-unpublish: снять публикацию нельзя, если по дедлайну уже есть
+    # сдачи — иначе задание исчезнет из выдачи студента (is_hidden_for_user),
+    # но сдачи останутся в БД без автоматической проверки (deadline_checker
+    # фильтрует is_published==True). Возвращаем 409 — учитель должен либо
+    # удалить сдачи, либо оставить как есть.
+    if body.is_published is False and d.is_published:
+        has_submissions = (
+            db.query(Submission.id)
+            .filter(Submission.deadline_id == d.id)
+            .first()
+            is not None
+        )
+        if has_submissions:
+            raise HTTPException(
+                status_code=409,
+                detail="Нельзя снять публикацию: по этому дедлайну уже есть сдачи",
+            )
     if body.due_date is not None:
         d.due_date = body.due_date
     if body.is_published is not None:
         d.is_published = body.is_published
+    if body.no_deadline is not None:
+        d.no_deadline = body.no_deadline
     db.commit()
     db.refresh(d)
     title = db.query(Assignment.title).filter(Assignment.id == d.assignment_id).scalar()
-    return _deadline_response(d, title)
+    return _deadline_response(d, title, was_shifted=_was_shifted(db, d))
 
 
 @router.patch("/cohorts/{cohort_id}/deadlines/publish-all")
