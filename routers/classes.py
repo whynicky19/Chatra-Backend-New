@@ -145,7 +145,10 @@ def list_all_classes(
 
 @router.get("/", response_model=List[schemas.ClassResponse])
 def list_classes(
-    my_only: bool = False,
+    # Учитель по умолчанию видит ТОЛЬКО свои классы: чужой класс открыть нельзя,
+    # входить по коду учителю тоже нельзя (см. join_by_code ниже). Админ
+    # organization-wide override — оставляем за ним право видеть всё.
+    my_only: bool = True,
     limit: int | None = Query(None, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -182,7 +185,13 @@ def list_classes(
                 archived_map[c.id] = False
         classes.sort(key=lambda c: c.created_at, reverse=True)
     else:
-        teacher_id = current_user.id if my_only else None
+        # teacher: всегда my_only=True (свои классы). admin: my_only=None → все
+        # классы организации (override). Учитель явно попросил ?my_only=false —
+        # не уважаем, чтобы случайно не отдать чужие классы старым клиентам.
+        if current_user.role == "admin":
+            teacher_id = None
+        else:
+            teacher_id = current_user.id
         classes = crud.get_all_classes(db, teacher_id=teacher_id, org_type=current_user.org_type)
     # Студенческая ветка собирает список в Python, поэтому пагинация — срезом,
     # единообразно для обеих веток. limit=None отдаёт всё.
@@ -265,8 +274,12 @@ def lookup_class_by_code(
     the user is still typing a code, without joining and without exposing the
     invite_code itself (masked by _to_class_response, same as everywhere else).
     Rate-limited like the join endpoints since it's still a code-guessing
-    oracle (existence only, no invite_code leak)."""
+    oracle (existence only, no invite_code leak).
+    Учителю lookup тоже не нужен: он не вступает, а превью чужого класса
+    бессмысленно (он и так не сможет его открыть)."""
     _check_join_rate_limit(current_user.id)
+    if current_user.role in ("teacher", "admin"):
+        raise HTTPException(status_code=403, detail="teachers_cannot_join_by_code")
 
     obj = crud.get_class_by_invite_code(db, code.strip().upper())
     if not obj or obj.org_type != current_user.org_type:
@@ -283,6 +296,12 @@ def get_class(
 ):
     obj = crud.get_class(db, class_id)
     if not obj or obj.org_type != current_user.org_type:
+        raise HTTPException(status_code=404, detail="Предмет не найден")
+    # Учитель видит только свои классы (list_classes отдаёт только created_by=me).
+    # Прямая ссылка /classes/{id} на чужой класс должна выглядеть для него как
+    # «не найдено», а не как «у вас нет прав» — иначе можно перебирать ID и
+    # узнавать о существовании чужих классов. Админ по-прежнему видит всё.
+    if current_user.role == "teacher" and obj.created_by != current_user.id:
         raise HTTPException(status_code=404, detail="Предмет не найден")
     is_archived = (
         crud_cohorts.is_archived_for_user(db, class_id, current_user.id)
@@ -536,6 +555,14 @@ def join_class(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    # Учитель/админ в класс не вступают: либо владелец, либо admin (видит всё
+    # через list_classes). Это та же защита, что и в /join-by-code.
+    if current_user.role in ("teacher", "admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="teachers_cannot_join_by_code",
+        )
+
     obj = crud.get_class(db, class_id)
     if not obj:
         raise HTTPException(status_code=404, detail="Предмет не найден")
@@ -558,6 +585,16 @@ def join_class_by_code(
     current_user=Depends(get_current_user),
 ):
     _check_join_rate_limit(current_user.id)
+
+    # Учитель в чужой класс не вступает: он либо владелец, либо админ (видит
+    # всё в организации), а со-преподавателей в текущей модели нет. Если
+    # пришёл запрос с кодом — это либо ошибка UI, либо попытка обойти разделение
+    # ролей. Админу тоже нет смысла «вступать»: он и так видит класс.
+    if current_user.role in ("teacher", "admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="teachers_cannot_join_by_code",
+        )
 
     code = body.code.strip().upper()
     obj = crud.get_class_by_invite_code(db, code)
