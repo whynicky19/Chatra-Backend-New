@@ -30,7 +30,7 @@ ALTER TABLE rag_documents ALTER COLUMN file_url SET NOT NULL;
 
 DO $$ BEGIN
     ALTER TABLE rag_documents ADD CONSTRAINT ux_rag_documents_post_file UNIQUE (post_id, file_url);
-EXCEPTION WHEN duplicate_object THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
 END $$;
 
 -- 2. rag_chunks: денормализованные class_id/post_id/org_type (поиск без
