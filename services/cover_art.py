@@ -592,21 +592,22 @@ def _subject_key_matches(subject: str, key: str) -> bool:
     )
 
 
-def resolve_motif(subject: str | None, icon: str) -> str:
-    """Тематические элементы фона: сначала по названию предмета, потом по
-    символу.
+def resolve_motif(subject: str | None, icon: str = "") -> str:
+    """Тематические элементы только по названию предмета.
 
-    Мотив символа — только запасной вариант: символ преподаватель выбирает
-    как понравившуюся картинку, а тему предмета несёт название. Ничего не
-    совпало (свой курс, «Поток 2», кружок) — берём мотив символа, он хотя бы
-    в языке коллекции.
+    ``icon`` сохранён в сигнатуре для совместимости со старыми вызовами API,
+    но намеренно не влияет на результат. Иначе выбранная для оформления
+    «база данных» превращает любой неизвестный курс в серверы, а «щит» — в
+    кибербезопасность. Если словарь не узнал название, смысл должен вывести
+    сам image-модель из переданного ей названия курса.
     """
     low = (subject or "").strip().lower()
     if low:
         for keys, motif in SUBJECT_MOTIFS:
             if any(_subject_key_matches(low, k) for k in keys):
                 return motif
-    return ICONS[normalize_icon(icon)]["motif"]
+    return ("infer one concrete, subject-specific visual metaphor directly "
+            "from the course title")
 
 
 def normalize_color(value: str | None) -> str:
@@ -627,14 +628,13 @@ def normalize_subject(value: str | None, icon: str = "") -> str:
     Название пишет преподаватель, а уезжает оно во внешнюю модель — поэтому
     вычищаем служебные символы (кавычки, переводы строк, скобки-фигурные) и
     режем длину: остаётся название курса, а не площадка для инструкций модели.
-    Пусто или ничего не осталось → предмет по умолчанию для выбранного символа
-    («11А» темы не несёт, а Mathematics — несёт).
+    ``icon`` сохранён только для обратной совместимости. Пустое или полностью
+    вычищенное название получает нейтральную тему и никогда не наследует смысл
+    выбранной ранее иконки.
     """
     cleaned = _SUBJECT_ALLOWED.sub(" ", value or "")
     cleaned = " ".join(cleaned.split())[:SUBJECT_MAX_LEN].strip(" -&+/.,:()")
-    if not cleaned:
-        return ICONS[normalize_icon(icon)]["subject"]
-    return cleaned
+    return cleaned or "general education course"
 
 
 def catalog() -> dict:
@@ -678,13 +678,6 @@ def catalog() -> dict:
 # картинкой в хранилище, пока её не перегенерируют.
 #
 # Принцип дизайн-системы:
-#   ICON   = MAIN FOCUS        — клиенты кладут символ поверх картинки.
-#                                Модель НЕ рисует под него платформу, пьедестал
-#                                или сцену-сцену-тарелку: иконка может плавать в
-#                                пространстве, стоять в центре абстрактной
-#                                композиции или быть частью технической
-#                                структуры. Главное — чтобы иконка оставалась
-#                                читаемой, а вокруг неё была тематика;
 #   COLOR  = VISUAL IDENTITY   — один оттенок определяет атмосферу всей сцены;
 #   SUBJECT NAME = SCENE       — название предмета определяет САМУ сцену, а не
 #                                «несколько деталей у краёв»: для Computer
@@ -698,9 +691,12 @@ def catalog() -> dict:
 _BASE_STYLE = (
     "Create a polished course cover for a premium educational app in a wide "
     "16:9 frame. Course subject: \"{subject}\". "
-    "Render exactly ONE large, instantly recognisable 3D hero object that "
-    "represents this subject. Use these clues only to choose that single "
-    "object, not as a list of things to draw: {motif}. "
+    "Infer the real academic or professional domain directly from that course "
+    "title, then render exactly ONE large, instantly recognisable 3D hero "
+    "object or one tightly integrated sculptural system that represents it. "
+    "Subject-specific direction: {scene}. Use this only as semantic guidance "
+    "for the single hero, not as a checklist of separate props. Never derive "
+    "the subject from an icon, badge or other metadata. "
     "Place the hero near the centre, filling about 45 percent of the frame, "
     "with a complete crisp silhouette and comfortable margins. It must remain "
     "readable after both a wide header crop and a compact card crop. "
@@ -737,6 +733,12 @@ SUBJECT_SCENES: tuple[tuple[tuple[str, ...], str], ...] = (
      "a large coordinate grid in perspective, a prominent plotted function "
      "curve, a triangle or circle construction with a marked angle, and "
      "faint additional graph axes receding into the background"),
+    (("information system", "information systems", "информационн систем",
+      "ақпараттық жүйе", "ақпараттық жүйелер"),
+     "one integrated hub of connected modular panels and flowing data paths, "
+     "showing how information moves through a complete system; avoid locks, "
+     "shields and a plain server stack unless the title explicitly concerns "
+     "security or databases"),
     (("программир", "programming", "informatik", "информатик", "coding",
       "кодинг", "python", "java", "algorithm", "алгоритм", "разработк",
       "software", "backend", "бэкенд", "devops"),
@@ -879,14 +881,12 @@ def resolve_scene(subject: str | None) -> str:
         for keys, scene in SUBJECT_SCENES:
             if any(_subject_key_matches(low, k) for k in keys):
                 return scene
-    return ("a single coherent scene built from the thematic elements of "
-            "this field, arranged as a real composition rather than a "
-            "scattered decoration")
+    return ("infer one concrete visual metaphor directly from the exact course "
+            "title; make it specific to that field rather than a generic tech, "
+            "security or database symbol")
 
 
-# Варианты раскладки для Regenerate — куда сместить сцену и мотивы. Середина
-# остаётся спокойной в каждом варианте: это условие читаемости иконки, а не
-# одна из альтернатив.
+# Варианты ракурса для Regenerate. Тема и общий стиль остаются прежними.
 _COMPOSITIONS = (
     "Turn the hero very slightly to the left.",
     "Turn the hero very slightly to the right.",
@@ -897,28 +897,24 @@ _COMPOSITIONS = (
 
 def build_prompt(color: str, icon: str, seed: int | None = None,
                  subject: str | None = None) -> str:
-    """Единый промпт Chatra под выбранные цвет, символ и предмет.
+    """Единый промпт Chatra под выбранный цвет и название предмета.
 
-    subject — название класса: источник и сцены (resolve_scene), и тематических
-    мотивов (resolve_motif). Преподаватель по-прежнему выбирает только цвет и
-    символ; символ участвует в тематике лишь как запасной вариант, когда
-    название ничего не говорит о предмете — иначе колба на «Physics» тянула бы
-    в фон химию. Пустое название заменяется предметом по умолчанию для
-    выбранного символа, см. normalize_subject.
+    subject — единственный источник тематики. ``icon`` принимается для
+    совместимости со старыми клиентами и сохранёнными классами, но в промпт и
+    выбор hero-объекта не входит.
 
     seed меняет только раскладку (одна фраза из _COMPOSITIONS) — Images API не
     принимает seed как параметр, поэтому вариативность для Regenerate вносим
     текстом промпта.
     """
     color = normalize_color(color)
-    icon = normalize_icon(icon)
-    topic = normalize_subject(subject, icon)
+    topic = normalize_subject(subject)
     rng = random.Random(seed)
     return " ".join((
         _BASE_STYLE.format(
             color=PALETTE[color]["prompt"],
             subject=topic,
-            motif=resolve_motif(topic, icon),
+            scene=resolve_scene(topic),
         ),
         rng.choice(_COMPOSITIONS),
     ))

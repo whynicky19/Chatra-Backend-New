@@ -232,12 +232,14 @@ def test_prompt_does_not_pile_up_demands_for_emptiness():
     assert len(p) < 2000, f"промпт снова разросся: {len(p)} символов"
 
 
-def test_prompt_carries_chosen_colour_and_thematic_hint():
-    p = cover_art.build_prompt("purple", "sigma", seed=1)
+def test_prompt_carries_chosen_colour_and_title_based_scene():
+    p = cover_art.build_prompt(
+        "purple", "sigma", seed=1, subject="Computer Mathematics")
     assert cover_art.PALETTE["purple"]["prompt"] in p
-    assert cover_art.ICONS["sigma"]["motif"] in p
-    # Цвет и тематика соседнего варианта в промпт не просачиваются.
+    assert cover_art.resolve_scene("Computer Mathematics") in p
+    # Цвет и тематика выбранной иконки в промпт не просачиваются.
     assert cover_art.PALETTE["green"]["prompt"] not in p
+    assert cover_art.ICONS["sigma"]["motif"] not in p
     assert cover_art.ICONS["atom"]["motif"] not in p
 
 
@@ -255,22 +257,24 @@ def test_theme_follows_the_class_name_not_the_chosen_symbol():
     выбрал преподаватель), и фон уезжал в химические молекулы с лабораторной
     посудой. Тему задаёт название, символ — только украшение."""
     p = cover_art.build_prompt("teal", "flask", seed=1, subject="Physics")
-    assert cover_art.resolve_motif("Physics", "flask") in p
+    assert cover_art.resolve_scene("Physics") in p
     assert cover_art.ICONS["flask"]["motif"] not in p   # молекул и колб нет
     assert "exactly ONE large" in p
 
 
 @pytest.mark.parametrize("name,expect", [
-    ("Web Design", "wireframe layouts"),
-    ("Веб-дизайн 2 курс", "wireframe layouts"),
-    ("Программирование", "node graphs"),
-    ("Математика", "coordinate grids"),
+    ("Web Design", "wireframe of a web page"),
+    ("Веб-дизайн 2 курс", "wireframe of a web page"),
+    ("Программирование", "soft node graph"),
+    ("Математика", "large coordinate grid"),
     ("Физика 10 класс", "wave interference"),
-    ("Химия", "molecular lattices"),
-    ("Биология", "DNA helices"),
-    ("История Казахстана", "old map contours"),
-    ("Английский язык", "flowing script-like strokes"),
-    ("Экономика", "trend lines"),
+    ("Химия", "molecular lattice"),
+    ("Биология", "double-helix DNA"),
+    ("История Казахстана", "old-map contour"),
+    ("Английский язык", "script-like strokes"),
+    ("Экономика", "candlestick chart"),
+    ("Dealing with Data", "bar chart or histogram"),
+    ("Introduction to Information System", "integrated hub"),
 ])
 def test_common_subjects_get_their_own_background(name, expect):
     """Тематика фона должна отличаться от предмета к предмету — иначе вся
@@ -278,11 +282,12 @@ def test_common_subjects_get_their_own_background(name, expect):
     assert expect in cover_art.build_prompt("blue", "book", seed=1, subject=name)
 
 
-def test_unknown_subject_keeps_the_symbol_motif():
-    """Свой курс или кружок в таблицу не попадёт — тогда работает мотив
-    символа: он хотя бы в языке коллекции."""
+def test_unknown_subject_is_inferred_from_title_not_icon():
+    """Для своего курса модель получает название, а не случайную иконку."""
     p = cover_art.build_prompt("blue", "note", seed=1, subject="Клуб дебатов")
-    assert cover_art.ICONS["note"]["motif"] in p
+    assert "Клуб дебатов" in p
+    assert "infer one concrete visual metaphor" in p
+    assert cover_art.ICONS["note"]["motif"] not in p
 
 
 def test_short_theme_keys_match_words_not_arbitrary_substrings():
@@ -290,17 +295,26 @@ def test_short_theme_keys_match_words_not_arbitrary_substrings():
     academy = cover_art.resolve_motif("Startup Academy", "book")
     smart = cover_art.resolve_motif("Smart Learning", "book")
     assert "rocket" in academy
-    assert smart == cover_art.ICONS["book"]["motif"]
+    assert "course title" in smart
     assert "colour-wheel" in cover_art.resolve_motif("Art", "book")
 
 
-def test_prompt_falls_back_to_the_default_subject_for_a_nameless_class():
-    """«11А» темы не несёт — тогда тему берём у выбранного символа, иначе
-    модель нарисует фон «ни про что»."""
+def test_prompt_uses_neutral_subject_for_a_nameless_class():
+    """Пустое название не должно наследовать тему выбранной иконки."""
     p = cover_art.build_prompt("blue", "dna", seed=3, subject="11А")
     assert "11А" in p  # осмысленная часть названия сохраняется
     empty = cover_art.build_prompt("blue", "dna", seed=3, subject="   ")
-    assert cover_art.ICONS["dna"]["subject"] in empty
+    assert "general education course" in empty
+    assert cover_art.ICONS["dna"]["subject"] not in empty
+
+
+def test_same_title_produces_same_prompt_for_every_icon():
+    """Иконка остаётся в старом API, но больше не управляет генерацией."""
+    prompts = {
+        cover_art.build_prompt("teal", icon, seed=17, subject="Dealing with Data")
+        for icon in cover_art.ICONS
+    }
+    assert len(prompts) == 1
 
 
 def test_subject_name_cannot_smuggle_instructions_into_the_prompt():
@@ -325,9 +339,8 @@ def test_regenerate_varies_composition_but_not_style():
     b = cover_art.build_prompt("teal", "atom", seed=999)
     base = cover_art._BASE_STYLE.format(
         color=cover_art.PALETTE["teal"]["prompt"],
-        subject=cover_art.ICONS["atom"]["subject"],
-        scene=cover_art.resolve_scene(cover_art.ICONS["atom"]["subject"]),
-        motif=cover_art.ICONS["atom"]["motif"],
+        subject="general education course",
+        scene=cover_art.resolve_scene("general education course"),
     )
     assert base in a and base in b       # стиль и цвет те же
     assert a != b                        # раскладка другая
