@@ -87,6 +87,16 @@ class UploadUrlSignerMiddleware(BaseHTTPMiddleware):
             signed = body
         headers = dict(response.headers)
         headers.pop("content-length", None)
+        # Персональные списки сдач и оценок нельзя восстанавливать из HTTP-
+        # кэша: оценка часто появляется уже после первого открытия страницы.
+        # no-store заодно исключает сохранение авторизованных JSON-ответов на
+        # общем устройстве. Vary защищает прокси от смешивания пользователей.
+        if request.url.path.startswith("/api/"):
+            headers["Cache-Control"] = "private, no-store"
+            vary = headers.get("vary", "")
+            vary_values = {v.strip() for v in vary.split(",") if v.strip()}
+            vary_values.update({"Authorization", "Origin"})
+            headers["Vary"] = ", ".join(sorted(vary_values))
         return Response(
             content=signed,
             status_code=response.status_code,

@@ -66,7 +66,7 @@ class Class(Base):
     # намеренно — старые картинки ничем не хуже и удалять их не за что.
     cover_color: Mapped[str] = mapped_column(String(16), nullable=True)
     cover_icon: Mapped[str] = mapped_column(String(32), nullable=True)
-    # 'ai' | 'fallback' | 'upload' (см. services/cover_generator.py). Нужен,
+    # 'ai_hero' | 'ai' (legacy) | 'fallback' | 'upload' (см. services/cover_generator.py). Нужен,
     # чтобы UI мог сказать «модель была недоступна, это запасной вариант»
     # и предложить повторить, не гадая по самой картинке.
     cover_source: Mapped[str] = mapped_column(String(16), nullable=True)

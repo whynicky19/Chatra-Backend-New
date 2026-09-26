@@ -10,9 +10,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-MAIN_MAX_WIDTH = 1600
-THUMBNAIL_MAX_WIDTH = 480
-WEBP_QUALITY = 82
+MAIN_MAX_WIDTH = 2048
+# Карточка может быть ~400 px шириной; 480 px заметно мылились на Retina/HiDPI.
+THUMBNAIL_MAX_WIDTH = 960
+WEBP_QUALITY = 88
 JPEG_QUALITY = 85
 
 

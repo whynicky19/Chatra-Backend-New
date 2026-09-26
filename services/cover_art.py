@@ -52,17 +52,14 @@ import re
 
 logger = logging.getLogger(__name__)
 
-# Кадр 16:9 — широкая горизонтальная композиция. Обложку показывают полосой
-# (карточка каталога ~2.1:1, шапка класса ~3.3:1), и чем шире исходник, тем
-# меньше композиции теряется при кропе. Картинку от модели приводим к этому
-# кадру в fit_cover_frame(): Images API даёт 3:2, лишнее срезается сверху и
-# снизу — поэтому промпт и просит держать верхний и нижний край спокойными.
-COVER_WIDTH = 1536
-COVER_HEIGHT = 864
+# Кадр 16:9 — родной размер AI-ответа и локального фолбэка. Главный объект
+# держим в центральной safe-zone: карточки и широкие шапки обрезают края
+# по-разному, но предмет остаётся читаемым.
+COVER_WIDTH = 2048
+COVER_HEIGHT = 1152
 
-# Символ ложится в центр композиции. Клиенты рисуют его белым с мягкой тенью —
-# на тёмном фоне это самый читаемый вариант, а спокойная середина (её просит
-# промпт и оставляет локальный рендер) гарантирует, что он не потеряется.
+# SVG-символ нужен локальному фолбэку. AI-обложка содержит собственный
+# 3D hero-объект, поэтому клиенты скрывают оверлей при cover_source == "ai_hero".
 ICON_ON_ARTWORK = "white-with-shadow"
 
 # Название предмета уезжает в промпт как подсказка темы, поэтому его нужно
@@ -467,10 +464,15 @@ DEFAULT_ICON = "book"
 # правды о предмете, символ — только украшение, поэтому сначала ищем здесь.
 #
 # Порядок важен: срабатывает первое совпадение, поэтому узкие темы («веб-
-# дизайн») стоят выше общих («дизайн»). Ключи в нижнем регистре, сравнение —
-# по вхождению подстроки, чтобы «Математика 2 курс» и «Matematika» попадали
-# в ту же строку.
+# дизайн») стоят выше общих («дизайн»). Ключи в нижнем регистре; совпадение
+# идёт по словам/основам через _subject_key_matches.
 SUBJECT_MOTIFS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("prompt engineering", "промпт инжиниринг", "промпты"),
+     "a sculptural AI knot merged with one clean chat-bubble form"),
+    (("startup", "стартап", "entrepreneurship", "предпринимат"),
+     "a dynamic launch rocket representing a new venture and upward growth"),
+    (("no code", "no-code", "low code", "low-code", "ноу код", "лоу код"),
+     "a friendly modular interface block with one compact keyboard-like control surface"),
     (("веб-дизайн", "веб дизайн", "web design", "web-design", "ui/ux", "ui ux",
       "юай", "вёрстк", "верстк", "frontend", "фронтенд", "html", "css"),
      "wireframe layouts, browser window frames, layout grids, vector paths, "
@@ -567,6 +569,29 @@ SUBJECT_MOTIFS: tuple[tuple[tuple[str, ...], str], ...] = (
 )
 
 
+def _subject_key_matches(subject: str, key: str) -> bool:
+    """Совпадение по словам/основам, а не по произвольной подстроке.
+
+    Короткие ключи (`art`, `cad`, `ml`, `pr`) должны быть отдельными словами:
+    иначе Startup Academy попадает в CAD, а Smart Learning — в Art.
+    Длинные ключи остаются основами слов (`матем` -> `математика`).
+    """
+    subject_words = re.findall(r"\w+", subject.lower(), re.UNICODE)
+    key_words = re.findall(r"\w+", key.lower(), re.UNICODE)
+    if not subject_words or not key_words:
+        return False
+
+    def word_matches(word: str, wanted: str) -> bool:
+        return word == wanted if len(wanted) <= 3 else word.startswith(wanted)
+
+    width = len(key_words)
+    return any(
+        all(word_matches(subject_words[start + offset], wanted)
+            for offset, wanted in enumerate(key_words))
+        for start in range(len(subject_words) - width + 1)
+    )
+
+
 def resolve_motif(subject: str | None, icon: str) -> str:
     """Тематические элементы фона: сначала по названию предмета, потом по
     символу.
@@ -579,7 +604,7 @@ def resolve_motif(subject: str | None, icon: str) -> str:
     low = (subject or "").strip().lower()
     if low:
         for keys, motif in SUBJECT_MOTIFS:
-            if any(k in low for k in keys):
+            if any(_subject_key_matches(low, k) for k in keys):
                 return motif
     return ICONS[normalize_icon(icon)]["motif"]
 
@@ -671,63 +696,27 @@ def catalog() -> dict:
 # Баланс инструкций тут важнее формулировок. Сначала ЧТО рисуем и сколько
 # этого должно быть, и только потом — ограничения, каждое ровно по одному разу.
 _BASE_STYLE = (
-    "Artwork for a course cover in a premium educational application, "
-    "Apple-like design language: minimalistic, elegant, modern, clean and "
-    "soft, in a wide 16:9 frame. "
-    "Subject of the course: \"{subject}\". "
-
-    # 1. Сцена определяется предметом, а не общим шаблоном.
-    "Build a UNIQUE visual scene for this subject — not a generic template. "
-    "The composition is a single coherent scene that immediately tells the "
-    "viewer what this course is about. For this subject, the scene must "
-    "contain: {scene}. "
-
-    # 2. Иконка — главный объект, без пьедестала.
-    "The app will place its subject icon on top of this image later. Do NOT "
-    "draw a glowing pedestal, a circular platform, a stage, a halo, a "
-    "spotlight, a disc, a circular base or any other dedicated \"stage for "
-    "the icon\" — the icon may float in the air, sit inside the scene, be "
-    "part of a technical structure, or be surrounded by thematic elements. "
-    "Leave the area where the icon will land relatively calm and free of "
-    "fine detail so the icon remains readable, but do not reserve an empty "
-    "circle. The scene belongs to the subject, not to a stage. "
-
-    # 3. Тематические элементы — заметный второй уровень.
-    "Around and behind the icon area, place 3 to 6 thematic elements of "
-    "this field — for example: {motif}. They are a HINT of the discipline, "
-    "not a faint decoration: they must be clearly visible (soft but present, "
-    "in a pale tint of the background colour, with a gentle matte 3D "
-    "roundness), and arranged as one coherent composition rather than "
-    "scattered randomly. They may be in front of, beside, or behind the "
-    "icon area, in the background, on the sides, or partially behind the "
-    "main subject. They are not allowed to be nearly transparent or barely "
-    "discernible — the user should be able to read the topic of the course "
-    "from the image alone. At the same time, they must not overwhelm the "
-    "icon: the icon is the loudest, the thematic elements are the second "
-    "loudest, the gradient is the quietest. "
-
-    # 4. Цветовая идентичность и свет.
-    "Colour identity: {color}. The whole frame lives in this single hue — "
-    "soft, airy and premium, gently deeper toward the corners but never "
-    "black, never grey, never oversaturated, no neon. Light is soft and "
-    "diffused, like frosted glass lit from behind; transitions between "
-    "tones are slow and silky. Subtle 3D depth is welcome on the thematic "
-    "elements. "
-
-    # 5. Коллекция: единая система у всех предметов.
-    "Every cover in this collection follows exactly the same visual system: "
-    "the same gradient treatment, the same softness, the same level of "
-    "detail, the same lighting, the same line weight and the same treatment "
-    "of thematic elements. Only the colour, the scene and the chosen motifs "
-    "change from subject to subject — the visual language is shared, the "
-    "composition is unique. "
-
-    # 6. Запреты — один короткий список в конце.
-    "Never draw text, letters, numbers, formulas-as-text, logos or labels; "
-    "never draw an icon or glyph shape at the centre — the interface adds "
-    "the icon later; no cyberpunk or techno style, no strong neon, no "
-    "photographic stock-image look, no people or characters, no busy "
-    "collage of many unrelated objects."
+    "Create a polished course cover for a premium educational app in a wide "
+    "16:9 frame. Course subject: \"{subject}\". "
+    "Render exactly ONE large, instantly recognisable 3D hero object that "
+    "represents this subject. Use these clues only to choose that single "
+    "object, not as a list of things to draw: {motif}. "
+    "Place the hero near the centre, filling about 45 percent of the frame, "
+    "with a complete crisp silhouette and comfortable margins. It must remain "
+    "readable after both a wide header crop and a compact card crop. "
+    "Use smooth premium product-render materials: softly glossy ceramic, "
+    "frosted glass and restrained brushed metal, with rounded edges, realistic "
+    "contact shadow and soft diffused studio lighting from the upper left. "
+    "Background colour identity: {color}. Build an airy luminous gradient in "
+    "that hue, with a very subtle blueprint grid, one or two long fine arcs "
+    "and only a few tiny star-like highlights. Keep the background quiet and "
+    "bright enough for the object to read at thumbnail size. "
+    "Every cover in the collection must use the same camera angle, object "
+    "scale, lighting direction, material treatment, grid and detail density; "
+    "only the hue and hero object change. "
+    "No text, letters, numbers, formulas, logos, labels or watermark. No extra "
+    "icons, no collection of small props, no collage, no people, no dark or "
+    "black background, no cyberpunk, no harsh neon and no photographic stock look."
 )
 
 # Per-subject композиции: что именно должно быть в кадре, помимо общей
@@ -888,7 +877,7 @@ def resolve_scene(subject: str | None) -> str:
     low = (subject or "").strip().lower()
     if low:
         for keys, scene in SUBJECT_SCENES:
-            if any(k in low for k in keys):
+            if any(_subject_key_matches(low, k) for k in keys):
                 return scene
     return ("a single coherent scene built from the thematic elements of "
             "this field, arranged as a real composition rather than a "
@@ -899,18 +888,10 @@ def resolve_scene(subject: str | None) -> str:
 # остаётся спокойной в каждом варианте: это условие читаемости иконки, а не
 # одна из альтернатив.
 _COMPOSITIONS = (
-    "Layout: the scene runs as a wide diagonal band from the lower left to "
-    "the upper right; the icon area sits just right of centre.",
-    "Layout: the scene forms a loose, irregular grid over the whole frame; "
-    "the icon area sits just left of centre.",
-    "Layout: the scene radiates outward from behind the icon area towards "
-    "all four corners.",
-    "Layout: the scene fills both sides of the frame and is joined across "
-    "the top and the bottom by long thin lines; the icon area is centred.",
-    "Layout: the scene runs as long horizontal bands through the upper and "
-    "the lower thirds; the icon area is in the calm middle band.",
-    "Layout: the scene is scattered evenly like a constellation, its parts "
-    "linked by long faint lines; the icon area sits over the calmest patch.",
+    "Turn the hero very slightly to the left.",
+    "Turn the hero very slightly to the right.",
+    "Use a subtle three-quarter view from just above eye level.",
+    "Use a subtle three-quarter view from just below eye level.",
 )
 
 
@@ -937,7 +918,6 @@ def build_prompt(color: str, icon: str, seed: int | None = None,
         _BASE_STYLE.format(
             color=PALETTE[color]["prompt"],
             subject=topic,
-            scene=resolve_scene(topic),
             motif=resolve_motif(topic, icon),
         ),
         rng.choice(_COMPOSITIONS),
@@ -985,10 +965,8 @@ def _shift(rgb: tuple[int, int, int], *, light: float = 1.0, sat: float = 1.0):
 def fit_cover_frame(img):
     """Приводит картинку к кадру обложки 16:9 (COVER_WIDTH×COVER_HEIGHT).
 
-    Images API отдаёт 3:2 (16:9 в списке размеров нет), поэтому лишнее
-    срезается симметрично сверху и снизу — промпт для этого и просит держать
-    верхний и нижний край спокойными. Центр кадра, где лежит символ, кроп не
-    трогает вообще.
+    Текущий API-профиль уже отдаёт родной 2048×1152. Центральный кроп остаётся
+    защитой для переопределённого COVER_IMAGE_SIZE и старых ответов модели.
     """
     from PIL import Image
 
@@ -1019,12 +997,10 @@ def fit_cover_frame(img):
 # считался нормой и проходил насквозь. В каталоге это читалось как «обложки
 # тёмные»: цвет и тонкая графика на них просто не различались.
 #
-# Теперь коридор описывает глубокий, но живой кадр: примерно от 17% до 32%
-# шкалы. Верх по-прежнему держит коллекцию в одном тоне и срезает прожектор,
-# низ стал рабочим — тёмный ответ модели теперь ПОДНИМАЕТСЯ, а не принимается
-# как есть.
-EXPOSURE_MEAN_MAX = 82.0    # выше — обложка «светлая», выбивается из коллекции
-EXPOSURE_MEAN_MIN = 44.0    # ниже — цвет и графика тонут в темноте
+# Новая коллекция намеренно светлая: воздушный цветной фон и белое/стеклянное
+# 3D-тело. Старый коридор 44..82 превращал такую обложку в грязный тёмный кадр.
+EXPOSURE_MEAN_MAX = 190.0
+EXPOSURE_MEAN_MIN = 105.0
 # Центральный «прожектор» под иконку больше НЕ часть дизайна (см. промпт:
 # «do NOT draw a glowing pedestal, a circular platform…»). Если модель по
 # привычке всё-таки нарисует яркое пятно в центре, приглушаем его мягко:
@@ -1038,8 +1014,8 @@ EXPOSURE_MAX_DIP = 0.18     # сильнее середину не гасим н
 # кадр превращается в грязь), вверх — до 2.2×: подъём с прежних 1.6 нужен,
 # чтобы кадр с mean ~20 доезжал до коридора за один проход, а не оставался
 # тёмным «почти по правилам».
-EXPOSURE_MAX_DARKEN = 0.5
-EXPOSURE_MAX_LIFT = 2.2
+EXPOSURE_MAX_DARKEN = 0.65
+EXPOSURE_MAX_LIFT = 2.6
 
 
 def _exposure_stats(img) -> tuple[float, float, float]:
@@ -1685,7 +1661,7 @@ def _pick_scene(subject: str):
     low = (subject or "").strip().lower()
     if low:
         for keys, fn in _SCENE_ROUTES:
-            if any(k in low for k in keys):
+            if any(_subject_key_matches(low, k) for k in keys):
                 return fn
     return _scene_generic_motifs
 

@@ -45,7 +45,7 @@ def _decode_data_uri(data_uri: str) -> bytes | None:
 
 def _process_and_upload(raw: bytes) -> tuple[str, str] | None:
     """Сжимает картинку (ресайз ≤1600px + WebP) и грузит основной файл и
-    миниатюру (≤480px) в R2. Возвращает (cover_url, thumbnail_url) или None
+    миниатюру (≤960px) в R2. Возвращает (cover_url, thumbnail_url) или None
     при сбое обработки/загрузки — вызывающий код в этом случае оставляет
     исходное значение как есть."""
     try:
@@ -86,7 +86,7 @@ def store_cover_bytes(raw: bytes) -> tuple[str, str] | None:
     """Сжимает и заливает уже готовые байты картинки как обложку класса.
 
     Тот же путь, что и у загруженной пользователем обложки (ресайз ≤1600px +
-    WebP + миниатюра ≤480px, уникальный ключ, годовой immutable-кэш) — просто
+    WebP + миниатюра ≤960px, уникальный ключ, годовой immutable-кэш) — просто
     без шага декодирования data-URI. Нужен сгенерированным обложкам (см.
     services/cover_generator.py), чтобы они лежали в хранилище ровно так же,
     как исторические, и работали во всех местах показа без исключений.
@@ -121,7 +121,7 @@ def convert_cover_if_data_uri(value: str | None) -> str | None:
 
 def convert_cover_with_thumbnail(value: str | None) -> tuple[str | None, str | None]:
     """Как convert_cover_if_data_uri, но также возвращает URL миниатюры
-    (≤480px) для карточек списка классов. Для значений, не являющихся
+    (≤960px) для карточек списка классов. Для значений, не являющихся
     data-URI (уже готовый URL, None), миниатюра не трогается — вызывающий
     код должен сохранить прежнее значение cover_thumbnail в этом случае."""
     if not value or not value.startswith("data:"):
