@@ -8,7 +8,7 @@ from crud import classes as crud
 from crud import cohorts as crud_cohorts
 from models import Class, Cohort, User, class_members, cohort_students
 from db import get_db
-from deps import get_current_user, get_current_teacher
+from deps import get_current_user, get_current_teacher, get_current_admin
 from permissions import require_class_owner, require_class_access
 from services import ai_budget, cover_art, cover_generator
 from services.image_storage import convert_cover_with_thumbnail
@@ -129,7 +129,7 @@ def list_all_classes(
     limit: int | None = Query(None, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_admin),
 ):
     classes = crud.get_all_classes(db, org_type=current_user.org_type,
                                    limit=limit, offset=offset)
@@ -303,6 +303,7 @@ def get_class(
     # узнавать о существовании чужих классов. Админ по-прежнему видит всё.
     if current_user.role == "teacher" and obj.created_by != current_user.id:
         raise HTTPException(status_code=404, detail="Предмет не найден")
+    require_class_access(db, class_id, current_user)
     is_archived = (
         crud_cohorts.is_archived_for_user(db, class_id, current_user.id)
         if current_user.role == "student"

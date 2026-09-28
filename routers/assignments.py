@@ -19,6 +19,7 @@ from permissions import (
     require_class_owner,
     require_submission_class_owner,
     student_class_ids,
+    teacher_class_ids,
 )
 from services.ai_grader import grade_submission as _ai_grade
 from services.ai_grader import grade_handwritten_submission as _ai_grade_handwritten
@@ -203,6 +204,8 @@ def list_assignments(
         require_class_access(db, class_id, current_user)
     elif current_user.role == "student":
         allowed_class_ids = student_class_ids(db, current_user.id, current_user.org_type)
+    elif current_user.role == "teacher":
+        allowed_class_ids = teacher_class_ids(db, current_user.id, current_user.org_type)
     items = crud.get_all_assignments(db, class_id=class_id, active_only=active_only,
                                      org_type=current_user.org_type,
                                      limit=limit, offset=offset,

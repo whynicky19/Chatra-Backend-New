@@ -66,11 +66,39 @@ def test_json_upload_urls_are_signed(client, db_session):
 def test_non_owner_teacher_cannot_modify_class(client, db_session):
     owner = make_user(db_session, role="teacher")
     other = make_user(db_session, role="teacher")
+    student = make_user(db_session, role="student")
     cls = cc.create_class(db_session, "C", None, created_by=owner.id)
 
     assert client.put(f"/api/classes/{cls.id}", json={"name": "X"}, headers=auth_headers(other)).status_code == 403
     assert client.delete(f"/api/classes/{cls.id}", headers=auth_headers(other)).status_code == 403
+    assert client.delete(f"/api/classes/{cls.id}", headers=auth_headers(student)).status_code == 403
     assert client.put(f"/api/classes/{cls.id}", json={"name": "X"}, headers=auth_headers(owner)).status_code == 200
+
+
+def test_unenrolled_student_cannot_read_class_and_all_is_admin_only(client, db_session):
+    owner = make_user(db_session, role="teacher")
+    other_teacher = make_user(db_session, role="teacher")
+    student = make_user(db_session, role="student")
+    admin = make_user(db_session, role="admin")
+    cls = cc.create_class(db_session, "Private", None, created_by=owner.id)
+
+    assert client.get(f"/api/classes/{cls.id}", headers=auth_headers(student)).status_code == 403
+    assert client.get("/api/classes/all", headers=auth_headers(student)).status_code == 403
+    assert client.get("/api/classes/all", headers=auth_headers(other_teacher)).status_code == 403
+    assert client.get("/api/classes/all", headers=auth_headers(admin)).status_code == 200
+
+
+def test_admin_cannot_lock_out_own_account(client, db_session):
+    admin = make_user(db_session, role="admin")
+    headers = auth_headers(admin)
+
+    assert client.put(f"/api/admin/users/{admin.id}/block", headers=headers).status_code == 409
+    assert client.put(
+        f"/api/admin/users/{admin.id}/role",
+        params={"new_role": "student"},
+        headers=headers,
+    ).status_code == 409
+    assert client.delete(f"/api/admin/users/{admin.id}", headers=headers).status_code == 409
 
 
 def test_non_owner_teacher_cannot_modify_or_grade_assignment(client, db_session):

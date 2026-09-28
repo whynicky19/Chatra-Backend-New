@@ -55,10 +55,17 @@ def is_class_member(db: Session, class_id: int, user_id: int) -> bool:
 def require_class_access(db: Session, class_id: int, current_user) -> None:
     """Доступ на ЧТЕНИЕ: студент должен состоять в любом потоке класса
     (архивный поток = read-only, но виден). Фолбэк на легаси class_members —
-    для классов/баз, где потоки ещё не созданы. Teacher/admin проходят
-    по org-проверке роутера."""
-    if current_user.role in ("teacher", "admin"):
+    для классов/баз, где потоки ещё не созданы. Преподаватель читает только
+    собственные классы, администратор — все классы своей организации."""
+    cls = db.query(Class).filter(Class.id == class_id).first()
+    if not cls or cls.org_type != current_user.org_type:
+        raise HTTPException(status_code=404, detail="Предмет не найден")
+    if current_user.role == "admin":
         return
+    if current_user.role == "teacher":
+        if cls.created_by == current_user.id:
+            return
+        raise HTTPException(status_code=404, detail="Предмет не найден")
     if crud_cohorts.is_member_of_any_cohort(db, class_id, current_user.id):
         return
     if not is_class_member(db, class_id, current_user.id):
@@ -87,6 +94,17 @@ def student_class_ids(db: Session, user_id: int, org_type: str) -> set:
         .all()
     }
     return cohort_ids | legacy_ids
+
+
+def teacher_class_ids(db: Session, user_id: int, org_type: str) -> set:
+    """Классы, созданные конкретным преподавателем в его организации."""
+    return {
+        row[0]
+        for row in db.query(Class.id).filter(
+            Class.created_by == user_id,
+            Class.org_type == org_type,
+        ).all()
+    }
 
 
 def require_active_cohort_access(db: Session, class_id: int, current_user) -> None:

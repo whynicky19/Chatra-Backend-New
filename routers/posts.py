@@ -9,7 +9,7 @@ from crud import posts as crud_posts
 from crud import classes as crud_classes
 from deps import get_current_user
 from models import Posts, User, post_enrollments
-from permissions import require_class_access, require_class_owner, student_class_ids
+from permissions import require_class_access, require_class_owner, student_class_ids, teacher_class_ids
 
 router = APIRouter(prefix="/posts", tags=["posts"])
 
@@ -34,6 +34,8 @@ def _require_lecture_class_owner(db: Session, title: str, current_user) -> None:
         # а подсунуть материал в существующий класс так нельзя — оставляем
         # прежнее поведение, чтобы не сломать правку исторических записей.
         return
+    if current_user.role not in ("teacher", "admin"):
+        raise HTTPException(status_code=403, detail="Teachers only")
     require_class_owner(db, class_id, current_user)
 
 
@@ -101,6 +103,8 @@ def get_posts_for_user(
         require_class_access(db, class_id, current_user)
     elif current_user.role == "student":
         allowed_class_ids = student_class_ids(db, current_user.id, current_user.org_type)
+    elif current_user.role == "teacher":
+        allowed_class_ids = teacher_class_ids(db, current_user.id, current_user.org_type)
     return crud_posts.get_all_posts(
         db=db,
         org_type=current_user.org_type,
@@ -119,6 +123,7 @@ def delete_post(
 ):
     post = _get_post_or_404(db, post_id)
     _check_post_org(db, post, current_user)
+    _require_lecture_class_owner(db, post.title, current_user)
     if post.user_id != current_user.id and current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Not authorized to delete this post")
     crud_posts.delete_post(db=db, post_id=post_id)

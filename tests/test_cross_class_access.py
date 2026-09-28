@@ -72,10 +72,7 @@ def test_student_sees_only_own_class_assignments_without_class_id_filter(client,
     assert "Чужое задание" not in titles
 
 
-def test_teacher_still_sees_all_org_lectures_and_assignments_without_class_id_filter(client, db_session):
-    # Teacher/admin намеренно видят всю организацию без фильтра по членству
-    # (та же модель, что и GET /classes/, см. permissions.require_class_access) —
-    # фикс не должен был сузить видимость для них.
+def test_teacher_sees_only_own_lectures_and_assignments(client, db_session):
     teacher_a = make_user(db_session, role="teacher")
     teacher_b = make_user(db_session, role="teacher")
     cls_a = crud_classes.create_class(db_session, "A", None, created_by=teacher_a.id)
@@ -88,9 +85,18 @@ def test_teacher_still_sees_all_org_lectures_and_assignments_without_class_id_fi
     resp = client.get("/api/posts/", headers=auth_headers(teacher_a))
     assert resp.status_code == 200
     titles = " ".join(p["title"] for p in resp.json())
-    assert "Лекция A" in titles and "Лекция B" in titles
+    assert "Лекция A" in titles and "Лекция B" not in titles
+
+    assert client.get(
+        "/api/posts/", params={"class_id": cls_b.id}, headers=auth_headers(teacher_a)
+    ).status_code == 404
 
     resp = client.get("/api/assignments/", headers=auth_headers(teacher_a))
     assert resp.status_code == 200
     titles = [a["title"] for a in resp.json()]
-    assert "Задание A" in titles and "Задание B" in titles
+    assert "Задание A" in titles and "Задание B" not in titles
+
+    assert client.get(
+        f"/api/assignments/{_make_assignment(db_session, cls_b.id, teacher_b, 'Задание B2').id}",
+        headers=auth_headers(teacher_a),
+    ).status_code == 404

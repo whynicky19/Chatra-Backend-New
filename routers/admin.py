@@ -19,6 +19,15 @@ router = APIRouter(
     dependencies=[Depends(get_current_admin)]
 )
 
+
+def _prevent_self_lockout(user_id: int, current_user, action: str) -> None:
+    """Администратор не может удалить, заблокировать или понизить сам себя."""
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Нельзя {action} собственную учётную запись администратора",
+        )
+
 @router.post("/users", response_model=UserResponse)
 def create_user(
     user: UserCreate,
@@ -61,6 +70,7 @@ def update_user_role(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_admin),
 ):
+    _prevent_self_lockout(user_id, current_user, "изменить роль для")
     if new_role not in schemas.ALLOWED_ROLES:
         raise HTTPException(
             status_code=422,
@@ -85,6 +95,7 @@ def block_user(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_admin),
 ):
+    _prevent_self_lockout(user_id, current_user, "заблокировать")
     user = db.query(User).filter(User.id == user_id).first()
 
     if not user:
@@ -140,6 +151,7 @@ def delete_user(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_admin),
 ):
+    _prevent_self_lockout(user_id, current_user, "удалить")
     user = db.query(User).filter(User.id == user_id).first()
 
     if not user:
@@ -1038,4 +1050,3 @@ def get_cover_usage(
             for l in logs
         ],
     }
-

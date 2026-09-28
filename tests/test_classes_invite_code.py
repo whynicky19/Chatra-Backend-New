@@ -100,12 +100,13 @@ def test_invite_code_hidden_from_student_visible_to_owner_and_admin(client, db_s
     r_admin = client.get(f"/api/classes/{cls.id}", headers=auth_headers(admin))
     assert r_admin.json()["invite_code"] == cls.invite_code
 
-    # A teacher who doesn't own the class shouldn't see its code either.
+    # A teacher who doesn't own the class cannot open it at all.
     r_other = client.get(f"/api/classes/{cls.id}", headers=auth_headers(other_teacher))
-    assert r_other.json()["invite_code"] is None
+    assert r_other.status_code == 404
 
-    # /classes/all never exposes the code, even to the owner.
-    r_all = client.get("/api/classes/all", headers=auth_headers(teacher))
+    # Административный /classes/all тоже никогда не раскрывает код.
+    r_all = client.get("/api/classes/all", headers=auth_headers(admin))
+    assert r_all.status_code == 200
     assert all(c["invite_code"] is None for c in r_all.json())
 
 

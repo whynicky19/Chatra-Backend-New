@@ -126,6 +126,23 @@ def test_post_cannot_be_relabelled_into_foreign_class_lecture(client, db_session
     assert r.status_code == 403, r.text
 
 
+def test_demoted_teacher_cannot_delete_old_lecture(client, db_session):
+    owner = make_user(db_session, role="teacher")
+    cid = _make_class(client, owner)
+    created = client.post(
+        "/api/posts/create", json=_lecture_body(cid), headers=auth_headers(owner)
+    )
+    assert created.status_code == 201
+
+    owner.role = "student"
+    db_session.commit()
+
+    deleted = client.delete(
+        f"/api/posts/{created.json()['id']}", headers=auth_headers(owner)
+    )
+    assert deleted.status_code == 403
+
+
 # ── Состав класса ─────────────────────────────────────────────────────────────
 
 def test_foreign_teacher_cannot_change_roster(client, db_session):
